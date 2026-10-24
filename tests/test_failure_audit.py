@@ -104,6 +104,47 @@ class FailureAuditTests(unittest.TestCase):
         )
         coordinator.runner.run_acquired_and_complete.assert_not_called()
 
+    def test_coordinator_registers_canonical_incident(self):
+        coordinator = DeveloperWorkerCoordinator.__new__(DeveloperWorkerCoordinator)
+        queue = Mock()
+        queue.acquire_next.return_value = {
+            "task_id": "task-1", "token": "lease-token"
+        }
+        queue.record_failure.return_value = True
+        coordinator.bridge = Mock()
+        coordinator.bridge.queue = queue
+        coordinator.targets = Mock()
+        coordinator.targets.get.side_effect = FileNotFoundError("secret/path")
+        coordinator.incidents = Mock()
+        coordinator.agent = "worker-a"
+        coordinator.runner = Mock()
+
+        with self.assertRaises(FileNotFoundError):
+            coordinator.run_once()
+        coordinator.incidents.register.assert_called_once_with(
+            "task-1", "DeveloperWorkerCoordinator",
+            "FileNotFoundError", "run_once"
+        )
+
+    def test_coordinator_does_not_register_unowned_failure(self):
+        coordinator = DeveloperWorkerCoordinator.__new__(DeveloperWorkerCoordinator)
+        queue = Mock()
+        queue.acquire_next.return_value = {
+            "task_id": "task-1", "token": "lease-token"
+        }
+        queue.record_failure.return_value = False
+        coordinator.bridge = Mock()
+        coordinator.bridge.queue = queue
+        coordinator.targets = Mock()
+        coordinator.targets.get.side_effect = RuntimeError("not owned")
+        coordinator.incidents = Mock()
+        coordinator.agent = "worker-a"
+        coordinator.runner = Mock()
+
+        with self.assertRaises(RuntimeError):
+            coordinator.run_once()
+        coordinator.incidents.register.assert_not_called()
+
     def test_coordinator_preserves_error_when_audit_fails(self):
         coordinator = DeveloperWorkerCoordinator.__new__(DeveloperWorkerCoordinator)
         queue = Mock()
