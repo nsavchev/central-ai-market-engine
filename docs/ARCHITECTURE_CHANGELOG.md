@@ -49,7 +49,9 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **PR:** https://github.com/nsavchev/central-ai-market-engine/pull/2
 
-**Status:** Implemented in feature branch; CI green as shown in screenshot, awaiting code review and broader validation.
+**Status:** Implemented in feature branch; initial CI green as shown in screenshot, awaiting re-run and broader validation.
+
+**Follow-up (2026-10-24):** Added explicit tests for expired lease rejection and malformed/unsafe error codes (`a0b025f`). This closes two test gaps identified above. Results of these newly added tests are not yet verified; the earlier green check predates this commit. No production changes.
 
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
