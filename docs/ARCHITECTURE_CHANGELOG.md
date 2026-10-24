@@ -62,6 +62,16 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **CI gate update (2026-10-24):** GitHub Actions run 40122432945, job 120956694505, completed SUCCESS. Logs show all 8 isolated tests passing in 0.077 seconds, including the two coordinator integration tests. Evidence: https://github.com/nsavchev/central-ai-market-engine/actions/runs/40122432945 . This validates A11.15.5's focused tests, not the full repository regression suite or live environment. PR #2 stays draft pending review.
 
+### CHG-002 — A11.15.6 persistent incident fingerprint and dedup (2026-10-24)
+**Problem:** Repeated failures and process restarts must not create independent FIX incidents that reset repair budgets.
+**Decision:** Add `central_ai/fix_incident_registry.py` as a metadata-only SQLite registry. Stable SHA-256 fingerprint uses validated component/error-code/operation identifiers; `INSERT OR IGNORE` with `BEGIN IMMEDIATE` serializes concurrent registrations. Duplicate sightings increase occurrences but preserve original source task and terminal state. Terminal incidents never auto-reopen.
+**Why:** Establish persistent canonical problem identity before creating repair subtasks and enforcing global anti-loop budgets.
+**Files:** `central_ai/fix_incident_registry.py`, `tests/test_fix_incident_registry.py`.
+**Tests:** Six focused unit tests added; not yet executed. No production deployment or trading changes.
+**Limitations:** A fingerprint based on class/component/operation may merge distinct root causes; do not automatically repair from fingerprint alone. Registry is not yet connected to the coordinator or a repair planner. Time, cost and repair-attempt budgets belong to A11.15.9.
+**Rollback:** Revert feature-branch commits `47dcf00` and `508b321`; no live data touched.
+**Status:** In development, CI pending.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
