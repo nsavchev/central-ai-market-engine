@@ -13,6 +13,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install declared project dependencies
+        run: python -m pip install -r requirements.txt
       - name: Targeted regression planner tests
         run: python -m unittest discover -s tests -p 'test_regression_gate_planner.py' -v
       - name: All unittest discovery
