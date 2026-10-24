@@ -58,6 +58,8 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **Next quality gate:** Before merge, add coordinator failure-propagation integration tests and run broader regression checks. Keep PR #2 in draft until review.
 
+**Follow-up integration tests (2026-10-24):** Added two coordinator tests (`4892eda`) to confirm original exceptions propagate, failure type is audited, and audit storage failures do not mask the original error. Tests are pending CI verification. Reason: the first six tests exercised TaskQueue, not coordinator integration. Rollback: revert this feature-branch commit; no VPS changes.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
