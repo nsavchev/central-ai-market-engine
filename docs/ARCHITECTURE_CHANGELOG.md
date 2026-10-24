@@ -72,6 +72,8 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 **Rollback:** Revert feature-branch commits `47dcf00` and `508b321`; no live data touched.
 **Status:** In development, CI pending.
 
+**CHG-002 integration follow-up (2026-10-24):** CI runs 40123649746 (6/6 incident tests) and 40123649722 (8/8 failure-audit tests) succeeded. Added coordinator integration (`f89d2dd`) that registers a canonical incident only after an ownership-validated failure audit event. Added tests (`ead54bb`) for successful incident registration and rejection of unowned failure registration. Reason: avoid orphan/unauthorized incident creation and preserve the original exception. New integration tests are pending CI. Limitations: incident grouping currently uses component, error class and operation; this is coarse and should not be treated as verified root-cause identity. No automatic FIX subtask creation or execution. Rollback by reverting these feature-branch commits.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
