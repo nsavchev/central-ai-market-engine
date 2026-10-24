@@ -86,6 +86,14 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **CHG-003 rollback rehearsal extension (2026-10-24):** Three prior CI runs succeeded (7/7 incident, 10/10 failure audit, 6/6 isolated stager tests). Added `RepairRollbackRehearsal` (`1ea880b`) and four tests (`eb3197a`) plus CI (`87ffebe`). It writes a candidate into a disposable temporary copy, restores its original bytes from a backup, verifies SHA-256 and confirms the trusted source remains unchanged. This is a rehearsal only; it does not provide a production-safe apply/rollback transaction. Reason: verify reversible candidate handling before designing an approved application path. New tests pending CI. Rollback: revert feature commits; no production changes.
 
+### CHG-004 — A11.15.8 regression gates (2026-10-24)
+**Evidence:** Prior PR #4 CI passed 27/27 focused tests across four jobs.
+**Why:** Targeted unit tests alone cannot detect regressions in other Central AI modules.
+**Decision:** Add `RegressionGatePlanner` to generate review-only allowlisted unittest commands (no shell execution or deployment), six focused tests, and a CI job that runs both planner tests and all tests discoverable by Python unittest. CI is independent of generated repair candidates.
+**Files:** `central_ai/regression_gate_planner.py`, `tests/test_regression_gate_planner.py`, `.github/workflows/regression-gates.yml`.
+**Limitations:** Full unittest discovery is not necessarily the entire project's test suite; pytest-only tests and external dependencies may need additional CI. No isolated candidate execution or repair approval is implemented. New CI pending.
+**Rollback:** Revert `4827d0e`, `c91cb40`, `b2e0540` on feature branch; no VPS changes.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
