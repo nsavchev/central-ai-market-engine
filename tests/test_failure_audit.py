@@ -58,6 +58,26 @@ class FailureAuditTests(unittest.TestCase):
                 for entry in self.queue.audit("task-1"))
         )
 
+    def test_expired_lease_cannot_write_failure(self):
+        token = self.queue.acquire("task-1", "worker-a")
+        with self.queue._connect() as con:
+            con.execute(
+                "UPDATE task_queue SET lease_until=? WHERE task_id=?",
+                ("2000-01-01T00:00:00+00:00", "task-1"),
+            )
+        self.assertFalse(
+            self.queue.record_failure(
+                "task-1", "worker-a", token, "FileNotFoundError"
+            )
+        )
+
+    def test_invalid_error_code_is_rejected(self):
+        token = self.queue.acquire("task-1", "worker-a")
+        for code in ("", "RuntimeError: secret", "bad/path", "two words"):
+            with self.subTest(code=code):
+                with self.assertRaises(ValueError):
+                    self.queue.record_failure("task-1", "worker-a", token, code)
+
     def test_completed_task_cannot_receive_failure(self):
         token = self.queue.acquire("task-1", "worker-a")
         self.queue.complete("task-1", "worker-a", token)
