@@ -125,6 +125,25 @@ class TaskQueue:
         result['effective_status'] = effective
         return result
 
+    def record_failure(self, task_id, agent, token, error_code):
+        """Record a sanitized failure for the current lease owner."""
+        if not isinstance(error_code, str) or not error_code.isidentifier():
+            raise ValueError("INVALID_ERROR_CODE")
+        if not all(isinstance(x, str) and x.strip()
+                   for x in (task_id, agent, token)):
+            raise ValueError("INVALID_FAILURE_CONTEXT")
+        with self._connect() as con:
+            cursor = con.execute("""
+                INSERT INTO task_queue_audit(task_id, event, agent, timestamp)
+                SELECT task_id, ?, ?, ?
+                FROM task_queue
+                WHERE task_id=? AND owner=? AND lease_token=?
+                  AND status='leased'
+                  AND approved=0 AND deployment_allowed=0
+            """, ("failed:" + error_code[:64], agent, utcnow().isoformat(),
+                  task_id, agent, token))
+            return cursor.rowcount == 1
+
     def audit(self, task_id):
         with self._connect() as con:
             rows = con.execute('\n                SELECT event,agent,timestamp\n                FROM task_queue_audit\n                WHERE task_id=?\n                ORDER BY id\n            ', (task_id,)).fetchall()
