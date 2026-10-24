@@ -1,5 +1,6 @@
 """A11.15.6 persistent FIX incident deduplication tests."""
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
 
@@ -32,6 +33,22 @@ class FixIncidentRegistryTests(unittest.TestCase):
         item = restarted.register("task-2", "Worker", "OSError", "analyze")
         self.assertFalse(item["created"])
         self.assertEqual(item["occurrences"], 2)
+
+    def test_concurrent_duplicates_have_one_canonical_incident(self):
+        def register_one(i):
+            registry = FixIncidentRegistry(self.path)
+            return registry.register(
+                f"task-{i}", "Worker", "OSError", "analyze"
+            )
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(register_one, range(12)))
+        self.assertEqual(sum(item["created"] for item in results), 1)
+        self.assertEqual(len({item["fingerprint"] for item in results}), 1)
+        final = self.registry.register(
+            "task-final", "Worker", "OSError", "analyze"
+        )
+        self.assertEqual(final["occurrences"], 13)
 
     def test_different_operation_is_separate(self):
         first = self.registry.register("task-1", "Worker", "OSError", "analyze")
