@@ -76,6 +76,14 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **CI integration gate (2026-10-24):** GitHub Actions runs 40124109410 and 40124109327 completed SUCCESS: 6/6 registry tests and 10/10 coordinator/failure-audit tests. Added concurrent registration test (`2cb3d35`) to exercise the atomic `BEGIN IMMEDIATE` plus unique-fingerprint guarantee across 12 workers. Rationale: real agents can report the same failure simultaneously; duplicates must not fork the repair state. New concurrency test pending CI. No permission or deployment changes.
 
+### CHG-003 — A11.15.7 isolated candidate verification (2026-10-24)
+**Reason:** Repair candidates must be checked without mutating trusted source files or executing generated code.
+**Decision:** Add `IsolatedRepairStager` with disjoint workspace/staging roots, safe relative .py paths, symlink rejection, SHA-256 optimistic source guard, 1 MiB candidate limit, syntax compilation without execution, private temporary candidate verification, and automatic temporary deletion. Returns only metadata; never applies code or deploys.
+**Files:** `central_ai/isolated_repair_stager.py`, `tests/test_isolated_repair_stager.py`.
+**Validation:** Six unit tests added, CI pending.
+**Limitations:** This is a staging/verification primitive, not a sandbox against malicious Python, not a repair executor, and not a durable rollback mechanism. It cannot establish behavioral correctness. Future work must implement explicit approvals, full isolated test execution with OS/container isolation, and atomic rollback before any application.
+**Rollback:** Revert `a4b0955` and `7e6b48e` on the feature branch; production untouched.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
