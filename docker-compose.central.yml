@@ -1,0 +1,15 @@
+services:
+  central-ai:
+    build:
+      context: .
+      dockerfile: central_ai/Dockerfile
+    restart: unless-stopped
+    env_file: .env.central
+    ports:
+      - "127.0.0.1:8010:8010"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 512m

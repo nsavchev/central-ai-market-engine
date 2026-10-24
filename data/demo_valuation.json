@@ -1,0 +1,10 @@
+{
+  "symbol": "DEMO", "currency": "USD", "base_fcff": 120000,
+  "net_debt": 150000, "diluted_shares": 100000,
+  "current_price": 12.5, "price_asof": "2026-10-18",
+  "scenarios": [
+    {"name":"bear","growth_rate":0.01,"discount_rate":0.13,"terminal_growth_rate":0.015,"years":5},
+    {"name":"base","growth_rate":0.06,"discount_rate":0.10,"terminal_growth_rate":0.025,"years":5},
+    {"name":"bull","growth_rate":0.12,"discount_rate":0.09,"terminal_growth_rate":0.03,"years":5}
+  ]
+}

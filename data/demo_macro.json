@@ -1,0 +1,25 @@
+{
+  "events": [
+    {
+      "event_id": "demo-us-cpi",
+      "indicator": "CPI_YOY",
+      "country": "US",
+      "released_at": "2026-09-15T12:30:00+00:00",
+      "actual": 3.2,
+      "consensus": 3.0,
+      "historical_surprise_std": 0.2,
+      "unit": "percent_yoy",
+      "source_url": "https://example.org/illustrative-not-real",
+      "consensus_asof": "2026-09-14T12:00:00+00:00"
+    },
+    {
+      "event_id": "demo-us-fed",
+      "indicator": "FED_RATE",
+      "country": "US",
+      "released_at": "2026-11-01T18:00:00+00:00",
+      "consensus": 4.0,
+      "unit": "percent",
+      "source_url": "https://example.org/illustrative-not-real"
+    }
+  ]
+}

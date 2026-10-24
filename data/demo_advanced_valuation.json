@@ -1,0 +1,36 @@
+{
+  "symbol": "DEMO",
+  "currency": "USD",
+  "normalized_fcff": 120000,
+  "net_debt": 150000,
+  "diluted_shares": 100000,
+  "price": 12.5,
+  "price_asof": "2026-10-18",
+  "safety_buffer": 0.25,
+  "cases": [
+    {
+      "name": "bear",
+      "probability": 0.25,
+      "growth_first_five": 0.01,
+      "growth_next_five": 0,
+      "discount_rate": 0.13,
+      "terminal_growth": 0.015
+    },
+    {
+      "name": "base",
+      "probability": 0.5,
+      "growth_first_five": 0.06,
+      "growth_next_five": 0.03,
+      "discount_rate": 0.1,
+      "terminal_growth": 0.025
+    },
+    {
+      "name": "bull",
+      "probability": 0.25,
+      "growth_first_five": 0.12,
+      "growth_next_five": 0.06,
+      "discount_rate": 0.09,
+      "terminal_growth": 0.03
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "symbol":"DEMO", "period_end":"2025-12-31", "period_type":"FY", "currency":"USD", "source":"manual",
+  "revenue":1000000, "net_income":100000, "operating_income":150000,
+  "income_tax":25000, "pretax_income":125000, "total_assets":800000,
+  "shareholders_equity":500000, "total_debt":200000, "cash":50000,
+  "operating_cash_flow":180000, "capital_expenditure":50000,
+  "invested_capital":650000, "shares_diluted":100000,
+  "share_price":20, "dividends_per_share":0.5, "asof_price_date":"2025-12-31"
+}

@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: market
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set_in_env}
+      POSTGRES_DB: market
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U market -d market"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://market:${POSTGRES_PASSWORD}@db:5432/market
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+volumes:
+  pgdata:
