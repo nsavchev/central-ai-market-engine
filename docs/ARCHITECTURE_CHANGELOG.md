@@ -94,6 +94,8 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 **Limitations:** Full unittest discovery is not necessarily the entire project's test suite; pytest-only tests and external dependencies may need additional CI. No isolated candidate execution or repair approval is implemented. New CI pending.
 **Rollback:** Revert `4827d0e`, `c91cb40`, `b2e0540` on feature branch; no VPS changes.
 
+**CHG-004 CI diagnosis and fix (2026-10-24):** Initial full unittest discovery failed in run 40125522319: 41 tests discovered, 8 import errors due to missing `pytest` and `fastapi` in GitHub runner. Verified both dependencies are declared in repository `requirements.txt`. Changed `.github/workflows/regression-gates.yml` (`1ebaa10`) to install declared dependencies before running targeted and full discovery. Reason: test environment must match project requirements; no test exclusions or bypasses. Re-run pending; remaining failures must be investigated rather than suppressed. Rollback: revert workflow commit.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
