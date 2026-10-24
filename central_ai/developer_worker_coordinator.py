@@ -2,6 +2,7 @@ from pathlib import Path
 from central_ai.persistent_bridge import PersistentTaskBridge
 from central_ai.task_file_targets import TaskFileTargets
 from central_ai.developer_task_runner import DeveloperTaskRunner
+from central_ai.fix_incident_registry import FixIncidentRegistry
 
 class DeveloperWorkerCoordinator:
 
@@ -13,6 +14,7 @@ class DeveloperWorkerCoordinator:
         self.targets.initialize()
         self.runner = DeveloperTaskRunner(self.bridge.queue, agent)
         self.agent = agent
+        self.incidents = FixIncidentRegistry(db_path)
 
     def run_once(self):
         acquired = self.bridge.queue.acquire_next(self.agent, seconds=30, require_target=True)
@@ -34,9 +36,15 @@ class DeveloperWorkerCoordinator:
         except Exception as exc:
             # Keep the original exception; audit only its type, never its text.
             try:
-                self.bridge.queue.record_failure(
+                recorded = self.bridge.queue.record_failure(
                     task_id, self.agent, token, type(exc).__name__
                 )
+                if recorded:
+                    self.incidents.register(
+                        task_id, "DeveloperWorkerCoordinator",
+                        type(exc).__name__, "run_once"
+                    )
             except Exception:
+                # Audit/incident failures must not mask the original error.
                 pass
             raise
