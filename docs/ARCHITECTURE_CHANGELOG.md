@@ -60,6 +60,8 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **Follow-up integration tests (2026-10-24):** Added two coordinator tests (`4892eda`) to confirm original exceptions propagate, failure type is audited, and audit storage failures do not mask the original error. Tests are pending CI verification. Reason: the first six tests exercised TaskQueue, not coordinator integration. Rollback: revert this feature-branch commit; no VPS changes.
 
+**CI gate update (2026-10-24):** GitHub Actions run 40122432945, job 120956694505, completed SUCCESS. Logs show all 8 isolated tests passing in 0.077 seconds, including the two coordinator integration tests. Evidence: https://github.com/nsavchev/central-ai-market-engine/actions/runs/40122432945 . This validates A11.15.5's focused tests, not the full repository regression suite or live environment. PR #2 stays draft pending review.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
