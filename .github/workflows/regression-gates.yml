@@ -1,0 +1,19 @@
+name: Central AI regression gates
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Targeted regression planner tests
+        run: python -m unittest discover -s tests -p 'test_regression_gate_planner.py' -v
+      - name: All unittest discovery
+        run: python -m unittest discover -s tests -v
