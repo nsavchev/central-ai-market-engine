@@ -139,9 +139,10 @@ class TaskQueue:
                 FROM task_queue
                 WHERE task_id=? AND owner=? AND lease_token=?
                   AND status='leased'
+                  AND lease_until > ?
                   AND approved=0 AND deployment_allowed=0
             """, ("failed:" + error_code[:64], agent, utcnow().isoformat(),
-                  task_id, agent, token))
+                  task_id, agent, token, utcnow().isoformat()))
             return cursor.rowcount == 1
 
     def audit(self, task_id):
