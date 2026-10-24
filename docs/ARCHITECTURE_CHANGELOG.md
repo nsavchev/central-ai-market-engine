@@ -53,6 +53,11 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **Follow-up (2026-10-24):** Added explicit tests for expired lease rejection and malformed/unsafe error codes (`a0b025f`). This closes two test gaps identified above. Results of these newly added tests are not yet verified; the earlier green check predates this commit. No production changes.
 
+
+**Verified CI evidence (2026-10-24):** GitHub Actions run 40121676796, job 120954406395, finished SUCCESS. The job log explicitly reports `Ran 6 tests in 0.089s` and `OK`. This confirms the six isolated failure-audit tests; it does not constitute full project regression, coordinator integration testing, or production validation. Source: https://github.com/nsavchev/central-ai-market-engine/actions/runs/40121676796
+
+**Next quality gate:** Before merge, add coordinator failure-propagation integration tests and run broader regression checks. Keep PR #2 in draft until review.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
