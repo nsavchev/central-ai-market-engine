@@ -84,6 +84,8 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 **Limitations:** This is a staging/verification primitive, not a sandbox against malicious Python, not a repair executor, and not a durable rollback mechanism. It cannot establish behavioral correctness. Future work must implement explicit approvals, full isolated test execution with OS/container isolation, and atomic rollback before any application.
 **Rollback:** Revert `a4b0955` and `7e6b48e` on the feature branch; production untouched.
 
+**CHG-003 rollback rehearsal extension (2026-10-24):** Three prior CI runs succeeded (7/7 incident, 10/10 failure audit, 6/6 isolated stager tests). Added `RepairRollbackRehearsal` (`1ea880b`) and four tests (`eb3197a`) plus CI (`87ffebe`). It writes a candidate into a disposable temporary copy, restores its original bytes from a backup, verifies SHA-256 and confirms the trusted source remains unchanged. This is a rehearsal only; it does not provide a production-safe apply/rollback transaction. Reason: verify reversible candidate handling before designing an approved application path. New tests pending CI. Rollback: revert feature commits; no production changes.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
