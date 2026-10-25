@@ -52,70 +52,24 @@ class RepairBudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "INVALID_FINGERPRINT"):
             self.budget.admit("not-a-hash")
 
-    def test_cost_reservation_is_durable(self):
+    def test_legacy_reservation_always_denied(self):
         self.budget.admit(KEY, "First")
-        first = self.budget.reserve_subtask(
-            KEY, depth=1, estimated_cost_units=60
-        )
-        self.assertTrue(first["reserved"])
-        restarted = RepairBudget(self.path)
-        restarted.admit(KEY, "Second")
-        denied = restarted.reserve_subtask(
-            KEY, depth=1, estimated_cost_units=50
-        )
-        self.assertEqual(denied["reason"], "COST_EXCEEDED")
-
-    def test_third_admitted_attempt_can_reserve_final_subtask(self):
-        for i in range(3):
-            self.assertTrue(self.budget.admit(KEY, f"Failure{i}")["admitted"])
-            reservation = self.budget.reserve_subtask(
+        with self.assertRaisesRegex(
+            PermissionError, "UNSAFE_LEGACY_RESERVATION_DISABLED"
+        ):
+            self.budget.reserve_subtask(
                 KEY, depth=1, estimated_cost_units=10
             )
-            self.assertTrue(reservation["reserved"])
-        self.assertEqual(self.budget.reserve_subtask(
-            KEY, depth=1, estimated_cost_units=10
-        )["reason"], "NO_UNRESERVED_ATTEMPT")
-        self.assertFalse(self.budget.admit(KEY, "Failure3")["admitted"])
 
-    def test_one_reservation_per_admitted_attempt(self):
+    def test_legacy_reservation_denied_after_restart(self):
         self.budget.admit(KEY, "First")
-        self.assertTrue(self.budget.reserve_subtask(
-            KEY, depth=1, estimated_cost_units=10
-        )["reserved"])
-        denied = self.budget.reserve_subtask(
-            KEY, depth=1, estimated_cost_units=10
-        )
-        self.assertEqual(denied["reason"], "NO_UNRESERVED_ATTEMPT")
         restarted = RepairBudget(self.path)
-        self.assertEqual(restarted.reserve_subtask(
-            KEY, depth=1, estimated_cost_units=10
-        )["reason"], "NO_UNRESERVED_ATTEMPT")
-
-    def test_cannot_reserve_before_attempt(self):
-        self.assertEqual(self.budget.reserve_subtask(
-            KEY, depth=1, estimated_cost_units=10
-        )["reason"], "UNKNOWN_INCIDENT")
-
-    def test_depth_limit_denies_subtask(self):
-        self.budget.admit(KEY, "First")
-        denied = self.budget.reserve_subtask(
-            KEY, depth=3, estimated_cost_units=10
-        )
-        self.assertFalse(denied["reserved"])
-
-    def test_terminal_budget_denies_reservation(self):
-        self.budget.admit(KEY, "First")
-        self.budget.close(KEY, "ESCALATED")
-        denied = self.budget.reserve_subtask(
-            KEY, depth=1, estimated_cost_units=10
-        )
-        self.assertEqual(denied["reason"], "BUDGET_CLOSED")
-
-    def test_unknown_incident_denies_reservation(self):
-        denied = self.budget.reserve_subtask(
-            KEY, depth=1, estimated_cost_units=10
-        )
-        self.assertEqual(denied["reason"], "UNKNOWN_INCIDENT")
+        with self.assertRaisesRegex(
+            PermissionError, "UNSAFE_LEGACY_RESERVATION_DISABLED"
+        ):
+            restarted.reserve_subtask(
+                KEY, depth=1, estimated_cost_units=10
+            )
 
     def test_strict_limits(self):
         with self.assertRaisesRegex(ValueError, "INVALID_MAX_ATTEMPTS"):
