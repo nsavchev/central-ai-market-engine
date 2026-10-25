@@ -1,0 +1,43 @@
+name: A04 guarded Alembic harness
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  alembic-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      A04_TEST_POSTGRES_URL: postgresql+psycopg://test:local-test-only@127.0.0.1:5432/test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt alembic
+      - run: python -m alembic -c alembic.ini history
+      - name: Verify guarded revision cannot upgrade
+        run: |
+          if python -m alembic -c alembic.ini upgrade head >guard.log 2>&1; then
+            echo "FAIL: Draft migration unexpectedly executable"
+            exit 1
+          fi
+          grep -q 'DRAFT_MIGRATION_NOT_APPROVED' guard.log
+      - run: python -m pytest -q tests/test_a04_shadow_schema_rehearsal.py
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://test:local-test-only@127.0.0.1:5432/test
