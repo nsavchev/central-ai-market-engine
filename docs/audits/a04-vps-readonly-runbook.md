@@ -25,3 +25,45 @@ role with no CREATE, INSERT, UPDATE, DELETE, ALTER or DROP rights.
 Safety limitations: no DDL/DML, no migrations, no application restart,
 no manual DB writes or real orders. If an accurate role/schema cannot be
 established, STOP. Do not guess which database is production.
+
+## SuperHosting VPS / Docker Compose — one-shot metadata check
+
+The previously observed deployment path is `/opt/central-ai/release-v1/market_engine_v0_9`
+with Compose service `db`, PostgreSQL user `market` and database `market`.
+**Verify these details locally before running**; they are historical observations,
+not a current connection validation.
+
+From the existing VPS SSH session, run this read-only query (no passwords
+included; do not paste credentials). This command does not change schemas:
+
+```sh
+cd /opt/central-ai/release-v1/market_engine_v0_9
+docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U market -d market <<'SQL'
+BEGIN READ ONLY;
+SELECT current_database() AS db, current_schema() AS schema,
+       current_user AS db_role, current_setting('server_version') AS pg_version;
+SELECT to_regclass('public.alembic_version') AS alembic_version_table;
+SELECT table_name, column_name, data_type, numeric_precision, numeric_scale
+FROM information_schema.columns
+WHERE table_schema='public'
+  AND table_name IN ('paper_accounts','paper_trades',
+                     'paper_request_keys','paper_write_fence')
+ORDER BY table_name, ordinal_position;
+ROLLBACK;
+SQL
+```
+
+If `alembic_version_table` returned `public.alembic_version`, run this
+second command to read the existing migration revision; otherwise skip it:
+
+```sh
+docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U market -d market \
+  -c "BEGIN READ ONLY; SELECT version_num FROM public.alembic_version; ROLLBACK;"
+```
+
+**Do not execute Alembic upgrade, migrate, schema changes, or service restarts.**
+The application user `market` may have write permissions; the explicit
+`BEGIN READ ONLY` protects these SELECT statements but is not a replacement
+for a dedicated read-only role. Verify that this is the intended environment
+and database first. Share only the table/column/version output, redacting
+identifying details as necessary.
