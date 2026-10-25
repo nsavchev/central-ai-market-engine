@@ -18,8 +18,8 @@ def report(engine):
                     result=con.execute(text(f"""
                         SELECT COUNT(*) AS total,
                           COUNT(*) FILTER(WHERE {col} IS NULL) AS missing,
-                          COUNT(*) FILTER(WHERE {col} IS NOT NULL AND NOT isfinite({col})) AS nonfinite,
-                          COUNT(*) FILTER(WHERE isfinite({col})
+                          COUNT(*) FILTER(WHERE {col} IS NOT NULL AND {col}::text IN ('NaN','Infinity','-Infinity')) AS nonfinite,
+                          COUNT(*) FILTER(WHERE {col}::text NOT IN ('NaN','Infinity','-Infinity')
                             AND {col}::numeric <> round({col}::numeric, {scale})) AS precision_loss
                         FROM {table}
                     """)).one()
