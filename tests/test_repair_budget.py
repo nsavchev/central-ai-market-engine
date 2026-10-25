@@ -52,6 +52,39 @@ class RepairBudgetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "INVALID_FINGERPRINT"):
             self.budget.admit("not-a-hash")
 
+    def test_cost_reservation_is_durable(self):
+        self.budget.admit(KEY, "First")
+        first = self.budget.reserve_subtask(
+            KEY, depth=1, estimated_cost_units=60
+        )
+        self.assertTrue(first["reserved"])
+        restarted = RepairBudget(self.path)
+        denied = restarted.reserve_subtask(
+            KEY, depth=1, estimated_cost_units=50
+        )
+        self.assertEqual(denied["reason"], "COST_EXCEEDED")
+
+    def test_depth_limit_denies_subtask(self):
+        self.budget.admit(KEY, "First")
+        denied = self.budget.reserve_subtask(
+            KEY, depth=3, estimated_cost_units=10
+        )
+        self.assertFalse(denied["reserved"])
+
+    def test_terminal_budget_denies_reservation(self):
+        self.budget.admit(KEY, "First")
+        self.budget.close(KEY, "ESCALATED")
+        denied = self.budget.reserve_subtask(
+            KEY, depth=1, estimated_cost_units=10
+        )
+        self.assertEqual(denied["reason"], "BUDGET_CLOSED")
+
+    def test_unknown_incident_denies_reservation(self):
+        denied = self.budget.reserve_subtask(
+            KEY, depth=1, estimated_cost_units=10
+        )
+        self.assertEqual(denied["reason"], "UNKNOWN_INCIDENT")
+
     def test_strict_limits(self):
         with self.assertRaisesRegex(ValueError, "INVALID_MAX_ATTEMPTS"):
             RepairBudget(self.path, max_attempts=100)
