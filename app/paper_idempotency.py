@@ -13,9 +13,9 @@ from app.paper_atomic_service import precise, CENT, SHARE, record_paper_fill
 
 def request_fingerprint(*, account_id, symbol, side, quantity, price, fee, generation):
     data={"account":account_id,"symbol":symbol,"side":side,
-          "quantity":str(precise(quantity,SHARE,"INVALID_QUANTITY")),
-          "price":str(precise(price,CENT,"INVALID_PRICE")),
-          "fee":str(precise(fee,CENT,"INVALID_FEE")),"generation":generation}
+          "quantity":format(precise(quantity,SHARE,"INVALID_QUANTITY").quantize(SHARE),"f"),
+          "price":format(precise(price,CENT,"INVALID_PRICE").quantize(CENT),"f"),
+          "fee":format(precise(fee,CENT,"INVALID_FEE").quantize(CENT),"f"),"generation":generation}
     return hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
 def idempotent_fill(engine, *, request_key, account_id, symbol, side, quantity, price, fee, expected_generation):
