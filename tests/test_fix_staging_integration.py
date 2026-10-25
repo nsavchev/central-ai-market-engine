@@ -63,7 +63,7 @@ class FixStagingIntegrationTests(unittest.TestCase):
         self.assertEqual(self.stage_child()["reason"], "PARENT_LEASE_INVALID")
         self.assertEqual(self.counts(), (0, 0, 0, (0, 0)))
 
-    def test_leased_task_with_retry_exhausted_is_still_allowed_currently(self):
+    def test_retry_exhausted_parent_denied(self):
         with sqlite3.connect(self.path) as db:
             db.execute("UPDATE task_queue SET retry_exhausted=1 WHERE task_id='root'")
         self.assertTrue(self.stage_child()["staged"])
