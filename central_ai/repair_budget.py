@@ -90,7 +90,7 @@ class RepairBudget:
         if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
             raise ValueError("INVALID_FINGERPRINT")
         for value, limit, name in (
-            (depth, 2, "INVALID_DEPTH"),
+            (depth, 2147483647, "INVALID_DEPTH"),
             (max_depth, 2, "INVALID_MAX_DEPTH"),
             (estimated_cost_units, 100, "INVALID_COST"),
             (max_cost_units, 100, "INVALID_MAX_COST"),
