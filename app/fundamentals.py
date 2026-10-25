@@ -9,6 +9,10 @@ class Financials(BaseModel):
     period_type: Literal['FY','TTM']
     currency: str = Field(pattern=r'^[A-Z]{3}$')
     source: str = 'manual'
+    units: Literal['ones','thousands','millions','billions'] | None = None
+    accounting_standard: Literal['US_GAAP','IFRS','OTHER'] | None = None
+    retrieved_at: str | None = None
+    total_liabilities: Decimal | None = None
     revenue: Decimal | None = None
     net_income: Decimal | None = None
     operating_income: Decimal | None = None

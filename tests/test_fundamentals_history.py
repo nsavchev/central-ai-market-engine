@@ -13,7 +13,7 @@ def db():
     eng.dispose()
 
 def sample(year, revenue=100):
-    return Financials(symbol='DEMO',period_end=f'{year}-12-31',period_type='FY',currency='USD',source='manual',revenue=revenue,net_income=10,operating_income=15,invested_capital=60,income_tax=2,pretax_income=12,total_debt=20,cash=5,shareholders_equity=50,operating_cash_flow=20,capital_expenditure=5)
+    return Financials(symbol='DEMO',period_end=f'{year}-12-31',period_type='FY',currency='USD',source='manual',units='ones',accounting_standard='US_GAAP',retrieved_at='2026-10-25T00:00:00Z',revenue=revenue,net_income=10,operating_income=15,invested_capital=60,income_tax=2,pretax_income=12,total_debt=20,cash=5,shareholders_equity=50,operating_cash_flow=20,capital_expenditure=5)
 
 def test_cagr():
     assert annual_cagr(100,121,2)==10

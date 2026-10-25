@@ -8,10 +8,15 @@ from sqlalchemy.orm import Session
 from .db import FinancialSnapshot
 from .fundamentals import Financials, calculate
 from .sources import validate_source
+from .data_quality import check_snapshot
 
 
 def store_snapshot(db: Session, item: Financials) -> FinancialSnapshot:
     validate_source(item.source, automated=False)
+    report = check_snapshot(item.model_dump(mode='json'))
+    if report['status'] == 'blocked':
+        codes = ','.join(sorted({i['code'] for i in report['issues'] if i['severity'] == 'block'}))
+        raise ValueError('FINANCIAL_QUALITY_BLOCKED:' + codes)
     period = date.fromisoformat(item.period_end)
     stmt = select(FinancialSnapshot).where(
         FinancialSnapshot.symbol == item.symbol.upper(),
