@@ -25,9 +25,28 @@ def idempotent_fill(engine, *, request_key, account_id, symbol, side, quantity, 
         raise ValueError("POSTGRES_REQUIRED")
     fingerprint=request_fingerprint(account_id=account_id,symbol=symbol,side=side,
         quantity=quantity,price=price,fee=fee,generation=expected_generation)
-    # Advisory lock is scoped to the session transaction; serializes same-key
-    # requests before the nested record_paper_fill transaction begins.
-    # All key reservation + ledger mutations MUST share the SAME DB transaction.
-    # The existing record_paper_fill opens its own transaction; therefore
-    # this adapter fails closed until it can accept a connection.
-    raise RuntimeError("ATOMIC_IDEMPOTENCY_CONNECTION_REQUIRED")
+    with engine.begin() as con:
+        inserted=con.execute(text("""
+            INSERT INTO paper_request_keys(account_id,request_key,fingerprint,result)
+            VALUES (:account,:key,:fingerprint,NULL)
+            ON CONFLICT(account_id,request_key) DO NOTHING
+            RETURNING request_key
+        """),{"account":account_id,"key":request_key,"fingerprint":fingerprint}).first()
+        if inserted is None:
+            previous=con.execute(text("""
+                SELECT fingerprint,result FROM paper_request_keys
+                WHERE account_id=:account AND request_key=:key FOR UPDATE
+            """),{"account":account_id,"key":request_key}).first()
+            if previous is None or previous.fingerprint!=fingerprint:
+                raise ValueError("IDEMPOTENCY_KEY_CONFLICT")
+            if previous.result is None:
+                raise RuntimeError("INCOMPLETE_IDEMPOTENCY_RECORD")
+            return previous.result
+        result=record_paper_fill(engine,account_id=account_id,symbol=symbol,side=side,
+            quantity=quantity,price=price,fee=fee,
+            expected_generation=expected_generation,connection=con)
+        con.execute(text("""
+            UPDATE paper_request_keys SET result=CAST(:result AS jsonb)
+            WHERE account_id=:account AND request_key=:key
+        """),{"result":json.dumps(result),"account":account_id,"key":request_key})
+        return result
