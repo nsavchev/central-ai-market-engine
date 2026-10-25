@@ -1,7 +1,8 @@
 from datetime import date
+import math
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .config import settings
@@ -74,6 +75,21 @@ class TradeRequest(BaseModel):
     quantity:float=Field(gt=0)
     price:float=Field(gt=0,description='Explicit hypothetical fill price, not a live quote')
     fee:float=Field(default=0,ge=0)
+
+    @model_validator(mode='after')
+    def validate_paper_fill(self):
+        # Reject NaN/infinity and excessive input precision before touching cash.
+        for key in ('quantity', 'price', 'fee'):
+            value = getattr(self, key)
+            if not math.isfinite(value):
+                raise ValueError('NON_FINITE_PAPER_FILL')
+        if self.quantity > 1_000_000 or self.price > 1_000_000 or self.fee > 1_000_000:
+            raise ValueError('PAPER_FILL_LIMIT_EXCEEDED')
+        if round(self.price, 2) != self.price or round(self.fee, 2) != self.fee:
+            raise ValueError('PAPER_MONEY_REQUIRES_CENTS')
+        if round(self.quantity, 6) != self.quantity:
+            raise ValueError('PAPER_QUANTITY_PRECISION_EXCEEDED')
+        return self
 
 @app.post('/paper/trades',dependencies=[Depends(auth)])
 def paper_trade(t:TradeRequest):
