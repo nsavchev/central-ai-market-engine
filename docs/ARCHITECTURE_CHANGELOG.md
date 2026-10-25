@@ -113,6 +113,15 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **A11.15.10 follow-up review (2026-10-25):** CI runs 40161014266 and 40161014290 succeeded (13/13 focused budget and 46/46 full unittest). Review found a boundary bug: after the third attempt was admitted, `reserve_subtask` incorrectly rejected its first reservation because `attempts >= max_attempts`. Commit `bbe5e45` fixes this by relying on `reservations >= attempts` to prevent a fourth reservation; commit `f5117a0` tests that three admitted attempts may each reserve once and a fourth attempt is denied. **New CI pending.** Parent-child lineage remains unenforced: a caller can still pass arbitrary fingerprint/depth and use a separate budget. Do not enable autonomous repair until lineage and executor permission checks are atomic and verified. No VPS changes.
 
+### CHG-006 — A11.15.10 canonical parent-child repair lineage (2026-10-25)
+**CI baseline:** Commit 14bc34f passed all six workflows; repair budget 14/14, full unittest 47/47 and planner 6/6.
+**Reason:** Without durable parent-child ancestry, independently keyed subtasks can evade shared depth/attempt budgets.
+**Decision:** Add `RepairLineage` with immutable task-to-parent and canonical root fingerprint mapping in SQLite. Reject unknown parents, mismatched root fingerprints, reparenting, cycles by construction and depth above two. Restart-safe and idempotent. Add eight focused tests and a CI workflow.
+**Files:** `central_ai/repair_lineage.py`, `tests/test_repair_lineage.py`, `.github/workflows/repair-lineage-tests.yml`.
+**Validation:** CI pending. No tasks are created or executed by this module.
+**Known blocker:** Ledger and RepairBudget are separate transactions and the budget API still accepts a caller-supplied fingerprint and depth. An executor must atomically resolve lineage and reserve the canonical root budget, prevent duplicate reservations by task ID, and check task permissions before any autonomous repair. No merge/deploy approval implied.
+**Rollback:** Revert commits 54f1e9c, 6efe07e, 8c0fe7f on the feature branch; no VPS changes.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
