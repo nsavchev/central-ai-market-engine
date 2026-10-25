@@ -107,6 +107,8 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **CHG-005 budget extension (2026-10-25):** GitHub Actions run 40158861381 passed 7/7 focused budget tests and run 40158861412 passed 40/40 full unittest tests plus 6/6 planner tests. Added `reserve_subtask` (`ed1481a`) with durable atomic cumulative integer cost reservations (default maximum 100 accounting units), depth <= 2, terminal/time/attempt guards, and schema migration for existing SQLite tables. Added four tests (`cff519d`); new CI pending. Reason: repeated subtasks must not reset cost/depth controls after restart. These units are not actual money, and the budget does not enforce provider/API spend or recursive lineage yet. Reservations are non-refundable and no code is executed. Rollback: revert feature commits; migration adds a non-destructive column.
 
+**CHG-005 CI defect correction (2026-10-25):** Runs 40158970050 and 40158970033 failed because a depth=3 request raised `INVALID_DEPTH` rather than returning a fail-closed `LIMIT_EXCEEDED` denial; the other workflow checks passed. Commit `4ad7cd6` distinguishes malformed/absurd depth inputs from a valid integer exceeding the configured maximum. Hard max_depth remains 2; no execution or deployment permission changes. CI recheck pending. Reason: callers need deterministic denial semantics for exceeded policy budgets without weakening the guard. Rollback: revert correction commit.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
