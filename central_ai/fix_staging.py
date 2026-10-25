@@ -71,6 +71,14 @@ class FixStaging:
                 "SELECT 1 FROM task_queue WHERE task_id=?", (child_task_id,)
             ).fetchone():
                 return {"staged": False, "reason": "CHILD_ALREADY_EXISTS"}
+            incident = db.execute("""SELECT source_task_id,status,approved,deployment_allowed
+                FROM fix_incidents WHERE fingerprint=?""", (root,)).fetchone()
+            root_task = db.execute("""SELECT task_id FROM repair_lineage
+                WHERE root_fingerprint=? AND parent_task_id IS NULL AND depth=0""",
+                (root,)).fetchall()
+            if (incident is None or incident[1:] != ("OPEN", 0, 0)
+                    or len(root_task) != 1 or incident[0] != root_task[0][0]):
+                return {"staged": False, "reason": "INCIDENT_NOT_AUTHORIZED"}
             budget = db.execute("""SELECT status,attempts,started_at,
                 reserved_cost_units,reservations
                 FROM repair_budgets WHERE fingerprint=?""", (root,)).fetchone()
