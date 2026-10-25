@@ -52,7 +52,8 @@ class FixStaging:
             owned = db.execute("""SELECT 1 FROM task_queue
                 WHERE task_id=? AND owner=? AND lease_token=?
                 AND status='leased' AND lease_until > ?
-                AND approved=0 AND deployment_allowed=0""",
+                AND approved=0 AND deployment_allowed=0
+                AND retry_exhausted=0 AND attempt_count < 3""",
                 (parent_task_id, agent, lease_token, now)).fetchone()
             if owned is None:
                 return {"staged": False, "reason": "PARENT_LEASE_INVALID"}
