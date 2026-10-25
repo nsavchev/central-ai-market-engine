@@ -17,7 +17,7 @@ def _guard():
     if db!="test":
         raise RuntimeError("REFUSE_NON_TEST_DATABASE")
     for name in ("paper_accounts","paper_trades"):
-        if bind.exec_driver_sql("SELECT to_regclass(:name)",{"name":"public."+name}).scalar() is None:
+        if bind.execute(sa.text("SELECT to_regclass(:name)"),{"name":"public."+name}).scalar() is None:
             raise RuntimeError("MISSING_LEGACY_TABLE:"+name)
     if bind.exec_driver_sql("SELECT EXISTS(SELECT 1 FROM public.paper_accounts)").scalar() or bind.exec_driver_sql("SELECT EXISTS(SELECT 1 FROM public.paper_trades)").scalar():
         raise RuntimeError("PAPER_TABLES_NOT_EMPTY")
