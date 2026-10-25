@@ -27,6 +27,7 @@ class RepairBudget:
                         CHECK(status IN ('OPEN','VERIFIED','ESCALATED','CANCELLED')),
                     last_failure_code TEXT,
                     reserved_cost_units INTEGER NOT NULL DEFAULT 0 CHECK(reserved_cost_units >= 0),
+                    reservations INTEGER NOT NULL DEFAULT 0 CHECK(reservations >= 0),
                     approved INTEGER NOT NULL DEFAULT 0 CHECK(approved=0),
                     deployment_allowed INTEGER NOT NULL DEFAULT 0
                         CHECK(deployment_allowed=0)
@@ -37,6 +38,11 @@ class RepairBudget:
                 con.execute("""
                     ALTER TABLE repair_budgets ADD COLUMN
                     reserved_cost_units INTEGER NOT NULL DEFAULT 0
+                """)
+            if "reservations" not in columns:
+                con.execute("""
+                    ALTER TABLE repair_budgets ADD COLUMN
+                    reservations INTEGER NOT NULL DEFAULT 0
                 """)
 
     def admit(self, fingerprint, failure_code=None):
@@ -102,20 +108,23 @@ class RepairBudget:
         with sqlite3.connect(self.db_path, timeout=10) as con:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute("""
-                SELECT status, attempts, started_at, reserved_cost_units
+                SELECT status, attempts, started_at, reserved_cost_units, reservations
                 FROM repair_budgets WHERE fingerprint=?
             """, (fingerprint,)).fetchone()
             if row is None:
                 return {"reserved": False, "reason": "UNKNOWN_INCIDENT"}
-            status, attempts, started, spent = row
+            status, attempts, started, spent, reservations = row
             if (status != "OPEN" or attempts >= self.max_attempts
                     or int(time.time()) - started >= self.window_seconds):
                 return {"reserved": False, "reason": "BUDGET_CLOSED"}
+            if attempts == 0 or reservations >= attempts:
+                return {"reserved": False, "reason": "NO_UNRESERVED_ATTEMPT"}
             if spent + estimated_cost_units > max_cost_units:
                 return {"reserved": False, "reason": "COST_EXCEEDED"}
             con.execute("""
                 UPDATE repair_budgets
-                SET reserved_cost_units=reserved_cost_units+?
+                SET reserved_cost_units=reserved_cost_units+?,
+                    reservations=reservations+1
                 WHERE fingerprint=? AND status='OPEN'
             """, (estimated_cost_units, fingerprint))
             return {"reserved": True, "reserved_cost_units": spent + estimated_cost_units}
