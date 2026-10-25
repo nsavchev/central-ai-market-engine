@@ -59,10 +59,30 @@ class RepairBudgetTests(unittest.TestCase):
         )
         self.assertTrue(first["reserved"])
         restarted = RepairBudget(self.path)
+        restarted.admit(KEY, "Second")
         denied = restarted.reserve_subtask(
             KEY, depth=1, estimated_cost_units=50
         )
         self.assertEqual(denied["reason"], "COST_EXCEEDED")
+
+    def test_one_reservation_per_admitted_attempt(self):
+        self.budget.admit(KEY, "First")
+        self.assertTrue(self.budget.reserve_subtask(
+            KEY, depth=1, estimated_cost_units=10
+        )["reserved"])
+        denied = self.budget.reserve_subtask(
+            KEY, depth=1, estimated_cost_units=10
+        )
+        self.assertEqual(denied["reason"], "NO_UNRESERVED_ATTEMPT")
+        restarted = RepairBudget(self.path)
+        self.assertEqual(restarted.reserve_subtask(
+            KEY, depth=1, estimated_cost_units=10
+        )["reason"], "NO_UNRESERVED_ATTEMPT")
+
+    def test_cannot_reserve_before_attempt(self):
+        self.assertEqual(self.budget.reserve_subtask(
+            KEY, depth=1, estimated_cost_units=10
+        )["reason"], "UNKNOWN_INCIDENT")
 
     def test_depth_limit_denies_subtask(self):
         self.budget.admit(KEY, "First")
