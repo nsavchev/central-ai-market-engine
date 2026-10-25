@@ -114,7 +114,7 @@ class RepairBudget:
             if row is None:
                 return {"reserved": False, "reason": "UNKNOWN_INCIDENT"}
             status, attempts, started, spent, reservations = row
-            if (status != "OPEN" or attempts >= self.max_attempts
+            if (status != "OPEN"
                     or int(time.time()) - started >= self.window_seconds):
                 return {"reserved": False, "reason": "BUDGET_CLOSED"}
             if attempts == 0 or reservations >= attempts:
