@@ -96,6 +96,15 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **CHG-004 CI diagnosis and fix (2026-10-24):** Initial full unittest discovery failed in run 40125522319: 41 tests discovered, 8 import errors due to missing `pytest` and `fastapi` in GitHub runner. Verified both dependencies are declared in repository `requirements.txt`. Changed `.github/workflows/regression-gates.yml` (`1ebaa10`) to install declared dependencies before running targeted and full discovery. Reason: test environment must match project requirements; no test exclusions or bypasses. Re-run pending; remaining failures must be investigated rather than suppressed. Rollback: revert workflow commit.
 
+### CHG-005 — A11.15.9 persistent bounded repair budget (2026-10-25)
+**Evidence:** A11.15.8 full unittest CI run 40128621117 succeeded: 6/6 planner tests and 33/33 discovered tests; four other workflows succeeded.
+**Reason:** Repeated repair attempts must have durable limits across restarts and avoid loops.
+**Decision:** Introduce `RepairBudget` with SQLite transactional attempt admission, hard cap 3 attempts, 900-second maximum window, escalation on repeated identical failure code, terminal states, and fail-closed validation. Metadata-only: does not execute repairs or deploy.
+**Files:** `central_ai/repair_budget.py`, `tests/test_repair_budget.py`, `.github/workflows/repair-budget-tests.yml`.
+**Validation:** Seven focused tests added; CI pending.
+**Limitations:** Not yet integrated into an actual repair executor. Window is measured from first attempt and does not reset automatically. The failure-code comparison is a coarse heuristic. No explicit aggregate cost budget or subtask-depth limit yet; those must be implemented before autonomous execution. No live trading or VPS changes.
+**Rollback:** Revert commits `97cb5a0`, `8667241`, `39d92ad` in feature branch.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
