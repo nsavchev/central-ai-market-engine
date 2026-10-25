@@ -95,46 +95,12 @@ class RepairBudget:
 
     def reserve_subtask(self, fingerprint, *, depth, estimated_cost_units,
                         max_depth=2, max_cost_units=100):
-        """Atomically reserve a bounded repair subtask; no execution.
+        """Deprecated unsafe interface: fail closed for every caller.
 
-        Units are caller-defined integer accounting units, not a currency.
-        Reservations are never refunded automatically (fail closed).
+        Caller-provided root fingerprints and depths cannot prove lineage.
+        Use reserve_lineage_task(task_id=...) with shared lineage/budget DB.
         """
-        if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
-            raise ValueError("INVALID_FINGERPRINT")
-        for value, limit, name in (
-            (depth, 2147483647, "INVALID_DEPTH"),
-            (max_depth, 2, "INVALID_MAX_DEPTH"),
-            (estimated_cost_units, 100, "INVALID_COST"),
-            (max_cost_units, 100, "INVALID_MAX_COST"),
-        ):
-            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= limit:
-                raise ValueError(name)
-        if depth > max_depth or estimated_cost_units == 0:
-            return {"reserved": False, "reason": "LIMIT_EXCEEDED"}
-        with sqlite3.connect(self.db_path, timeout=10) as con:
-            con.execute("BEGIN IMMEDIATE")
-            row = con.execute("""
-                SELECT status, attempts, started_at, reserved_cost_units, reservations
-                FROM repair_budgets WHERE fingerprint=?
-            """, (fingerprint,)).fetchone()
-            if row is None:
-                return {"reserved": False, "reason": "UNKNOWN_INCIDENT"}
-            status, attempts, started, spent, reservations = row
-            if (status != "OPEN"
-                    or int(time.time()) - started >= self.window_seconds):
-                return {"reserved": False, "reason": "BUDGET_CLOSED"}
-            if attempts == 0 or reservations >= attempts:
-                return {"reserved": False, "reason": "NO_UNRESERVED_ATTEMPT"}
-            if spent + estimated_cost_units > max_cost_units:
-                return {"reserved": False, "reason": "COST_EXCEEDED"}
-            con.execute("""
-                UPDATE repair_budgets
-                SET reserved_cost_units=reserved_cost_units+?,
-                    reservations=reservations+1
-                WHERE fingerprint=? AND status='OPEN'
-            """, (estimated_cost_units, fingerprint))
-            return {"reserved": True, "reserved_cost_units": spent + estimated_cost_units}
+        raise PermissionError("UNSAFE_LEGACY_RESERVATION_DISABLED")
 
     def reserve_lineage_task(self, task_id, *, estimated_cost_units,
                              max_cost_units=100):
