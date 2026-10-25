@@ -65,6 +65,18 @@ class RepairBudgetTests(unittest.TestCase):
         )
         self.assertEqual(denied["reason"], "COST_EXCEEDED")
 
+    def test_third_admitted_attempt_can_reserve_final_subtask(self):
+        for i in range(3):
+            self.assertTrue(self.budget.admit(KEY, f"Failure{i}")["admitted"])
+            reservation = self.budget.reserve_subtask(
+                KEY, depth=1, estimated_cost_units=10
+            )
+            self.assertTrue(reservation["reserved"])
+        self.assertEqual(self.budget.reserve_subtask(
+            KEY, depth=1, estimated_cost_units=10
+        )["reason"], "NO_UNRESERVED_ATTEMPT")
+        self.assertFalse(self.budget.admit(KEY, "Failure3")["admitted"])
+
     def test_one_reservation_per_admitted_attempt(self):
         self.budget.admit(KEY, "First")
         self.assertTrue(self.budget.reserve_subtask(
