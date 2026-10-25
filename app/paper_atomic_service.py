@@ -5,6 +5,7 @@ Not wired to the HTTP endpoint. Never places broker orders or creates schemas.
 """
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 from sqlalchemy import text
+from .paper_pg_fence import check_fence
 
 CENT=Decimal("0.01")
 SHARE=Decimal("0.000001")
@@ -20,7 +21,7 @@ def precise(value, scale, label):
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise ValueError(label) from None
 
-def record_paper_fill(engine, *, account_id, symbol, side, quantity, price, fee):
+def record_paper_fill(engine, *, account_id, symbol, side, quantity, price, fee, expected_generation):
     if engine.dialect.name!="postgresql":
         raise ValueError("POSTGRES_REQUIRED")
     if type(account_id) is not int or account_id < 1:
@@ -34,7 +35,10 @@ def record_paper_fill(engine, *, account_id, symbol, side, quantity, price, fee)
     charge=precise(fee,CENT,"INVALID_FEE")
     if qty<=0 or px<=0 or charge<0:
         raise ValueError("INVALID_FILL")
+    if type(expected_generation) is not int or expected_generation < 0:
+        raise ValueError('INVALID_GENERATION')
     with engine.begin() as con:
+        check_fence(con, expected_generation)
         columns=con.execute(text("""
             SELECT table_name,column_name,data_type FROM information_schema.columns
             WHERE table_schema=current_schema()
