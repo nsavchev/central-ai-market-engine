@@ -109,6 +109,8 @@ For every change record: ID/date, problem and evidence, decision and reason, aff
 
 **CHG-005 CI defect correction (2026-10-25):** Runs 40158970050 and 40158970033 failed because a depth=3 request raised `INVALID_DEPTH` rather than returning a fail-closed `LIMIT_EXCEEDED` denial; the other workflow checks passed. Commit `4ad7cd6` distinguishes malformed/absurd depth inputs from a valid integer exceeding the configured maximum. Hard max_depth remains 2; no execution or deployment permission changes. CI recheck pending. Reason: callers need deterministic denial semantics for exceeded policy budgets without weakening the guard. Rollback: revert correction commit.
 
+**A11.15.10 preliminary audit finding (2026-10-25):** All six workflows on commit `026946b` passed, including 11/11 repair budget and 44/44 full unittest tests. Code review identified a safety gap: `reserve_subtask` previously allowed unlimited reservations up to the cost cap without requiring a new admitted repair attempt. Fixed in `0a60d97` by persisting reservation count and enforcing at most one reservation per admitted attempt, including across restarts; schema migration adds `reservations`. Added tests in `1a1c63e` and adjusted cost test to admit a second attempt before reserving again. **Pending CI.** Further gaps remain: no verified parent-child lineage, no actual provider spend tracking, and no automatic repair executor. These are merge blockers for autonomous execution. Rollback: revert commits in draft branch; no VPS changes.
+
 ## Planned next records
 - CHG-002: A11.15.6 failure fingerprint and FIX task deduplication.
 - CHG-003: A11.15.7 isolated repair and rollback.
