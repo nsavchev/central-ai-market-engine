@@ -9,8 +9,9 @@ from central_ai.task_queue import TaskQueue
 from central_ai.repair_lineage import RepairLineage
 from central_ai.repair_budget import RepairBudget
 from central_ai.fix_staging import FixStaging
+from central_ai.fix_incident_registry import FixIncidentRegistry, fingerprint
 
-ROOT = hashlib.sha256(b"a11-15-13").hexdigest()
+ROOT = fingerprint("DeveloperWorkerCoordinator", "RuntimeError", "run_once")
 
 
 class FixStagingIntegrationTests(unittest.TestCase):
@@ -24,6 +25,7 @@ class FixStagingIntegrationTests(unittest.TestCase):
         self.stage = FixStaging(self.path)
         self.queue.enqueue("root")
         self.lineage.register_root("root", ROOT)
+        FixIncidentRegistry(self.path).register("root", "DeveloperWorkerCoordinator", "RuntimeError", "run_once")
         self.token = self.queue.acquire("root", "worker")
         self.budget.admit(ROOT, "First")
 
