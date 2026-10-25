@@ -33,6 +33,13 @@ class RepairBudget:
                         CHECK(deployment_allowed=0)
                 )
             """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS repair_task_reservations (
+                    task_id TEXT PRIMARY KEY,
+                    root_fingerprint TEXT NOT NULL,
+                    cost_units INTEGER NOT NULL CHECK(cost_units BETWEEN 1 AND 100)
+                )
+            """)
             columns = {row[1] for row in con.execute("PRAGMA table_info(repair_budgets)")}
             if "reserved_cost_units" not in columns:
                 con.execute("""
@@ -128,6 +135,61 @@ class RepairBudget:
                 WHERE fingerprint=? AND status='OPEN'
             """, (estimated_cost_units, fingerprint))
             return {"reserved": True, "reserved_cost_units": spent + estimated_cost_units}
+
+    def reserve_lineage_task(self, task_id, *, estimated_cost_units,
+                             max_cost_units=100):
+        """Atomically reserve one canonical-root budget for a registered child.
+
+        Requires RepairLineage and RepairBudget tables in the SAME SQLite DB.
+        A child is never executable by this method; this is metadata admission.
+        """
+        if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", task_id):
+            raise ValueError("INVALID_TASK")
+        if (not isinstance(estimated_cost_units, int) or isinstance(estimated_cost_units, bool)
+                or not 1 <= estimated_cost_units <= 100):
+            raise ValueError("INVALID_COST")
+        if (not isinstance(max_cost_units, int) or isinstance(max_cost_units, bool)
+                or not 1 <= max_cost_units <= 100):
+            raise ValueError("INVALID_MAX_COST")
+        with sqlite3.connect(self.db_path, timeout=10) as con:
+            con.execute("BEGIN IMMEDIATE")
+            lineage = con.execute("""
+                SELECT parent_task_id, root_fingerprint, depth
+                FROM repair_lineage WHERE task_id=?
+            """, (task_id,)).fetchone()
+            if lineage is None or lineage[0] is None:
+                return {"reserved": False, "reason": "UNKNOWN_CHILD"}
+            _, root, depth = lineage
+            if depth > 2:
+                return {"reserved": False, "reason": "DEPTH_EXCEEDED"}
+            if con.execute(
+                "SELECT 1 FROM repair_task_reservations WHERE task_id=?", (task_id,)
+            ).fetchone():
+                return {"reserved": False, "reason": "ALREADY_RESERVED"}
+            budget = con.execute("""
+                SELECT status, attempts, started_at, reserved_cost_units, reservations
+                FROM repair_budgets WHERE fingerprint=?
+            """, (root,)).fetchone()
+            if budget is None:
+                return {"reserved": False, "reason": "UNKNOWN_BUDGET"}
+            status, attempts, started, spent, reservations = budget
+            if status != "OPEN" or int(time.time()) - started >= self.window_seconds:
+                return {"reserved": False, "reason": "BUDGET_CLOSED"}
+            if attempts == 0 or reservations >= attempts:
+                return {"reserved": False, "reason": "NO_UNRESERVED_ATTEMPT"}
+            if spent + estimated_cost_units > max_cost_units:
+                return {"reserved": False, "reason": "COST_EXCEEDED"}
+            con.execute("""
+                INSERT INTO repair_task_reservations
+                    (task_id, root_fingerprint, cost_units)
+                VALUES (?, ?, ?)
+            """, (task_id, root, estimated_cost_units))
+            con.execute("""
+                UPDATE repair_budgets SET reserved_cost_units=reserved_cost_units+?,
+                    reservations=reservations+1 WHERE fingerprint=? AND status='OPEN'
+            """, (estimated_cost_units, root))
+            return {"reserved": True, "root_fingerprint": root, "depth": depth,
+                    "reserved_cost_units": spent + estimated_cost_units}
 
     def close(self, fingerprint, status):
         if status not in ("VERIFIED", "ESCALATED", "CANCELLED"):
