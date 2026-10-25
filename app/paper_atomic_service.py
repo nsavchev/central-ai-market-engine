@@ -4,6 +4,7 @@ Requires pre-migrated NUMERIC columns and a pre-existing paper account.
 Not wired to the HTTP endpoint. Never places broker orders or creates schemas.
 """
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
+from contextlib import nullcontext
 from sqlalchemy import text
 from .paper_pg_fence import check_fence
 
@@ -21,7 +22,7 @@ def precise(value, scale, label):
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise ValueError(label) from None
 
-def record_paper_fill(engine, *, account_id, symbol, side, quantity, price, fee, expected_generation):
+def record_paper_fill(engine, *, account_id, symbol, side, quantity, price, fee, expected_generation, connection=None):
     if engine.dialect.name!="postgresql":
         raise ValueError("POSTGRES_REQUIRED")
     if type(account_id) is not int or account_id < 1:
@@ -37,7 +38,9 @@ def record_paper_fill(engine, *, account_id, symbol, side, quantity, price, fee,
         raise ValueError("INVALID_FILL")
     if type(expected_generation) is not int or expected_generation < 0:
         raise ValueError('INVALID_GENERATION')
-    with engine.begin() as con:
+    if connection is not None and (connection.engine is not engine or not connection.in_transaction()):
+        raise ValueError('INVALID_TRANSACTION_CONNECTION')
+    with (nullcontext(connection) if connection is not None else engine.begin()) as con:
         check_fence(con, expected_generation)
         columns=con.execute(text("""
             SELECT table_name,column_name,data_type FROM information_schema.columns
