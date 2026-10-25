@@ -36,3 +36,32 @@ def fill(body:Fill,x_api_token:str|None=Header(default=None)):
         raise HTTPException(422,"PAPER_FILL_REJECTED") from None
     finally:
         engine.dispose()
+
+
+# Separate opt-in test route: the legacy test endpoint remains unchanged.
+from app.paper_idempotency import idempotent_fill
+
+@app.post("/test-only/paper/idempotent-fills")
+def idempotent_http_fill(body: Fill, idempotency_key: str | None = Header(default=None),
+                         x_api_token: str | None = Header(default=None)):
+    token=os.getenv("TEST_PAPER_API_TOKEN")
+    if not token or x_api_token!=token:
+        raise HTTPException(401,"Unauthorized")
+    if not idempotency_key:
+        raise HTTPException(422,"IDEMPOTENCY_KEY_REQUIRED")
+    url=os.getenv("TEST_POSTGRES_URL")
+    if not url or not url.startswith("postgresql+psycopg://") or "127.0.0.1" not in url:
+        raise HTTPException(503,"Disposable PostgreSQL required")
+    engine=create_engine(url)
+    try:
+        return idempotent_fill(engine,request_key=idempotency_key,account_id=1,
+            symbol=body.symbol,side=body.side,quantity=body.quantity,
+            price=body.price,fee=body.fee,expected_generation=body.generation)
+    except PermissionError:
+        raise HTTPException(409,"PAPER_WRITES_FENCED") from None
+    except ValueError as exc:
+        if str(exc)=="IDEMPOTENCY_KEY_CONFLICT":
+            raise HTTPException(409,"IDEMPOTENCY_KEY_CONFLICT") from None
+        raise HTTPException(422,"PAPER_FILL_REJECTED") from None
+    finally:
+        engine.dispose()
