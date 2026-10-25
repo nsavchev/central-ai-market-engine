@@ -77,6 +77,8 @@ class TradeRequest(BaseModel):
 
 @app.post('/paper/trades',dependencies=[Depends(auth)])
 def paper_trade(t:TradeRequest):
+    if __import__('os').environ.get('PAPER_V2_ENABLED') == 'YES':
+        raise HTTPException(409, 'LEGACY_PAPER_WRITES_DISABLED')
     # Manual hypothetical fills only. No brokerage orders, FX conversion, or margin.
     with SessionLocal.begin() as db:
         account=db.get(PaperAccount,1)
@@ -170,3 +172,42 @@ def valuation_advanced(request: AdvancedRequest):
         return analyze(request)
     except (ValueError, OverflowError, ZeroDivisionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+# Stage 1 integration: explicitly gated v2 paper-only route.
+# Disabled by default; not a replacement for the reviewed migration or deployment.
+import os as _paper_os
+from decimal import Decimal as _PaperDecimal
+from .db import engine as _paper_engine
+from .paper_idempotency import idempotent_fill as _idempotent_paper_fill
+
+class PaperV2Request(BaseModel):
+    symbol: str = Field(pattern=r'^[A-Za-z0-9._-]{1,32}$')
+    side: str = Field(pattern=r'^(BUY|SELL)$')
+    quantity: _PaperDecimal = Field(gt=0)
+    price: _PaperDecimal = Field(gt=0)
+    fee: _PaperDecimal = Field(default=_PaperDecimal('0'), ge=0)
+    generation: int = Field(ge=0)
+
+@app.post('/paper/v2/trades', dependencies=[Depends(auth)])
+def paper_v2_trade(t: PaperV2Request, idempotency_key: str | None = Header(default=None)):
+    if _paper_os.environ.get('PAPER_V2_ENABLED') != 'YES':
+        raise HTTPException(503, 'PAPER_V2_DISABLED')
+    # An explicit target database setting is mandatory; it must match the
+    # already-configured engine. Never silently fall back to database 'market'.
+    target = _paper_os.environ.get('PAPER_V2_DATABASE_NAME')
+    if not target or target != _paper_engine.url.database or _paper_engine.dialect.name != 'postgresql':
+        raise HTTPException(503, 'PAPER_V2_DATABASE_NOT_VERIFIED')
+    if not idempotency_key:
+        raise HTTPException(422, 'IDEMPOTENCY_KEY_REQUIRED')
+    try:
+        return _idempotent_paper_fill(
+            _paper_engine, request_key=idempotency_key, account_id=1,
+            symbol=t.symbol, side=t.side, quantity=t.quantity,
+            price=t.price, fee=t.fee, expected_generation=t.generation)
+    except PermissionError:
+        raise HTTPException(409, 'PAPER_WRITES_FENCED') from None
+    except ValueError as exc:
+        if str(exc) == 'IDEMPOTENCY_KEY_CONFLICT':
+            raise HTTPException(409, 'IDEMPOTENCY_KEY_CONFLICT') from None
+        raise HTTPException(422, 'PAPER_FILL_REJECTED') from None
