@@ -1,7 +1,7 @@
 """A11.15.14 fail-closed incident identity boundary for FIX staging."""
 import sqlite3
 import unittest
-from tests.test_fix_staging_integration import FixStagingIntegrationTests
+from test_fix_staging_integration import FixStagingIntegrationTests
 
 
 class IncidentGateTests(FixStagingIntegrationTests):
