@@ -19,8 +19,10 @@ def report(engine):
                         SELECT COUNT(*) AS total,
                           COUNT(*) FILTER(WHERE {col} IS NULL) AS missing,
                           COUNT(*) FILTER(WHERE {col} IS NOT NULL AND {col}::text IN ('NaN','Infinity','-Infinity')) AS nonfinite,
-                          COUNT(*) FILTER(WHERE {col}::text NOT IN ('NaN','Infinity','-Infinity')
-                            AND {col}::numeric <> round({col}::numeric, {scale})) AS precision_loss
+                          COUNT(*) FILTER(WHERE CASE
+                            WHEN {col} IS NULL OR {col}::text IN ('NaN','Infinity','-Infinity') THEN FALSE
+                            ELSE {col}::numeric <> round({col}::numeric, {scale})
+                          END) AS precision_loss
                         FROM {table}
                     """)).one()
                     field_results[col]={"total":result[0],"null":result[1],
