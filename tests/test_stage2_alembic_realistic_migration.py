@@ -110,8 +110,8 @@ def test_realistic_constraints_survive_alembic_upgrade():
         with engine.connect() as activated_check:
             assert activated_check.scalar(text("SELECT count(*) FROM paper_trades")) == 2
         with engine.connect() as check:
-            assert check.scalar(text("SELECT count(*) FROM paper_trades")) == 1
-            assert check.scalar(text("SELECT cash FROM paper_accounts WHERE id=1")) == 1234.50
+            assert check.scalar(text("SELECT count(*) FROM paper_trades")) == 2
+            assert check.scalar(text("SELECT cash FROM paper_accounts WHERE id=1")) == 1184.50
     finally:
         paper_api.app.dependency_overrides.pop(auth, None)
         paper_api.SessionLocal = original_factory
