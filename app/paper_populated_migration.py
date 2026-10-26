@@ -4,9 +4,7 @@ NOT a production migration. Execute only inside a caller-controlled transaction
 against an isolated database literally named 'test'. No live cutover.
 """
 import os
-from decimal import Decimal
 from sqlalchemy import text
-from .paper_data_preflight import inspect_existing_paper_values
 
 def migrate_populated_paper(engine):
     if os.getenv("STAGE2_DISPOSABLE_DB")!="YES" or engine.dialect.name!="postgresql":
@@ -35,7 +33,7 @@ def migrate_populated_paper(engine):
             rejected=con.scalar(text(f"""
                 SELECT EXISTS(SELECT 1 FROM public.{table}
                 WHERE {col} IS NULL OR NOT isfinite({col})
-                   OR {col}::numeric != round({col}::numeric, {scale})
+                   OR ({col}::numeric <> round({col}::numeric, {scale}))
                    OR abs({col}::numeric) >= power(10::numeric,{precision-scale}))
             """))
             if rejected:
@@ -59,6 +57,6 @@ def migrate_populated_paper(engine):
             account_id bigint NOT NULL,request_key varchar(128) NOT NULL,
             fingerprint varchar(64) NOT NULL,result jsonb,
             PRIMARY KEY(account_id,request_key))"""))
-        assert con.scalar(text("SELECT count(*) FROM public.paper_accounts"))==before["accounts"]
-        assert con.scalar(text("SELECT count(*) FROM public.paper_trades"))==before["trades"]
+        if con.scalar(text("SELECT count(*) FROM public.paper_accounts"))!=before["accounts"] or con.scalar(text("SELECT count(*) FROM public.paper_trades"))!=before["trades"]:
+            raise RuntimeError("ROW_COUNT_MISMATCH")
         return before
