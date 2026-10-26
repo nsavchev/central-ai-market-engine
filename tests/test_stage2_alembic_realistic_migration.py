@@ -85,6 +85,29 @@ def test_realistic_constraints_survive_alembic_upgrade():
                 }, headers={"idempotency-key": "test-cutover-key-0001"})
         assert gated.status_code == 409, gated.text
         assert gated.json()["detail"] == "PAPER_WRITES_FENCED"
+        # Test-only activation: the fence state change and generation bump
+        # are explicit. Never perform this on the VPS or market database.
+        with engine.begin() as activated:
+            activated.execute(text("""UPDATE paper_write_fence
+                SET mode='LEGACY', generation=2 WHERE id=1 AND mode='QUIESCED' AND generation=1"""))
+        with patch.dict(os.environ, {
+            "PAPER_LEGACY_WRITES_ENABLED": "NO",
+            "PAPER_V2_ENABLED": "YES",
+            "PAPER_V2_DATABASE_NAME": "test",
+        }, clear=False):
+            with patch.object(paper_api, "_paper_engine", engine):
+                trade_payload = {
+                    "symbol": "SPY", "side": "BUY", "quantity": "1.000000",
+                    "price": "50.00", "fee": "0.00", "generation": 2
+                }
+                headers = {"idempotency-key": "test-activated-key-0001"}
+                first = client.post("/paper/v2/trades", json=trade_payload, headers=headers)
+                replay = client.post("/paper/v2/trades", json=trade_payload, headers=headers)
+        assert first.status_code == 200, first.text
+        assert replay.status_code == 200, replay.text
+        assert first.json() == replay.json()
+        with engine.connect() as activated_check:
+            assert activated_check.scalar(text("SELECT count(*) FROM paper_trades")) == 2
         with engine.connect() as check:
             assert check.scalar(text("SELECT count(*) FROM paper_trades")) == 1
             assert check.scalar(text("SELECT cash FROM paper_accounts WHERE id=1")) == 1234.50
