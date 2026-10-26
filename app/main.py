@@ -95,12 +95,22 @@ def paper_trade(t:TradeRequest):
 
 @app.get('/paper/account',dependencies=[Depends(auth)])
 def paper_account():
+    from decimal import Decimal
+    from fastapi.encoders import jsonable_encoder
     with SessionLocal() as db:
         a=db.get(PaperAccount,1)
         trades=db.scalars(select(PaperTrade).where(PaperTrade.account_id==1)).all()
         positions={}
-        for t in trades: positions[t.symbol]=positions.get(t.symbol,0)+t.quantity*(1 if t.side=='BUY' else -1)
-        return {'cash':a.cash if a else 100000,'currency':'USD','positions':positions,'valuation':'NOT_IMPLEMENTED','mode':'SIMULATION_ONLY'}
+        for t in trades:
+            quantity=Decimal(str(t.quantity))
+            signed=quantity if t.side=='BUY' else -quantity
+            positions[t.symbol]=positions.get(t.symbol,Decimal('0'))+signed
+        # Explicit decimal strings avoid silently converting fractional shares
+        # and cash to binary floats in the JSON response.
+        return {'cash':str(a.cash) if a else '100000.00',
+                'currency':'USD',
+                'positions':{symbol:str(qty) for symbol,qty in positions.items()},
+                'valuation':'NOT_IMPLEMENTED','mode':'SIMULATION_ONLY'}
 
 # Macro triage is data-only: caller supplies verified event records.
 from .macro import Event as MacroEvent, evaluate as evaluate_macro
