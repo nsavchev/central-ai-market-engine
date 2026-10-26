@@ -38,7 +38,7 @@ def migrate_populated_paper(engine):
                   THEN TRUE
                   ELSE ({col}::numeric <> round({col}::numeric, {scale}))
                     OR abs({col}::numeric) >= power(10::numeric,{precision-scale})
-                END
+                END)
             """))
             if rejected:
                 raise ValueError("LOSSY_OR_INVALID_DATA:"+table+"."+col)
