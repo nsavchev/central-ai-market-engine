@@ -36,6 +36,8 @@ class WorkflowTests(unittest.TestCase):
     def test_retry_limit(self):
         w = Workflow()
         for attempt in range(1, 4):
+            w.advance(True)
+            w.advance(True)
             self.assertEqual(w.retry(), attempt)
 
         with self.assertRaises(ValueError):
