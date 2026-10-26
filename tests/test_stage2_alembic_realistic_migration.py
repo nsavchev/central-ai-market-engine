@@ -61,6 +61,19 @@ def test_realistic_constraints_survive_alembic_upgrade():
         assert payload["cash"] == "1234.50"
         assert payload["positions"] == {"SPY": "2.000000"}
         assert payload["mode"] == "SIMULATION_ONLY"
+        # A migrated schema must reject all legacy float-based write attempts
+        # before a database session or PaperTrade insert can occur.
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"PAPER_LEGACY_WRITES_ENABLED": "NO"}, clear=False):
+            with patch.object(paper_api, "SessionLocal", side_effect=AssertionError("legacy DB access")):
+                blocked = client.post("/paper/trades", json={
+                    "symbol": "SPY", "side": "BUY", "quantity": 1,
+                    "price": 50, "fee": 0})
+        assert blocked.status_code == 409, blocked.text
+        assert blocked.json()["detail"] == "LEGACY_PAPER_WRITES_DISABLED"
+        with engine.connect() as check:
+            assert check.scalar(text("SELECT count(*) FROM paper_trades")) == 1
+            assert check.scalar(text("SELECT cash FROM paper_accounts WHERE id=1")) == 1234.50
     finally:
         paper_api.app.dependency_overrides.pop(auth, None)
         paper_api.SessionLocal = original_factory
