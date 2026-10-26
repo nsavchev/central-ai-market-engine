@@ -3,7 +3,6 @@ Only a disposable database named test is allowed.
 """
 import os
 from sqlalchemy import create_engine, text
-from app.db import Base, PaperAccount, PaperTrade
 from app.paper_legacy_column_contract import inspect_legacy_paper_columns
 
 def test_real_orm_paper_schema_and_detect_nullable_regression():
