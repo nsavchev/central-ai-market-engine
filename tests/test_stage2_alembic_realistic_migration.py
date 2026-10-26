@@ -135,6 +135,32 @@ def test_realistic_constraints_survive_alembic_upgrade():
                     "/paper/v2/trades", json=trade_payload, headers=headers)
         assert after_reconnect.status_code == 200, after_reconnect.text
         assert after_reconnect.json() == first.json()
+        # A new Python interpreter imports the app and constructs a fresh
+        # engine/session. TestClient deliberately avoids app startup DDL.
+        import json
+        code = """
+import json
+from fastapi.testclient import TestClient
+from app.main import app
+payload = {
+    'symbol':'SPY','side':'BUY','quantity':'1.000000',
+    'price':'50.00','fee':'0.00','generation':2
+}
+response = TestClient(app).post('/paper/v2/trades', json=payload,
+    headers={'x-api-token':'disposable-ci-only',
+             'idempotency-key':'test-activated-key-0001'})
+print(json.dumps({'status':response.status_code,'body':response.json()}))
+"""
+        result = subprocess.run(
+            ["python", "-c", code], check=True, capture_output=True, text=True,
+            env={**os.environ, "DATABASE_URL": url,
+                 "API_TOKEN": "disposable-ci-only",
+                 "PAPER_LEGACY_WRITES_ENABLED": "NO",
+                 "PAPER_V2_ENABLED": "YES",
+                 "PAPER_V2_DATABASE_NAME": "test"})
+        subprocess_replay = json.loads(result.stdout.strip().splitlines()[-1])
+        assert subprocess_replay["status"] == 200, result.stderr
+        assert subprocess_replay["body"] == first.json()
         with engine.connect() as persisted:
             assert persisted.scalar(text("SELECT count(*) FROM paper_trades")) == 2
             assert persisted.scalar(text("SELECT count(*) FROM paper_request_keys")) == 1
