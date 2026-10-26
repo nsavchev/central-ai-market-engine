@@ -60,7 +60,8 @@ def migrate_populated_paper(engine):
         con.execute(text("""CREATE TABLE public.paper_request_keys(
             account_id bigint NOT NULL,request_key varchar(128) NOT NULL,
             fingerprint varchar(64) NOT NULL,result jsonb,
-            PRIMARY KEY(account_id,request_key))"""))
+            PRIMARY KEY(account_id,request_key),
+            CONSTRAINT paper_request_keys_min_length CHECK(length(request_key)>=8))"""))
         if con.scalar(text("SELECT count(*) FROM public.paper_accounts"))!=before["accounts"] or con.scalar(text("SELECT count(*) FROM public.paper_trades"))!=before["trades"]:
             raise RuntimeError("ROW_COUNT_MISMATCH")
         return before
