@@ -88,3 +88,36 @@ def test_invalid_nonfinite_fee_rolls_back(monkeypatch):
         c.execute(text("DROP TABLE paper_trades"))
         c.execute(text("DROP TABLE paper_accounts"))
     engine.dispose()
+
+def test_ddl_failure_rolls_back_numeric_alterations(monkeypatch):
+    """A failed CREATE TABLE after ALTER COLUMN must roll back all DDL."""
+    from sqlalchemy.exc import ProgrammingError
+    assert URL and URL.endswith("/test") and "127.0.0.1" in URL
+    monkeypatch.setenv("STAGE2_DISPOSABLE_DB","YES")
+    engine=create_engine(URL)
+    with engine.begin() as c:
+        assert c.scalar(text("SELECT current_database()"))=="test"
+        c.execute(text("CREATE TABLE paper_accounts(id int primary key,cash double precision,currency text)"))
+        c.execute(text("CREATE TABLE paper_trades(id int primary key,account_id int,symbol text,side text,quantity double precision,price double precision,fee double precision)"))
+        c.execute(text("INSERT INTO paper_accounts VALUES (1,850.5,'USD')"))
+        c.execute(text("INSERT INTO paper_trades VALUES (1,1,'SPY','BUY',3,25.5,0.5)"))
+        # Deliberate schema collision AFTER the numeric ALTERs.
+        c.execute(text("CREATE TABLE paper_write_fence(marker text)"))
+        c.execute(text("INSERT INTO paper_write_fence VALUES ('preexisting')"))
+    with pytest.raises(ProgrammingError):
+        migrate_populated_paper(engine)
+    with engine.connect() as c:
+        assert c.scalar(text("SELECT cash FROM paper_accounts WHERE id=1"))==850.5
+        assert c.scalar(text("SELECT price FROM paper_trades WHERE id=1"))==25.5
+        assert c.scalar(text("SELECT marker FROM paper_write_fence"))=="preexisting"
+        assert c.scalar(text("SELECT to_regclass('public.paper_request_keys')")) is None
+        for table,column in (("paper_accounts","cash"),("paper_trades","quantity"),("paper_trades","price"),("paper_trades","fee")):
+            actual=c.scalar(text("""SELECT data_type FROM information_schema.columns
+                WHERE table_schema='public' AND table_name=:table AND column_name=:column"""),
+                {"table":table,"column":column})
+            assert actual=="double precision"
+    with engine.begin() as c:
+        c.execute(text("DROP TABLE paper_write_fence"))
+        c.execute(text("DROP TABLE paper_trades"))
+        c.execute(text("DROP TABLE paper_accounts"))
+    engine.dispose()
