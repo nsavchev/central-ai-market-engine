@@ -15,6 +15,10 @@ def run_migrations_online():
         with engine.connect() as connection:
             if connection.exec_driver_sql("SELECT current_database()").scalar()!="test":
                 raise RuntimeError("REFUSE_NON_TEST_DATABASE")
+            # SQLAlchemy 2.x implicitly begins a transaction for SELECT.
+            # Commit that read-only preflight before Alembic starts its own
+            # PostgreSQL transactional DDL. Otherwise close() rolls it back.
+            connection.commit()
             context.configure(connection=connection,transactional_ddl=True)
             with context.begin_transaction():
                 context.run_migrations()
