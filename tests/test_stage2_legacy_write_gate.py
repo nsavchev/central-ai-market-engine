@@ -25,6 +25,6 @@ def test_legacy_default_retained_for_old_deployment(monkeypatch):
     monkeypatch.delenv("PAPER_V2_ENABLED",raising=False)
     # This is a compatibility gate check, not a real write.
     marker=RuntimeError("REACHED_LEGACY_DATABASE_PATH")
-    monkeypatch.setattr(main,"SessionLocal",MagicMock(side_effect=marker))
+    monkeypatch.setattr(main.SessionLocal,"begin",MagicMock(side_effect=marker))
     with pytest.raises(RuntimeError,match="REACHED_LEGACY_DATABASE_PATH"):
         main.paper_trade(request())
