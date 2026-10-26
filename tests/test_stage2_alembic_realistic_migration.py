@@ -71,6 +71,20 @@ def test_realistic_constraints_survive_alembic_upgrade():
                     "price": 50, "fee": 0})
         assert blocked.status_code == 409, blocked.text
         assert blocked.json()["detail"] == "LEGACY_PAPER_WRITES_DISABLED"
+        # V2 is enabled deliberately, but the migration leaves its fence
+        # QUIESCED; therefore it must reject a hypothetical fill.
+        with patch.dict(os.environ, {
+            "PAPER_LEGACY_WRITES_ENABLED": "NO",
+            "PAPER_V2_ENABLED": "YES",
+            "PAPER_V2_DATABASE_NAME": "test",
+        }, clear=False):
+            with patch.object(paper_api, "_paper_engine", engine):
+                gated = client.post("/paper/v2/trades", json={
+                    "symbol": "SPY", "side": "BUY", "quantity": "1.000000",
+                    "price": "50.00", "fee": "0.00", "generation": 1
+                }, headers={"idempotency-key": "test-cutover-key-0001"})
+        assert gated.status_code == 409, gated.text
+        assert gated.json()["detail"] == "PAPER_WRITES_FENCED"
         with engine.connect() as check:
             assert check.scalar(text("SELECT count(*) FROM paper_trades")) == 1
             assert check.scalar(text("SELECT cash FROM paper_accounts WHERE id=1")) == 1234.50
