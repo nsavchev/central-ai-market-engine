@@ -31,4 +31,17 @@ def test_realistic_constraints_survive_alembic_upgrade():
         assert {(r[0],r[1],r[2]) for r in types}=={("quantity",24,6),("price",20,2),("fee",20,2)}
     from app.paper_schema_constraints import inspect_relational_constraints
     assert inspect_relational_constraints(engine)=={"ready":True,"errors":[]}
+    # Exercise the real SQLAlchemy models on the already-migrated PostgreSQL
+    # connection, rather than relying only on information_schema inspection.
+    from decimal import Decimal
+    from sqlalchemy.orm import Session
+    from app.db import PaperAccount, PaperTrade
+    with Session(bind=engine) as session:
+        account = session.get(PaperAccount, 1)
+        trade = session.get(PaperTrade, 1)
+        assert isinstance(account.cash, Decimal)
+        assert account.cash == Decimal("1234.50")
+        assert (trade.quantity, trade.price, trade.fee) == (
+            Decimal("2.000000"), Decimal("55.25"), Decimal("0.50"))
+        assert trade.account_id == account.id
     engine.dispose()
