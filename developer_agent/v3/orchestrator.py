@@ -2,7 +2,6 @@ from dataclasses import dataclass, asdict
 from developer_agent.v3.workflow import Stage
 import json
 
-\n
 
 @dataclass
 class DevelopmentTask:
