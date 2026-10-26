@@ -292,6 +292,28 @@ class PersistentWorkflowV05:
 
     def _initialize(self):
         with self._connect() as conn:
+            # Adopt only the known legacy v0.4 shape. Keep old persisted
+            # tasks; never relax approval/deployment security constraints.
+            existing = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_states'"
+            ).fetchone()
+            if existing:
+                columns = {row[1] for row in conn.execute(
+                    "PRAGMA table_info(workflow_states)").fetchall()}
+                required = {"task_id", "stage", "attempts", "approved",
+                            "deployment_allowed", "history", "updated_at"}
+                if not required.issubset(columns):
+                    raise ValueError("UNKNOWN_WORKFLOW_SCHEMA")
+                if conn.execute(
+                    "SELECT 1 FROM workflow_states WHERE approved IS NOT 0 "
+                    "OR deployment_allowed IS NOT 0 LIMIT 1"
+                ).fetchone():
+                    raise ValueError("STORED_SECURITY_VIOLATION")
+                if "version" not in columns:
+                    conn.execute(
+                        "ALTER TABLE workflow_states ADD COLUMN version INTEGER "
+                        "NOT NULL DEFAULT 0 CHECK(version >= 0)"
+                    )
             conn.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS workflow_states (
