@@ -18,7 +18,15 @@ except ModuleNotFoundError as exc:
 
 @asynccontextmanager
 async def lifespan(app):
-    init_db()
+    # Production PostgreSQL schemas are operator-managed. Never run
+    # metadata.create_all implicitly at API startup.
+    from .db import engine as startup_engine
+    if startup_engine.dialect.name == "postgresql":
+        import os
+        if os.environ.get("MARKET_SCHEMA_MANAGED_BY_ALEMBIC") != "YES":
+            raise RuntimeError("POSTGRES_SCHEMA_APPROVAL_REQUIRED")
+    else:
+        init_db()  # Developer SQLite convenience only.
     yield
 app=FastAPI(title='Market Intelligence v0.2',lifespan=lifespan)
 
