@@ -1,14 +1,6 @@
 from dataclasses import dataclass, asdict
-from enum import Enum
+from developer_agent.v3.workflow import Stage
 import json
-
-
-class Stage(str, Enum):
-    PLAN = "plan"
-    DEVELOP = "develop"
-    TEST = "test"
-    REVIEW = "review"
-    APPROVAL = "approval"
 
 
 @dataclass

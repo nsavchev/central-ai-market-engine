@@ -13,7 +13,7 @@ def task(task_id="dup01"):
 
 def test_three_stage_enums_have_same_labels():
     assert tuple(x.value for x in LegacyStage)==STAGES
-    assert tuple(x.value for x in OrchestratorStage)==STAGES
+    assert OrchestratorStage is LegacyStage
 
 def test_canonical_requires_exact_true_for_transition():
     controller=WorkflowController()
@@ -49,14 +49,15 @@ def test_canonical_retry_limit():
     with pytest.raises(ValueError,match="RETRY_LIMIT_REACHED"):
         controller.retry("dup01")
 
-def test_legacy_differences_are_explicit_not_silently_merged():
-    # Legacy accepts a truthy non-bool and retries from PLAN. Unlike the
-    # canonical controller, it must not become an authorization source.
+def test_legacy_workflow_uses_same_fail_closed_validation():
     legacy=LegacyWorkflow()
-    assert legacy.advance(checks_passed=1)==LegacyStage.DEVELOP
-    legacy=LegacyWorkflow()
+    with pytest.raises(ValueError,match="Checks must pass"):
+        legacy.advance(checks_passed=1)
+    with pytest.raises(ValueError,match="Retry not allowed"):
+        legacy.retry()
+    assert legacy.advance(True)==LegacyStage.DEVELOP
+    assert legacy.advance(True)==LegacyStage.TEST
     assert legacy.retry()==1
-    assert legacy.stage==LegacyStage.DEVELOP
     assert legacy.approved is False and legacy.deployment_allowed is False
 
 def test_orchestrator_is_task_factory_not_runtime_authority():

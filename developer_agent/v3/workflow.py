@@ -27,7 +27,7 @@ class Workflow:
     deployment_allowed: bool = False
 
     def advance(self, checks_passed=False):
-        if not checks_passed:
+        if checks_passed is not True:
             raise ValueError("Checks must pass")
 
         if self.stage == Stage.APPROVAL:
@@ -37,6 +37,9 @@ class Workflow:
         return self.stage
 
     def retry(self):
+        if self.stage not in (Stage.TEST, Stage.REVIEW):
+            raise ValueError("Retry not allowed")
+
         if self.attempts >= self.max_attempts:
             raise ValueError("Retry limit reached")
 
