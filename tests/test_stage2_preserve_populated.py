@@ -21,6 +21,11 @@ def test_preserves_balances_trades_and_refuses_lossy(monkeypatch):
         assert c.scalar(text("SELECT quantity FROM paper_trades WHERE id=1"))==2
         assert c.scalar(text("SELECT mode FROM paper_write_fence WHERE id=1"))=="QUIESCED"
         assert c.scalar(text("SELECT COUNT(*) FROM paper_trades"))==1
+        # Same minimum length constraint as the disposable Alembic revision.
+        with pytest.raises(Exception):
+            with engine.begin() as other:
+                other.execute(text("""INSERT INTO paper_request_keys(account_id,request_key,fingerprint)
+                    VALUES (1,'short','abc')"""))
     with engine.begin() as c:
         c.execute(text("DROP TABLE paper_request_keys"))
         c.execute(text("DROP TABLE paper_write_fence"))
