@@ -4,15 +4,18 @@ NOT a production migration. Execute only inside a caller-controlled transaction
 against an isolated database literally named 'test'. No live cutover.
 """
 import os
+from contextlib import nullcontext
 from sqlalchemy import text
 
-def migrate_populated_paper(engine):
+def migrate_populated_paper(engine, *, connection=None):
     if os.getenv("STAGE2_DISPOSABLE_DB")!="YES" or engine.dialect.name!="postgresql":
         raise PermissionError("DISPOSABLE_ONLY")
     if engine.url.database!="test":
         raise PermissionError("REFUSE_NON_TEST_DATABASE")
     # Exclusive lock prevents writes between validation and conversion.
-    with engine.begin() as con:
+    if connection is not None and (connection.engine is not engine or not connection.in_transaction()):
+        raise PermissionError("EXISTING_TRANSACTION_REQUIRED")
+    with (nullcontext(connection) if connection is not None else engine.begin()) as con:
         if con.scalar(text("SELECT current_database()"))!="test":
             raise PermissionError("REFUSE_NON_TEST_DATABASE")
         con.execute(text("LOCK TABLE public.paper_accounts, public.paper_trades IN ACCESS EXCLUSIVE MODE"))
