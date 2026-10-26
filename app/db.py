@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
-from sqlalchemy import create_engine, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, JSON
+from decimal import Decimal
+from sqlalchemy import create_engine, Date, DateTime, Float, Numeric, ForeignKey, Integer, String, UniqueConstraint, JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from .config import settings
 
@@ -33,7 +34,7 @@ class DailyBar(Base):
 class PaperAccount(Base):
     __tablename__ = 'paper_accounts'
     id: Mapped[int] = mapped_column(primary_key=True)
-    cash: Mapped[float] = mapped_column(Float, default=100000.0)
+    cash: Mapped[Decimal] = mapped_column(Numeric(20, 2), default=Decimal('100000.00'))
     currency: Mapped[str] = mapped_column(String(8), default='USD')
 
 class PaperTrade(Base):
@@ -42,9 +43,9 @@ class PaperTrade(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey('paper_accounts.id'))
     symbol: Mapped[str] = mapped_column(String(32))
     side: Mapped[str] = mapped_column(String(4))
-    quantity: Mapped[float] = mapped_column(Float)
-    price: Mapped[float] = mapped_column(Float)
-    fee: Mapped[float] = mapped_column(Float, default=0)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 6))
+    price: Mapped[Decimal] = mapped_column(Numeric(20, 2))
+    fee: Mapped[Decimal] = mapped_column(Numeric(20, 2), default=Decimal('0.00'))
     executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class FinancialSnapshot(Base):
