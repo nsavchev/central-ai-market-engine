@@ -32,9 +32,13 @@ def migrate_populated_paper(engine):
             # Strict inequality after roundtrip catches loss of precision.
             rejected=con.scalar(text(f"""
                 SELECT EXISTS(SELECT 1 FROM public.{table}
-                WHERE {col} IS NULL OR NOT isfinite({col})
-                   OR ({col}::numeric <> round({col}::numeric, {scale}))
-                   OR abs({col}::numeric) >= power(10::numeric,{precision-scale}))
+                WHERE CASE
+                  WHEN {col} IS NULL
+                    OR {col}::text IN ('NaN','Infinity','-Infinity')
+                  THEN TRUE
+                  ELSE ({col}::numeric <> round({col}::numeric, {scale}))
+                    OR abs({col}::numeric) >= power(10::numeric,{precision-scale})
+                END
             """))
             if rejected:
                 raise ValueError("LOSSY_OR_INVALID_DATA:"+table+"."+col)
