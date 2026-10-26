@@ -20,6 +20,16 @@ def test_preserves_balances_trades_and_refuses_lossy(monkeypatch):
         assert c.scalar(text("SELECT cash FROM paper_accounts WHERE id=1"))==999.5
         assert c.scalar(text("SELECT quantity FROM paper_trades WHERE id=1"))==2
         assert c.scalar(text("SELECT mode FROM paper_write_fence WHERE id=1"))=="QUIESCED"
+        assert c.scalar(text("SELECT generation FROM paper_write_fence WHERE id=1"))==1
+        check=c.execute(text("""SELECT column_name, data_type, numeric_precision, numeric_scale
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='paper_trades'
+              AND column_name IN ('quantity','price','fee')""")).all()
+        assert {(r.column_name,r.data_type,r.numeric_precision,r.numeric_scale) for r in check} == {
+            ('quantity','numeric',24,6),('price','numeric',20,2),('fee','numeric',20,2)}
+        assert c.scalar(text("""SELECT count(*) FROM pg_constraint
+            WHERE conrelid='public.paper_request_keys'::regclass
+              AND contype='p'"""))==1
         assert c.scalar(text("SELECT COUNT(*) FROM paper_trades"))==1
         # Same minimum length constraint as the disposable Alembic revision.
         with pytest.raises(Exception):
