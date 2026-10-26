@@ -122,6 +122,22 @@ def test_realistic_constraints_survive_alembic_upgrade():
         assert conflict.json()["detail"] == "IDEMPOTENCY_KEY_CONFLICT"
         assert stale.status_code == 409, stale.text
         assert stale.json()["detail"] == "PAPER_WRITES_FENCED"
+        # Construct a separate HTTP client after the first request; the
+        # idempotency result must be persisted in PostgreSQL, not client RAM.
+        fresh_client = TestClient(paper_api.app)
+        with patch.dict(os.environ, {
+            "PAPER_LEGACY_WRITES_ENABLED": "NO",
+            "PAPER_V2_ENABLED": "YES",
+            "PAPER_V2_DATABASE_NAME": "test",
+        }, clear=False):
+            with patch.object(paper_api, "_paper_engine", engine):
+                after_reconnect = fresh_client.post(
+                    "/paper/v2/trades", json=trade_payload, headers=headers)
+        assert after_reconnect.status_code == 200, after_reconnect.text
+        assert after_reconnect.json() == first.json()
+        with engine.connect() as persisted:
+            assert persisted.scalar(text("SELECT count(*) FROM paper_trades")) == 2
+            assert persisted.scalar(text("SELECT count(*) FROM paper_request_keys")) == 1
         with engine.connect() as activated_check:
             assert activated_check.scalar(text("SELECT count(*) FROM paper_trades")) == 2
         with engine.connect() as check:
