@@ -107,6 +107,21 @@ def test_realistic_constraints_survive_alembic_upgrade():
         assert first.status_code == 200, first.text
         assert replay.status_code == 200, replay.text
         assert first.json() == replay.json()
+        with patch.dict(os.environ, {
+            "PAPER_LEGACY_WRITES_ENABLED": "NO",
+            "PAPER_V2_ENABLED": "YES",
+            "PAPER_V2_DATABASE_NAME": "test",
+        }, clear=False):
+            with patch.object(paper_api, "_paper_engine", engine):
+                conflict = client.post("/paper/v2/trades",
+                    json=dict(trade_payload, price="51.00"), headers=headers)
+                stale = client.post("/paper/v2/trades",
+                    json=dict(trade_payload, generation=1),
+                    headers={"idempotency-key": "test-stale-generation-0002"})
+        assert conflict.status_code == 409, conflict.text
+        assert conflict.json()["detail"] == "IDEMPOTENCY_KEY_CONFLICT"
+        assert stale.status_code == 409, stale.text
+        assert stale.json()["detail"] == "PAPER_WRITES_FENCED"
         with engine.connect() as activated_check:
             assert activated_check.scalar(text("SELECT count(*) FROM paper_trades")) == 2
         with engine.connect() as check:
