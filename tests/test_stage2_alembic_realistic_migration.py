@@ -44,4 +44,24 @@ def test_realistic_constraints_survive_alembic_upgrade():
         assert (trade.quantity, trade.price, trade.fee) == (
             Decimal("2.000000"), Decimal("55.25"), Decimal("0.50"))
         assert trade.account_id == account.id
+    # Real authenticated HTTP route against the migrated disposable PostgreSQL.
+    # Avoid invoking app startup create_all and never touch configured market.
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker
+    import app.main as paper_api
+    from app.main import auth
+    original_factory = paper_api.SessionLocal
+    paper_api.SessionLocal = sessionmaker(bind=engine)
+    paper_api.app.dependency_overrides[auth] = lambda: None
+    try:
+        client = TestClient(paper_api.app)
+        response = client.get("/paper/account")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["cash"] == "1234.50"
+        assert payload["positions"] == {"SPY": "2.000000"}
+        assert payload["mode"] == "SIMULATION_ONLY"
+    finally:
+        paper_api.app.dependency_overrides.pop(auth, None)
+        paper_api.SessionLocal = original_factory
     engine.dispose()
