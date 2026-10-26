@@ -79,9 +79,9 @@ class TradeRequest(BaseModel):
 def paper_trade(t:TradeRequest):
     import os
     # Explicit cutover lock: legacy float writes must never reach a NUMERIC schema.
-    # PAPER_LEGACY_WRITES_ENABLED defaults to YES for existing deployments.
-    # Before a v2 cutover the operator must set it to NO and verify all replicas.
-    if os.environ.get('PAPER_LEGACY_WRITES_ENABLED', 'YES') != 'YES' or os.environ.get('PAPER_V2_ENABLED') == 'YES':
+    # Fail closed by default. Legacy paper writes require an explicit opt-in
+    # AND must remain disabled during V2 migration and cutover.
+    if os.environ.get('PAPER_LEGACY_WRITES_ENABLED', 'NO') != 'YES' or os.environ.get('PAPER_V2_ENABLED') == 'YES':
         raise HTTPException(409, 'LEGACY_PAPER_WRITES_DISABLED')
     # Manual hypothetical fills only. No brokerage orders, FX conversion, or margin.
     with SessionLocal.begin() as db:
