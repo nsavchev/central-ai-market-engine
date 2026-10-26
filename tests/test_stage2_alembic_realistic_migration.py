@@ -18,6 +18,7 @@ def test_realistic_constraints_survive_alembic_upgrade():
             con.execute(text("CREATE TABLE "+name+" ("+cols[name]+")"))
         con.execute(text("INSERT INTO paper_accounts VALUES(1,1234.5,'USD')"))
         con.execute(text("INSERT INTO paper_trades VALUES(1,1,'SPY','BUY',2.0,55.25,0.5,NULL)"))
+        con.execute(text("SELECT setval(pg_get_serial_sequence('paper_trades', 'id'), 1, true)"))
     subprocess.run(["alembic","-c","alembic-stage2.ini","upgrade","head"],check=True,
                    env={**os.environ,"STAGE2_DISPOSABLE_DB":"YES"})
     with engine.connect() as con:
