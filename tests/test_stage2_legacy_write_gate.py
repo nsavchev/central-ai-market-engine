@@ -20,10 +20,19 @@ def test_legacy_refused_before_database_access(monkeypatch,legacy,v2):
     assert error.value.status_code==409
     forbidden.assert_not_called()
 
-def test_legacy_default_retained_for_old_deployment(monkeypatch):
+def test_legacy_default_denied_without_database_access(monkeypatch):
     monkeypatch.delenv("PAPER_LEGACY_WRITES_ENABLED",raising=False)
     monkeypatch.delenv("PAPER_V2_ENABLED",raising=False)
-    # This is a compatibility gate check, not a real write.
+    forbidden=MagicMock(side_effect=AssertionError("DATABASE_MUST_NOT_BE_TOUCHED"))
+    monkeypatch.setattr(main,"SessionLocal",forbidden)
+    with pytest.raises(HTTPException) as error:
+        main.paper_trade(request())
+    assert error.value.status_code==409
+    forbidden.assert_not_called()
+
+def test_legacy_explicit_opt_in_reaches_legacy_path(monkeypatch):
+    monkeypatch.setenv("PAPER_LEGACY_WRITES_ENABLED","YES")
+    monkeypatch.delenv("PAPER_V2_ENABLED",raising=False)
     marker=RuntimeError("REACHED_LEGACY_DATABASE_PATH")
     monkeypatch.setattr(main.SessionLocal,"begin",MagicMock(side_effect=marker))
     with pytest.raises(RuntimeError,match="REACHED_LEGACY_DATABASE_PATH"):
