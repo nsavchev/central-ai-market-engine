@@ -20,7 +20,7 @@ def engine():
         con.execute(text("""CREATE TABLE paper_trades (
           id bigserial PRIMARY KEY,account_id int NOT NULL REFERENCES paper_accounts(id),
           symbol text NOT NULL,side text NOT NULL,quantity numeric(24,6) NOT NULL,
-          price numeric(20,2) NOT NULL,fee numeric(20,2) NOT NULL)"""))
+          price numeric(20,2) NOT NULL,fee numeric(20,2) NOT NULL,executed_at timestamptz NOT NULL)"""))
         con.execute(text("INSERT INTO paper_write_fence VALUES(1,'LEGACY',0)"))
         con.execute(text("INSERT INTO paper_accounts VALUES(1,100.00)"))
     yield db
