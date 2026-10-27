@@ -20,7 +20,7 @@ def test_linked_alembic_upgrade():
                    env={**os.environ,"STAGE2_DISPOSABLE_DB":"YES"})
     with engine.connect() as con:
         assert con.scalar(text("SELECT version_num FROM alembic_version"))=="stage2_numeric_002"
-        assert con.scalar(text("SELECT mode FROM paper_write_fence WHERE id=1"))=="LEGACY"
+        assert con.scalar(text("SELECT mode FROM paper_write_fence WHERE id=1"))=="QUIESCED"
         types=con.execute(text("""SELECT column_name,numeric_precision,numeric_scale FROM information_schema.columns
             WHERE table_name='paper_trades' AND column_name IN ('quantity','price','fee')""")).all()
         assert {(r[0],r[1],r[2]) for r in types}=={("quantity",24,6),("price",20,2),("fee",20,2)}
