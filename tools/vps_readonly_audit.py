@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
-import sys
 from datetime import datetime, timezone
 from urllib.request import Request, urlopen
 
@@ -35,7 +34,7 @@ def command(*args):
 def sha(path):
     if not path.is_file() or path.is_symlink():
         return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    if path.stat().st_size > 2_000_000:\n        return None\n    with path.open("rb") as stream:\n        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 def report():
     commit = command("git", "-C", str(REPO), "rev-parse", "HEAD")
@@ -59,7 +58,7 @@ def report():
     if db.is_file() and not db.is_symlink():
         sqlite_result["present"] = True
         try:
-            with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=3) as conn:
+            with sqlite3.connect(db.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=3) as conn:
                 sqlite_result["workflow_states_rows"] = conn.execute(
                     "SELECT COUNT(*) FROM workflow_states").fetchone()[0]
                 sqlite_result["workflow_states_columns"] = [
@@ -81,13 +80,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--post", action="store_true", help="Post allowlisted report to GitHub Issue 90")
     parser.add_argument("--token-file", type=Path,
-                        default=Path("/root/.config/central-ai-audit/github-token"))
+                        default=Path.home() / ".config/central-ai-audit/github-token")
     args = parser.parse_args()
     payload = report()
     print(json.dumps(payload, indent=2, sort_keys=True))
     if args.post:
-        st = args.token_file.stat()
-        if st.st_mode & 0o077:
+        if args.token_file.is_symlink():\n            raise SystemExit("Token file must not be a symlink")\n        st = args.token_file.stat()
+        if not args.token_file.is_file() or st.st_mode & 0o077:
             raise SystemExit("Token file must not be readable by group or others")
         token = args.token_file.read_text(encoding="utf-8").strip()
         if not token:
