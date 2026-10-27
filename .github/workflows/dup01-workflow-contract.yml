@@ -25,20 +25,20 @@ jobs:
           set -eu
           docker volume create ai01-ci-tasks
           trap 'docker rm -f ai01-ci-a ai01-ci-b >/dev/null 2>&1 || true; docker volume rm ai01-ci-tasks >/dev/null 2>&1 || true' EXIT
-          docker run -d --name ai01-ci-a --read-only --network none \\
-            -v ai01-ci-tasks:/var/lib/central-ai \\
-            -e CENTRAL_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \\
-            -e CENTRAL_TASK_API_ENABLED=YES \\
-            -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite \\
+          docker run -d --name ai01-ci-a --read-only --network none \
+            -v ai01-ci-tasks:/var/lib/central-ai \
+            -e CENTRAL_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            -e CENTRAL_TASK_API_ENABLED=YES \
+            -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite \
             central-ai-ai01-test:local
           docker exec ai01-ci-a python -c 'import time; time.sleep(2)'
           docker exec ai01-ci-a python -c 'import urllib.request,json; u="http://127.0.0.1:8010/tasks"; h={"x-api-token":"a"*32,"Content-Type":"application/json"}; req=urllib.request.Request(u,headers=h,data=json.dumps({"description":"Isolated durability probe"}).encode()); data=json.load(urllib.request.urlopen(req)); open("/var/lib/central-ai/task_id.txt","w").write(data["task_id"]); assert data["status"]=="planned"'
           docker rm -f ai01-ci-a
-          docker run -d --name ai01-ci-b --read-only --network none \\
-            -v ai01-ci-tasks:/var/lib/central-ai \\
-            -e CENTRAL_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \\
-            -e CENTRAL_TASK_API_ENABLED=YES \\
-            -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite \\
+          docker run -d --name ai01-ci-b --read-only --network none \
+            -v ai01-ci-tasks:/var/lib/central-ai \
+            -e CENTRAL_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            -e CENTRAL_TASK_API_ENABLED=YES \
+            -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite \
             central-ai-ai01-test:local
           docker exec ai01-ci-b python -c 'import time; time.sleep(2)'
           docker exec ai01-ci-b python -c 'import urllib.request,json,pathlib; task=pathlib.Path("/var/lib/central-ai/task_id.txt").read_text(); req=urllib.request.Request("http://127.0.0.1:8010/tasks/"+task,headers={"x-api-token":"a"*32}); data=json.load(urllib.request.urlopen(req)); assert data["status"]=="planned" and data["deployment_allowed"] is False'
