@@ -37,7 +37,9 @@ def upgrade():
         sa.Column("generation",sa.BigInteger,nullable=False),
         sa.CheckConstraint("id=1"),sa.CheckConstraint("mode IN ('LEGACY','QUIESCED')"),
         sa.CheckConstraint("generation>=0"),schema="public")
-    op.execute("INSERT INTO public.paper_write_fence(id,mode,generation) VALUES(1,'LEGACY',0)")
+    # A completed schema conversion is NOT permission to begin paper writes.
+    # Both empty and populated migrations start fenced until explicit cutover.
+    op.execute("INSERT INTO public.paper_write_fence(id,mode,generation) VALUES(1,'QUIESCED',1)")
     op.create_table("paper_request_keys",
         sa.Column("account_id",sa.BigInteger,nullable=False),
         sa.Column("request_key",sa.String(128),nullable=False),
