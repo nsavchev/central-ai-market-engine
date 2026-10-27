@@ -34,7 +34,10 @@ def command(*args):
 def sha(path):
     if not path.is_file() or path.is_symlink():
         return None
-    if path.stat().st_size > 2_000_000:\n        return None\n    with path.open("rb") as stream:\n        return hashlib.file_digest(stream, "sha256").hexdigest()
+    if path.stat().st_size > 2_000_000:
+        return None
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 def report():
     commit = command("git", "-C", str(REPO), "rev-parse", "HEAD")
