@@ -28,7 +28,7 @@ def test_upgrade_and_downgrade_rehearsal(monkeypatch):
         """)).all()
         assert len(fields)==4
         assert all(row.data_type=="numeric" for row in fields)
-        assert con.scalar(text("SELECT mode FROM paper_write_fence WHERE id=1"))=="LEGACY"
+        assert con.scalar(text("SELECT mode FROM paper_write_fence WHERE id=1"))=="QUIESCED"
         assert con.scalar(text("SELECT to_regclass('public.paper_request_keys')")) is not None
         with Operations.context(ctx):
             migration.downgrade()
