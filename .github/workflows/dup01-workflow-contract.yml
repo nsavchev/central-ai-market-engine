@@ -15,3 +15,8 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -r requirements.txt pytest httpx
       - run: python -m pytest -q tests/test_dup01_workflow_ownership.py tests/test_ai01_worker_lifecycle_audit.py tests/test_ai01_task_api_optin.py
+      - name: Validate Central AI Docker configuration and image
+        run: |
+          touch .env.central
+          docker compose -f docker-compose.central.yml config -q
+          docker build -f central_ai/Dockerfile -t central-ai-ai01-test:local .
