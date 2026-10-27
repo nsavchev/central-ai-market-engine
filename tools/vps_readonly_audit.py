@@ -88,7 +88,9 @@ def main():
     payload = report()
     print(json.dumps(payload, indent=2, sort_keys=True))
     if args.post:
-        if args.token_file.is_symlink():\n            raise SystemExit("Token file must not be a symlink")\n        st = args.token_file.stat()
+        if args.token_file.is_symlink():
+            raise SystemExit("Token file must not be a symlink")
+        st = args.token_file.stat()
         if not args.token_file.is_file() or st.st_mode & 0o077:
             raise SystemExit("Token file must not be readable by group or others")
         token = args.token_file.read_text(encoding="utf-8").strip()
