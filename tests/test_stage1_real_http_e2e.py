@@ -26,7 +26,7 @@ def db(monkeypatch):
         con.execute(text("CREATE TABLE paper_accounts(id integer PRIMARY KEY,cash numeric(20,2) NOT NULL,currency varchar(8))"))
         con.execute(text("""CREATE TABLE paper_trades(id bigserial PRIMARY KEY,
             account_id int REFERENCES paper_accounts(id),symbol varchar(32),
-            side varchar(4),quantity numeric(24,6),price numeric(20,2),fee numeric(20,2))"""))
+            side varchar(4),quantity numeric(24,6),price numeric(20,2),fee numeric(20,2),executed_at timestamptz NOT NULL)"""))
         con.execute(text("""CREATE TABLE paper_write_fence(id int PRIMARY KEY,
             mode text NOT NULL,generation bigint NOT NULL)"""))
         con.execute(text("""CREATE TABLE paper_request_keys(account_id bigint,request_key varchar(128),
