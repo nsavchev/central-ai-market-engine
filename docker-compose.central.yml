@@ -12,4 +12,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      - central_ai_tasks:/var/lib/central-ai
+    environment:
+      CENTRAL_TASK_API_ENABLED: "NO"
+      CENTRAL_TASK_DB: /var/lib/central-ai/tasks.sqlite
     mem_limit: 512m
+
+volumes:
+  central_ai_tasks:
