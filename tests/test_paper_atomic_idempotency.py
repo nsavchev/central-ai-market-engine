@@ -15,7 +15,7 @@ def engine():
         c.execute(text("CREATE TABLE paper_write_fence(id int PRIMARY KEY,mode text,generation bigint)"))
         c.execute(text("CREATE TABLE paper_accounts(id int PRIMARY KEY,cash numeric(20,2))"))
         c.execute(text("""CREATE TABLE paper_trades(id bigserial PRIMARY KEY,account_id int,symbol text,side text,
-              quantity numeric(24,6),price numeric(20,2),fee numeric(20,2))"""))
+              quantity numeric(24,6),price numeric(20,2),fee numeric(20,2),executed_at timestamptz NOT NULL)"""))
         c.execute(text("""CREATE TABLE paper_request_keys(
           account_id int NOT NULL, request_key text NOT NULL, fingerprint text NOT NULL,
           result jsonb, PRIMARY KEY(account_id,request_key))"""))
