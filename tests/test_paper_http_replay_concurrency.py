@@ -27,7 +27,7 @@ def engine(monkeypatch):
         con.execute(text("CREATE TABLE paper_accounts(id int primary key,cash numeric(20,2) CHECK(cash>=0))"))
         con.execute(text("""CREATE TABLE paper_trades(
             id bigserial PRIMARY KEY, account_id int, symbol text, side text,
-            quantity numeric(24,6), price numeric(20,2), fee numeric(20,2))"""))
+            quantity numeric(24,6), price numeric(20,2), fee numeric(20,2),executed_at timestamptz NOT NULL)"""))
         con.execute(text("INSERT INTO paper_write_fence VALUES(1,'LEGACY',0)"))
         con.execute(text("INSERT INTO paper_accounts VALUES(1,100.00)"))
     yield db
