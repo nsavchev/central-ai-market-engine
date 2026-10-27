@@ -298,18 +298,42 @@ class PersistentWorkflowV05:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_states'"
             ).fetchone()
             if existing:
-                columns = {row[1] for row in conn.execute(
-                    "PRAGMA table_info(workflow_states)").fetchall()}
-                required = {"task_id", "stage", "attempts", "approved",
-                            "deployment_allowed", "history", "updated_at"}
-                if not required.issubset(columns):
+                info = {
+                    row[1]: row for row in
+                    conn.execute("PRAGMA table_info(workflow_states)").fetchall()
+                }
+                required = {
+                    "task_id", "stage", "attempts", "approved",
+                    "deployment_allowed", "history", "updated_at",
+                }
+                if set(info) not in (required, required | {"version"}):
                     raise ValueError("UNKNOWN_WORKFLOW_SCHEMA")
-                if conn.execute(
-                    "SELECT 1 FROM workflow_states WHERE approved IS NOT 0 "
-                    "OR deployment_allowed IS NOT 0 LIMIT 1"
-                ).fetchone():
-                    raise ValueError("STORED_SECURITY_VIOLATION")
-                if "version" not in columns:
+                if "version" in info:
+                    version_info = info["version"]
+                    if (version_info[2].upper() != "INTEGER"
+                            or version_info[3] != 1
+                            or version_info[4] not in ("0", "(0)")):
+                        raise ValueError("UNKNOWN_WORKFLOW_SCHEMA")
+                rows = conn.execute(
+                    "SELECT stage, attempts, approved, deployment_allowed, history"
+                    + (", version" if "version" in info else "")
+                    + " FROM workflow_states"
+                ).fetchall()
+                for row in rows:
+                    stage, attempts, approved, deployment, history = row[:5]
+                    if approved != 0 or deployment != 0:
+                        raise ValueError("STORED_SECURITY_VIOLATION")
+                    if stage not in STAGES or type(attempts) is not int or not 0 <= attempts <= 3:
+                        raise ValueError("INVALID_STORED_WORKFLOW")
+                    try:
+                        parsed_history = json.loads(history)
+                    except (ValueError, TypeError):
+                        raise ValueError("INVALID_STORED_WORKFLOW") from None
+                    if not isinstance(parsed_history, list):
+                        raise ValueError("INVALID_STORED_WORKFLOW")
+                    if "version" in info and (type(row[5]) is not int or row[5] < 0):
+                        raise ValueError("INVALID_STORED_WORKFLOW")
+                if "version" not in info:
                     conn.execute(
                         "ALTER TABLE workflow_states ADD COLUMN version INTEGER "
                         "NOT NULL DEFAULT 0 CHECK(version >= 0)"

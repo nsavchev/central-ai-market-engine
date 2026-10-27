@@ -37,3 +37,46 @@ def test_unknown_schema_fails_closed(tmp_path):
         con.execute("CREATE TABLE workflow_states (task_id TEXT PRIMARY KEY)")
     with pytest.raises(ValueError, match="UNKNOWN_WORKFLOW_SCHEMA"):
         PersistentWorkflowV05(db)
+
+
+@pytest.mark.parametrize("column", ["unexpected TEXT", "version TEXT NOT NULL DEFAULT '0'", "version INTEGER"])
+def test_unknown_schema_additions_fail_closed(tmp_path, column):
+    db = tmp_path / "unknown_extra.sqlite"
+    legacy(db)
+    with sqlite3.connect(db) as con:
+        con.execute("ALTER TABLE workflow_states ADD COLUMN " + column)
+    with pytest.raises(ValueError, match="UNKNOWN_WORKFLOW_SCHEMA"):
+        PersistentWorkflowV05(db)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("stage", "not-a-stage"),
+    ("attempts", -1),
+    ("history", "not-json"),
+    ("history", "{}"),
+])
+def test_invalid_legacy_rows_rejected_before_migration(tmp_path, field, value):
+    db = tmp_path / "corrupted.sqlite"
+    legacy(db)
+    with sqlite3.connect(db) as con:
+        con.execute(f"UPDATE workflow_states SET {field}=?", (value,))
+    with pytest.raises(ValueError, match="INVALID_STORED_WORKFLOW"):
+        PersistentWorkflowV05(db)
+    with sqlite3.connect(db) as con:
+        assert "version" not in {row[1] for row in con.execute("PRAGMA table_info(workflow_states)")}
+
+
+def test_migrate_multiple_rows_and_reopen_idempotently(tmp_path):
+    db = tmp_path / "multiple.sqlite"
+    legacy(db)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT INTO workflow_states VALUES (?, 'plan', 0, 0, 0, '[]', 'now')",
+            ("second-task",),
+        )
+    for _ in range(2):
+        workflow = PersistentWorkflowV05(db)
+        assert workflow.restore("legacy-task")[1] == 0
+        assert workflow.restore("second-task")[1] == 0
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT COUNT(*) FROM workflow_states").fetchone()[0] == 2
