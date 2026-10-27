@@ -76,8 +76,8 @@ def record_paper_fill(engine, *, account_id, symbol, side, quantity, price, fee,
             next_shares=held-qty
         con.execute(text("UPDATE paper_accounts SET cash=:cash WHERE id=:id"),{"cash":cash+delta,"id":account_id})
         con.execute(text("""
-            INSERT INTO paper_trades(account_id,symbol,side,quantity,price,fee)
-            VALUES (:id,:symbol,:side,:quantity,:price,:fee)
+            INSERT INTO paper_trades(account_id,symbol,side,quantity,price,fee,executed_at)
+            VALUES (:id,:symbol,:side,:quantity,:price,:fee,CURRENT_TIMESTAMP)
         """),{"id":account_id,"symbol":symbol,"side":side,"quantity":qty,"price":px,"fee":charge})
         return {"cash":str(cash+delta),"position_shares":str(next_shares),
                 "mode":"SIMULATION_ONLY","db_transaction":"COMMITTED"}
