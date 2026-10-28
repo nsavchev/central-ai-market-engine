@@ -69,3 +69,44 @@ async def ask(req: Query):
     async with httpx.AsyncClient(timeout=httpx.Timeout(65.0), follow_redirects=False) as client:
         results = await asyncio.gather(*(call_provider(client,p,req.prompt,req.max_tokens) for p in chosen))
     return {"mode":req.mode,"results":results,"note":"Independent model responses; not independently fact-checked. No trades executed."}
+
+# Task API is opt-in. This facade cannot execute work, approve or deploy.
+def _task_bridge():
+    from pathlib import Path
+    if os.environ.get("CENTRAL_TASK_API_ENABLED") != "YES":
+        raise HTTPException(status_code=503, detail="TASK_API_DISABLED")
+    location = os.environ.get("CENTRAL_TASK_DB", "")
+    if not location or not Path(location).is_absolute() or not Path(location).parent.is_dir():
+        raise HTTPException(status_code=503, detail="TASK_DB_NOT_CONFIGURED")
+    from central_ai.persistent_bridge import PersistentTaskBridge
+    return PersistentTaskBridge(location)
+
+
+class TaskSubmission(BaseModel):
+    description: str = Field(min_length=1, max_length=4000)
+
+
+@app.post("/tasks", dependencies=[Depends(auth)], status_code=202)
+def submit_task(req: TaskSubmission):
+    bridge = _task_bridge()
+    task = bridge.submit(req.description)
+    return {"task_id": task["task_id"], "status": task["status"],
+            "approved": False, "deployment_allowed": False}
+
+
+@app.get("/tasks/{task_id}", dependencies=[Depends(auth)])
+def task_status(task_id: str):
+    from uuid import UUID
+    try:
+        canonical = str(UUID(task_id))
+        if canonical != task_id:
+            raise ValueError("NON_CANONICAL")
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail="INVALID_TASK_ID")
+    bridge = _task_bridge()
+    result = bridge.status(task_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="TASK_NOT_FOUND")
+    return {"task_id": task_id, "status": result["status"],
+            "approved": False, "deployment_allowed": False}
+
