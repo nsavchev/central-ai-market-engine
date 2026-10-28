@@ -20,25 +20,21 @@ jobs:
           touch .env.central
           docker compose -f docker-compose.central.yml config -q
           docker build -f central_ai/Dockerfile -t central-ai-ai01-test:local .
-      - name: Prove SQLite survives real container replacement
+      - name: Prove SQLite survives container replacement
         run: |
           set -eu
           docker volume create ai01-ci-tasks
           trap 'docker rm -f ai01-ci-a ai01-ci-b >/dev/null 2>&1 || true; docker volume rm ai01-ci-tasks >/dev/null 2>&1 || true' EXIT
-          docker run -d --name ai01-ci-a --read-only --network none \
-            -v ai01-ci-tasks:/var/lib/central-ai \
-            -e CENTRAL_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-            -e CENTRAL_TASK_API_ENABLED=YES \
-            -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite \
-            central-ai-ai01-test:local
-          docker exec ai01-ci-a python -c 'import time; time.sleep(2)'
-          docker exec ai01-ci-a python -c 'import urllib.request,json; u="http://127.0.0.1:8010/tasks"; h={"x-api-token":"a"*32,"Content-Type":"application/json"}; req=urllib.request.Request(u,headers=h,data=json.dumps({"description":"Isolated durability probe"}).encode()); data=json.load(urllib.request.urlopen(req)); open("/var/lib/central-ai/task_id.txt","w").write(data["task_id"]); assert data["status"]=="planned"'
-          docker rm -f ai01-ci-a
-          docker run -d --name ai01-ci-b --read-only --network none \
-            -v ai01-ci-tasks:/var/lib/central-ai \
-            -e CENTRAL_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-            -e CENTRAL_TASK_API_ENABLED=YES \
-            -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite \
-            central-ai-ai01-test:local
-          docker exec ai01-ci-b python -c 'import time; time.sleep(2)'
-          docker exec ai01-ci-b python -c 'import urllib.request,json,pathlib; task=pathlib.Path("/var/lib/central-ai/task_id.txt").read_text(); req=urllib.request.Request("http://127.0.0.1:8010/tasks/"+task,headers={"x-api-token":"a"*32}); data=json.load(urllib.request.urlopen(req)); assert data["status"]=="planned" and data["deployment_allowed"] is False'
+          for instance in a b; do
+            docker run -d --name "ai01-ci-${instance}" --read-only --network none --mount type=volume,src=ai01-ci-tasks,dst=/var/lib/central-ai -e CENTRAL_API_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -e CENTRAL_TASK_API_ENABLED=YES -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite central-ai-ai01-test:local
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if docker exec "ai01-ci-${instance}" python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8010/health",timeout=1)' >/dev/null 2>&1; then break; fi
+              sleep 1
+            done
+            if [ "$instance" = a ]; then
+              docker exec ai01-ci-a python -c 'import urllib.request,json,pathlib; h={"x-api-token":"a"*32,"Content-Type":"application/json"}; req=urllib.request.Request("http://127.0.0.1:8010/tasks",headers=h,data=json.dumps({"description":"Isolated durability probe"}).encode()); data=json.load(urllib.request.urlopen(req,timeout=5)); pathlib.Path("/var/lib/central-ai/task_id.txt").write_text(data["task_id"]); assert data["status"]=="planned"'
+            else
+              docker exec ai01-ci-b python -c 'import urllib.request,json,pathlib; task=pathlib.Path("/var/lib/central-ai/task_id.txt").read_text(); req=urllib.request.Request("http://127.0.0.1:8010/tasks/"+task,headers={"x-api-token":"a"*32}); data=json.load(urllib.request.urlopen(req,timeout=5)); assert data["status"]=="planned" and data["deployment_allowed"] is False'
+            fi
+            docker rm -f "ai01-ci-${instance}"
+          done
