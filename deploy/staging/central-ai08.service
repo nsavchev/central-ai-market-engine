@@ -1,0 +1,13 @@
+[Unit]
+Description=Central AI isolated staging one-shot analysis
+Requires=docker.service
+After=docker.service
+ConditionPathExists=/opt/central-ai/ai08-staging/docker-compose.ai08.yml
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/central-ai/ai08-staging
+Environment=AI08_STAGING_ENABLED=YES
+ExecStart=/usr/bin/docker compose -p central-ai08-staging -f docker-compose.ai08.yml --profile ai08 run --rm --no-deps ai08-worker
+TimeoutStartSec=120
+NoNewPrivileges=yes
