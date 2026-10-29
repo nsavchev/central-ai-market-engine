@@ -1,0 +1,31 @@
+# Staging only. Never use a production task volume.
+services:
+  ai08-worker:
+    profiles: ["ai08"]
+    build:
+      context: .
+      dockerfile: central_ai/Dockerfile
+    image: central-ai-ai08:test
+    command: ["python", "-m", "central_ai.worker_periodic"]
+    restart: "no"
+    network_mode: "none"
+    user: "10001:10001"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+    pids_limit: 64
+    cpus: 0.50
+    mem_limit: 256m
+    environment:
+      CENTRAL_PERIODIC_ENABLED: "${AI08_STAGING_ENABLED:-NO}"
+      CENTRAL_TASK_DB: /var/lib/central-ai/tasks.sqlite
+      CENTRAL_WORKER_AGENT: ai08-staging-worker
+      CENTRAL_SCHEDULER_LOCK: /var/lib/central-ai/scheduler.lock
+      CENTRAL_SUPERVISOR_STATUS: /var/lib/central-ai/status.json
+      CENTRAL_PERIODIC_RUNS: "2"
+      CENTRAL_PERIODIC_PAUSE: "5"
+    volumes:
+      - ai08_staging_tasks:/var/lib/central-ai
+volumes:
+  ai08_staging_tasks:
