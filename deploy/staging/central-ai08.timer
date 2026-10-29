@@ -1,0 +1,12 @@
+[Unit]
+Description=Central AI staging periodic trigger (not enabled by default)
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=5min
+Unit=central-ai08.service
+Persistent=false
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
