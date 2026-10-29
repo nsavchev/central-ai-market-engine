@@ -1,0 +1,12 @@
+[Unit]
+Description=Run isolated Central AI staging worker periodically (AI-08)
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+Unit=central-ai-staging.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target
