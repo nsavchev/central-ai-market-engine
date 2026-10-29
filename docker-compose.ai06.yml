@@ -1,0 +1,33 @@
+# Test-only bounded worker. Explicit invocation: docker compose -f docker-compose.ai06.yml --profile ai06 up
+# Separate volume; never mount the production task database.
+services:
+  ai06-worker:
+    profiles: ["ai06"]
+    build:
+      context: .
+      dockerfile: central_ai/Dockerfile
+    image: central-ai-ai06:test
+    command: ["python", "-m", "central_ai.worker_supervised"]
+    restart: "on-failure:3"
+    network_mode: "none"
+    user: "10001:10001"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+    pids_limit: 64
+    cpus: 0.50
+    mem_limit: 256m
+    environment:
+      CENTRAL_SUPERVISED_SERVICE_ENABLED: "${AI06_TEST_ENABLE:-NO}"
+      CENTRAL_TASK_DB: /var/lib/central-ai/tasks.sqlite
+      CENTRAL_WORKER_AGENT: ai06-test-worker
+      CENTRAL_SCHEDULER_LOCK: /var/lib/central-ai/scheduler.lock
+      CENTRAL_SUPERVISOR_STATUS: /var/lib/central-ai/status.json
+      CENTRAL_SCHEDULER_CYCLES: "2"
+      CENTRAL_SCHEDULER_INTERVAL: "1"
+      CENTRAL_WORKER_MAX_TASKS: "2"
+    volumes:
+      - ai06_isolated_tasks:/var/lib/central-ai
+volumes:
+  ai06_isolated_tasks:
