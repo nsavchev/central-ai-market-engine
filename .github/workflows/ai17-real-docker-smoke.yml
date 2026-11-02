@@ -1,0 +1,42 @@
+name: AI-17 real isolated Docker syntax smoke
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Obtain digest-pinned Python image
+        run: |
+          docker pull python:3.12-alpine
+          docker image inspect python:3.12-alpine --format '{{index .RepoDigests 0}}' > /tmp/ai17-image.txt
+          grep -Eq '^python@sha256:[0-9a-f]{64}$' /tmp/ai17-image.txt
+      - name: Run syntax tests in real restricted containers
+        run: |
+          python - <<'PY'
+          import hashlib
+          import tempfile
+          from pathlib import Path
+          from central_ai.isolated_verifier import verify_candidate
+          image = Path("/tmp/ai17-image.txt").read_text().strip()
+          with tempfile.TemporaryDirectory() as temp:
+              candidate = Path(temp) / "candidate.py"
+              candidate.write_text("def inspected():\n    return 7\n")
+              sha = hashlib.sha256(candidate.read_bytes()).hexdigest()
+              success = verify_candidate(enabled="YES", candidate=str(candidate), expected_sha256=sha, image=image)
+              assert success["status"] == "syntax_passed", success
+              assert success["executed_candidate"] is False
+              candidate.write_text("def inspected(:\n    return 7\n")
+              sha = hashlib.sha256(candidate.read_bytes()).hexdigest()
+              failure = verify_candidate(enabled="YES", candidate=str(candidate), expected_sha256=sha, image=image)
+              assert failure["status"] == "syntax_failed", failure
+              assert failure["executed_candidate"] is False
+              print("AI17_REAL_DOCKER_SYNTAX_PASSED")
+          PY
