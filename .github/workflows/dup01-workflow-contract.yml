@@ -20,6 +20,19 @@ jobs:
           touch .env.central
           docker compose -f docker-compose.central.yml config -q
           docker build -f central_ai/Dockerfile -t central-ai-ai01-test:local .
+      - name: Record exact CI image and resolved Python dependencies (diagnostic only)
+        run: |
+          set -eu
+          mkdir -p release-evidence
+          docker image inspect central-ai-ai01-test:local --format '{{.Id}}' > release-evidence/image-id.txt
+          docker run --rm --network none --entrypoint python central-ai-ai01-test:local -m pip freeze --all > release-evidence/python-freeze.txt
+          sha256sum release-evidence/image-id.txt release-evidence/python-freeze.txt > release-evidence/evidence.sha256
+          echo "This is CI build evidence, not an approved digest-pinned release." > release-evidence/README.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p0-central-ai-build-evidence
+          path: release-evidence/
+          retention-days: 14
       - name: Prove SQLite survives container replacement
         run: |
           set -eu
