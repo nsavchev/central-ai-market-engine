@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import subprocess
+import uuid
 from pathlib import Path
 
 
@@ -32,8 +33,9 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
         raise ValueError("UNPINNED_IMAGE")
     if type(timeout) is not int or not 5 <= timeout <= 60:
         raise ValueError("INVALID_TIMEOUT")
+    container_name = 'central-ai-verifier-' + uuid.uuid4().hex
     cmd = [
-        "docker", "run", "--rm", "--pull=never",
+        'docker', 'run', '--name', container_name, '--rm', '--pull=never',
         "--network=none", "--read-only", "--cap-drop=ALL",
         "--security-opt=no-new-privileges", "--pids-limit=32",
         "--memory=128m", "--cpus=0.5", "--user=65534:65534",
@@ -46,6 +48,17 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
     try:
         result = run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
+        # A client timeout does not prove Docker stopped its container.
+        # Fail closed until a forced removal has been confirmed.
+        try:
+            cleanup = run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True}
+        if cleanup.returncode != 0:
+            return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True}
         return {"status": "timeout", "passed": False, "executed_candidate": True}
     return {"status": "passed" if result.returncode == 0 else "failed",
             "passed": result.returncode == 0, "executed_candidate": True,

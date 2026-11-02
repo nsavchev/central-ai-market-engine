@@ -58,4 +58,20 @@ def test_nonzero_and_timeout_fail_closed(tmp_path):
     def fail(*a,**k):
         raise subprocess.TimeoutExpired("docker",30)
     r=run_functional_tests(**params,run=fail)
-    assert r["status"]=="timeout" and not r["passed"]
+    assert r["status"]=="cleanup_unconfirmed" and not r["passed"]
+
+
+def test_timeout_cleanup_is_checked(tmp_path):
+    candidate,trusted=setup_files(tmp_path)
+    calls=[]
+    def fake_run(args,**kwargs):
+        calls.append(args)
+        if args[1]=="run":
+            raise subprocess.TimeoutExpired("docker",30)
+        return SimpleNamespace(returncode=0)
+    result=run_functional_tests(enabled="YES",candidate=str(candidate),
+        expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        test_file=str(trusted),image=IMAGE,run=fake_run)
+    assert result["status"]=="timeout" and not result["passed"]
+    assert calls[0][2]=="--name"
+    assert calls[1]==["docker","rm","-f",calls[0][3]]
