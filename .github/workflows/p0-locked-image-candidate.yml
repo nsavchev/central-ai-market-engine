@@ -39,6 +39,7 @@ jobs:
             printf 'USER 10001\n'
             printf 'CMD ["uvicorn","central_ai.app:app","--host","0.0.0.0","--port","8010"]\n'
           } > release-evidence/Dockerfile.release
+          python -c 'from central_ai.release_build_policy import validate_release_dockerfile; assert validate_release_dockerfile("release-evidence/Dockerfile.release")'
           docker build -f release-evidence/Dockerfile.release -t central-ai-locked-ci:local .
           docker image inspect central-ai-locked-ci:local --format '{{.Id}}' > release-evidence/candidate-image-id.txt
           docker run --rm --network none --entrypoint python central-ai-locked-ci:local -m pip freeze --all > release-evidence/installed-dependencies.txt
