@@ -48,7 +48,18 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
     try:
         result = run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
-        # A client timeout does not prove Docker stopped its container.\n        # Fail closed until a forced removal has been confirmed.\n        try:\n            cleanup = run(\n                ["docker", "rm", "-f", container_name],\n                capture_output=True, text=True, timeout=10, check=False,\n            )\n        except (subprocess.TimeoutExpired, OSError):\n            return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True}\n        if cleanup.returncode != 0:\n            return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True}\n        return {"status": "timeout", "passed": False, "executed_candidate": True}
+        # A client timeout does not prove Docker stopped its container.
+        # Fail closed until a forced removal has been confirmed.
+        try:
+            cleanup = run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True}
+        if cleanup.returncode != 0:
+            return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True}
+        return {"status": "timeout", "passed": False, "executed_candidate": True}
     return {"status": "passed" if result.returncode == 0 else "failed",
             "passed": result.returncode == 0, "executed_candidate": True,
             "returncode": result.returncode}
