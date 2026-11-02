@@ -1,0 +1,41 @@
+name: AI-19 real functional Docker smoke
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  functional-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Pull digest-pinned Python image
+        run: |
+          docker pull python:3.12-alpine
+          docker image inspect python:3.12-alpine --format '{{index .RepoDigests 0}}' > /tmp/ai19-image.txt
+          grep -Eq '^python@sha256:[0-9a-f]{64}$' /tmp/ai19-image.txt
+      - name: Real functional Docker pass and fail
+        run: |
+          python - <<'PY'
+          import hashlib
+          import tempfile
+          from pathlib import Path
+          from central_ai.isolated_functional_verifier import run_functional_tests
+          image = Path("/tmp/ai19-image.txt").read_text().strip()
+          with tempfile.TemporaryDirectory() as directory:
+              candidate = Path(directory) / "candidate.py"
+              test = Path(directory) / "test_candidate.py"
+              candidate.write_text("def multiply(a, b):\n    return a * b\n")
+              test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import multiply\nassert multiply(3, 4) == 12\n")
+              digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+              good = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), image=image)
+              assert good["status"] == "passed", good
+              test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import multiply\nassert multiply(3, 4) == 99\n")
+              bad = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), image=image)
+              assert bad["status"] == "failed", bad
+              print("AI19_REAL_FUNCTIONAL_DOCKER_PASSED")
+          PY
