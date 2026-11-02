@@ -11,11 +11,23 @@ def test_unpinned_production_dockerfile_is_rejected():
 
 def test_release_dockerfile_policy(tmp_path):
     path = tmp_path / "Dockerfile"
-    path.write_text(
+    text = (
         "FROM python:3.12.8-slim-bookworm@sha256:" + "a" * 64 +
-        "\nRUN pip install --no-cache-dir --require-hashes -r requirements.lock\n"
-        "USER 10001\n")
+        "\nWORKDIR /srv\nCOPY requirements.lock /srv/requirements.lock\n"
+        "RUN pip install --no-cache-dir --require-hashes -r /srv/requirements.lock\n"
+        "USER 10001\n"
+    )
+    path.write_text(text)
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("fastapi==0.115.6 --hash=sha256:" + "b" * 64 + "\n")
     assert validate_release_dockerfile(path)
-    path.write_text(path.read_text().replace("--require-hashes", ""))
+    lock.write_text("fastapi>=0.115\n")
+    with pytest.raises(ValueError, match="UNPINNED_LOCK_ENTRY"):
+        validate_release_dockerfile(path)
+    lock.write_text("fastapi==0.115.6 --hash=sha256:" + "b" * 64 + "\n")
+    path.write_text(text.replace("--require-hashes ", ""))
     with pytest.raises(ValueError, match="UNLOCKED_DEPENDENCIES"):
+        validate_release_dockerfile(path)
+    path.write_text(text.replace("COPY requirements.lock /srv/requirements.lock\n", ""))
+    with pytest.raises(ValueError, match="LOCKFILE_NOT_COPIED"):
         validate_release_dockerfile(path)
