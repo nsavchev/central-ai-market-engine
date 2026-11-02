@@ -1,0 +1,46 @@
+name: AI-22 real Docker timeout cleanup
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  timeout-cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Pull vetted runner image
+        run: |
+          docker pull python:3.12-alpine
+          docker image inspect python:3.12-alpine --format '{{index .RepoDigests 0}}' > /tmp/ai22-image.txt
+          grep -Eq '^python@sha256:[0-9a-f]{64}$' /tmp/ai22-image.txt
+      - name: Confirm real timeout removes named container
+        run: |
+          python - <<'PY'
+          import hashlib
+          import subprocess
+          import tempfile
+          import time
+          from pathlib import Path
+          from central_ai.isolated_functional_verifier import run_functional_tests
+          image = Path("/tmp/ai22-image.txt").read_text().strip()
+          with tempfile.TemporaryDirectory() as directory:
+              candidate = Path(directory) / "candidate.py"
+              tests = Path(directory) / "test_candidate.py"
+              candidate.write_text("def f():\n    return 1\n")
+              tests.write_text("import time\ntime.sleep(30)\n")
+              digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+              before = {x for x in subprocess.check_output(["docker", "ps", "-a", "--format", "{{.Names}}"], text=True).splitlines() if x.startswith("central-ai-verifier-")}
+              started = time.monotonic()
+              result = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(tests), image=image, timeout=5)
+              assert result["status"] == "timeout", result
+              assert not result["passed"], result
+              after = {x for x in subprocess.check_output(["docker", "ps", "-a", "--format", "{{.Names}}"], text=True).splitlines() if x.startswith("central-ai-verifier-")}
+              assert after == before, (before, after)
+              assert time.monotonic()-started < 25
+              print("AI22_REAL_TIMEOUT_CLEANUP_PASSED")
+          PY
