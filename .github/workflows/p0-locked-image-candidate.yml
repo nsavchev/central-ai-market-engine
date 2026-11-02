@@ -16,7 +16,7 @@ jobs:
       - name: Generate exact transitive dependency lock with real hashes
         run: |
           set -eu
-          python -m pip install 'pip-tools==7.5.2'
+          python -m pip install 'pip==25.3' 'pip-tools==7.5.2'
           mkdir -p release-evidence
           printf 'fastapi>=0.115,<1\nuvicorn>=0.30,<1\nhttpx>=0.27,<1\n' > release-evidence/requirements.in
           pip-compile --generate-hashes --allow-unsafe --output-file release-evidence/requirements.lock release-evidence/requirements.in
