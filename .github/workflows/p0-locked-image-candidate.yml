@@ -1,0 +1,52 @@
+name: P0 locked isolated image candidate
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  locked-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate exact transitive dependency lock with real hashes
+        run: |
+          set -eu
+          python -m pip install 'pip-tools==7.5.2'
+          mkdir -p release-evidence
+          printf 'fastapi>=0.115,<1\nuvicorn>=0.30,<1\nhttpx>=0.27,<1\n' > release-evidence/requirements.in
+          pip-compile --generate-hashes --allow-unsafe --output-file release-evidence/requirements.lock release-evidence/requirements.in
+          python -m pip install --dry-run --require-hashes -r release-evidence/requirements.lock > release-evidence/hash-validation.txt
+      - name: Resolve immutable base image digest and build isolated image
+        run: |
+          set -eu
+          docker pull python:3.12-slim
+          docker image inspect python:3.12-slim --format '{{index .RepoDigests 0}}' > release-evidence/base-image.txt
+          grep -Eq '^python@sha256:[a-f0-9]{64}$' release-evidence/base-image.txt
+          BASE=$(cat release-evidence/base-image.txt)
+          {
+            printf 'FROM %s\n' "$BASE"
+            printf 'WORKDIR /srv\n'
+            printf 'COPY release-evidence/requirements.lock /srv/requirements.lock\n'
+            printf 'RUN pip install --no-cache-dir --require-hashes -r /srv/requirements.lock\n'
+            printf 'COPY central_ai /srv/central_ai\n'
+            printf 'COPY developer_agent /srv/developer_agent\n'
+            printf 'RUN mkdir -p /var/lib/central-ai && chown 10001:10001 /var/lib/central-ai\n'
+            printf 'USER 10001\n'
+            printf 'CMD ["uvicorn","central_ai.app:app","--host","0.0.0.0","--port","8010"]\n'
+          } > release-evidence/Dockerfile.release
+          docker build -f release-evidence/Dockerfile.release -t central-ai-locked-ci:local .
+          docker image inspect central-ai-locked-ci:local --format '{{.Id}}' > release-evidence/candidate-image-id.txt
+          docker run --rm --network none --entrypoint python central-ai-locked-ci:local -m pip freeze --all > release-evidence/installed-dependencies.txt
+          docker run --rm --network none --entrypoint python central-ai-locked-ci:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/import-smoke.txt
+          sha256sum release-evidence/* > release-evidence/manifest.sha256
+      - name: Archive candidate evidence only, never deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-locked-image-candidate
+          path: release-evidence/
+          retention-days: 14
