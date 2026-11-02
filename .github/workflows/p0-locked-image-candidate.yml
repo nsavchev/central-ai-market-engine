@@ -44,6 +44,14 @@ jobs:
           docker image inspect central-ai-locked-ci:local --format '{{.Id}}' > release-evidence/candidate-image-id.txt
           docker run --rm --network none --entrypoint python central-ai-locked-ci:local -m pip freeze --all > release-evidence/installed-dependencies.txt
           docker run --rm --network none --entrypoint python central-ai-locked-ci:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/import-smoke.txt
+          # Rebuild with the same resolved base and lock, then compare runtime packages.
+          docker build --no-cache -f release-evidence/Dockerfile.release -t central-ai-locked-rebuild:local .
+          docker run --rm --network none --entrypoint python central-ai-locked-rebuild:local -m pip freeze --all > release-evidence/rebuilt-dependencies.txt
+          cmp release-evidence/installed-dependencies.txt release-evidence/rebuilt-dependencies.txt
+          docker run --rm --network none --entrypoint python central-ai-locked-rebuild:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/rebuilt-import-smoke.txt
+          cmp release-evidence/import-smoke.txt release-evidence/rebuilt-import-smoke.txt
+          docker image inspect central-ai-locked-rebuild:local --format '{{.Id}}' > release-evidence/rebuilt-image-id.txt
+          echo "Verified package-set equivalence across two CI builds; byte-for-byte image reproducibility not proven." > release-evidence/comparison-scope.txt
           sha256sum release-evidence/* > release-evidence/manifest.sha256
       - name: Archive candidate evidence only, never deploy
         uses: actions/upload-artifact@v4
