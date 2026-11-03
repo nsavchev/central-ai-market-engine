@@ -49,3 +49,26 @@ def test_compact_linux_lock_in_release_context(tmp_path):
     lock.write_text("fastapi==0.162.0\n")
     with pytest.raises(ValueError, match="UNPINNED_LOCK_ENTRY"):
         validate_release_dockerfile(path)
+
+
+
+def test_source_controlled_release_recipe_and_no_compile_gate(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    assert validate_release_dockerfile(root / "release" / "Dockerfile.release")
+    recipe = (root / "release" / "Dockerfile.release").read_text()
+    assert "ENV PYTHONDONTWRITEBYTECODE=1" in recipe
+    assert "RUN pip install --no-cache-dir --no-compile --require-hashes -r /srv/requirements.lock" in recipe
+    directory = tmp_path / "release"
+    directory.mkdir()
+    lock = directory / "requirements-linux-amd64.lock"
+    lock.write_text("fastapi==0.162.0 --hash=sha256:" + "b" * 64 + "\n")
+    path = directory / "Dockerfile.release"
+    path.write_text(recipe)
+    assert validate_release_dockerfile(path)
+    path.write_text(recipe.replace("--require-hashes ", ""))
+    with pytest.raises(ValueError, match="UNLOCKED_DEPENDENCIES"):
+        validate_release_dockerfile(path)
+    path.write_text(recipe)
+    lock.write_text("fastapi==0.162.0\n")
+    with pytest.raises(ValueError, match="UNPINNED_LOCK_ENTRY"):
+        validate_release_dockerfile(path)

@@ -22,7 +22,7 @@ def validate_release_dockerfile(path):
     if len(copied) != 1:
         raise ValueError("LOCKFILE_NOT_COPIED")
     if not re.search(
-        r"(?m)^RUN pip install --no-cache-dir --require-hashes -r /srv/requirements\.lock\s*$",
+        r"(?m)^RUN pip install --no-cache-dir (?:--no-compile )?--require-hashes -r /srv/requirements\.lock\s*$",
         source):
         raise ValueError("UNLOCKED_DEPENDENCIES")
     # Docker COPY is resolved against the repository build context, not Dockerfile.parent.
