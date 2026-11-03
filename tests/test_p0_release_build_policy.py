@@ -31,3 +31,21 @@ def test_release_dockerfile_policy(tmp_path):
     path.write_text(text.replace("COPY requirements.lock /srv/requirements.lock\n", ""))
     with pytest.raises(ValueError, match="LOCKFILE_NOT_COPIED"):
         validate_release_dockerfile(path)
+
+
+def test_compact_linux_lock_in_release_context(tmp_path):
+    directory = tmp_path / "release-evidence"
+    directory.mkdir()
+    path = directory / "Dockerfile.release"
+    path.write_text(
+        "FROM python@sha256:" + "a" * 64 + "\n"
+        "COPY release-evidence/requirements-linux-amd64.lock /srv/requirements.lock\n"
+        "RUN pip install --no-cache-dir --require-hashes -r /srv/requirements.lock\n"
+        "USER 10001\n"
+    )
+    lock = directory / "requirements-linux-amd64.lock"
+    lock.write_text("fastapi==0.162.0 --hash=sha256:" + "b" * 64 + "\n")
+    assert validate_release_dockerfile(path)
+    lock.write_text("fastapi==0.162.0\n")
+    with pytest.raises(ValueError, match="UNPINNED_LOCK_ENTRY"):
+        validate_release_dockerfile(path)
