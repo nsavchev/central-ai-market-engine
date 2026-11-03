@@ -60,11 +60,18 @@ jobs:
         run: |
           set -eu
           name="central-ai-release-acceptance"
-          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          volume=""
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true; if [ -n "$volume" ]; then docker volume rm "$volume" >/dev/null 2>&1 || true; fi' EXIT
           for pair in candidate:central-ai-locked-ci:local rebuilt:central-ai-locked-rebuild:local; do
             label="${pair%%:*}"
             image="${pair#*:}"
-            docker run -d --name "$name" --network none --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=64 --memory=256m --cpus=1 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=8m -e CENTRAL_API_TOKEN=ci-only-release-token-000000000000 -e CENTRAL_TASK_API_ENABLED=NO -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite "$image"
+            volume="central-ai-ci-${GITHUB_RUN_ID}-$label"
+            if docker volume inspect "$volume" >/dev/null 2>&1; then
+              echo "Disposable acceptance volume already exists; refusing reuse" >&2
+              exit 1
+            fi
+            docker volume create "$volume" >/dev/null
+            docker run -d --name "$name" --network none --mount "type=volume,src=$volume,dst=/var/lib/central-ai" --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=64 --memory=256m --cpus=1 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=8m -e CENTRAL_API_TOKEN=ci-only-release-token-000000000000 -e CENTRAL_TASK_API_ENABLED=NO -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite "$image"
             docker exec -i "$name" python - <<'PY' > "release-evidence/$label-api-acceptance.json"
           import json,os,time,urllib.request,urllib.error
           from pathlib import Path
@@ -101,10 +108,16 @@ jobs:
           assert code==503 and body["detail"]=="TASK_API_DISABLED"
           code,body=request("/tasks/00000000-0000-0000-0000-000000000000",authenticated=True)
           assert code==503 and body["detail"]=="TASK_API_DISABLED"
+          probe=Path("/var/lib/central-ai/.ci-volume-probe")
+          probe.write_text("disposable acceptance only")
+          assert probe.read_text()=="disposable acceptance only"
+          probe.unlink()
           assert not Path("/var/lib/central-ai/tasks.sqlite").exists()
-          print(json.dumps({"health":"ok","uid":os.geteuid(),"unauthenticated":401,"task_api":503,"provider_credentials":False,"task_database_created":False,"production_modified":False,"deployment_authorized":False},sort_keys=True))
+          print(json.dumps({"health":"ok","uid":os.geteuid(),"unauthenticated":401,"task_api":503,"provider_credentials":False,"task_database_created":False,"disposable_volume_writable":True,"production_modified":False,"deployment_authorized":False},sort_keys=True))
           PY
             docker rm -f "$name"
+            docker volume rm "$volume" >/dev/null
+            volume=""
           done
           cmp release-evidence/candidate-api-acceptance.json release-evidence/rebuilt-api-acceptance.json
       - name: Capture image differences without normalizing evidence
@@ -163,6 +176,30 @@ jobs:
           assert report["runtime_config_equal"], "RUNTIME_CONFIG_DRIFT"
           assert a["Config"]["User"]==b["Config"]["User"]=="10001", "NONROOT_REQUIRED"
           PY
+      - name: Export tested API-only transfer candidate
+        if: matrix.builder == 'first'
+        env:
+          CANDIDATE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -eu
+          mkdir -p /tmp/central-ai-api-transfer
+          docker save central-ai-locked-ci:local -o /tmp/central-ai-api-transfer/central-ai-image.tar
+          cp release-evidence/candidate-image-id.txt /tmp/central-ai-api-transfer/image-id.txt
+          cp release-evidence/checkout-sha.txt release-evidence/source-date-epoch.txt release-evidence/source-sha256.txt release-evidence/candidate-api-acceptance.json /tmp/central-ai-api-transfer/
+          cp scripts/ai24_vps_readonly_preflight.sh /tmp/central-ai-api-transfer/vps-readonly-preflight.sh
+          cp docs/audits/CENTRAL_AI_API_TRANSFER_2026-11-03.md /tmp/central-ai-api-transfer/TRANSFER.md
+          printf '%s\n' "$CANDIDATE_HEAD_SHA" > /tmp/central-ai-api-transfer/head-sha.txt
+          echo "Candidate only. Require successful independent-comparison and all CI before use. No deployment authorized." > /tmp/central-ai-api-transfer/SCOPE.txt
+          cd /tmp/central-ai-api-transfer
+          sha256sum central-ai-image.tar image-id.txt checkout-sha.txt head-sha.txt source-date-epoch.txt source-sha256.txt candidate-api-acceptance.json vps-readonly-preflight.sh TRANSFER.md SCOPE.txt > manifest.sha256
+      - name: Archive tested API-only transfer candidate
+        if: matrix.builder == 'first'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: central-ai-api-transfer-candidate
+          path: /tmp/central-ai-api-transfer/
+          if-no-files-found: error
+          retention-days: 14
       - name: Seal diagnostic evidence
         if: ${{ always() }}
         run: |
