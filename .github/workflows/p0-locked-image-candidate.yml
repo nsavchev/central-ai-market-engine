@@ -1,0 +1,262 @@
+name: P0 locked isolated image candidate
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  locked-candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: [first, second]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Verify version-controlled release lock and immutable base
+        run: |
+          set -eu
+          mkdir -p release-evidence
+          python -c 'from central_ai.release_build_policy import validate_release_dockerfile; assert validate_release_dockerfile("release/Dockerfile.release")'
+          cp release/requirements-linux-amd64.lock release-evidence/requirements-linux-amd64.lock
+          cp release/Dockerfile.release release-evidence/Dockerfile.release
+          cp release/Dockerfile.release.dockerignore release-evidence/Dockerfile.release.dockerignore
+          sha256sum release/requirements-linux-amd64.lock release/Dockerfile.release release/Dockerfile.release.dockerignore > release-evidence/source-sha256.txt
+          python -m pip download --only-binary=:all: --require-hashes -r release/requirements-linux-amd64.lock -d release-evidence/wheels
+          test "$(find release-evidence/wheels -name '*.whl' -type f | wc -l)" -eq 17
+          python -m pip install --dry-run --no-index --find-links release-evidence/wheels --require-hashes -r release/requirements-linux-amd64.lock > release-evidence/lock-validation.txt
+          rm -rf release-evidence/wheels
+      - name: Build from pinned source twice and inspect runtime
+        run: |
+          set -eu
+          BASE='python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30'
+          grep -Fxq "FROM $BASE" release/Dockerfile.release
+          docker pull "$BASE"
+          printf '%s\n' "$BASE" > release-evidence/base-image.txt
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          printf '%s\n' "$SOURCE_DATE_EPOCH" > release-evidence/source-date-epoch.txt
+          docker buildx version > release-evidence/buildx-version.txt
+          docker buildx inspect --bootstrap > release-evidence/builder-info.txt
+          docker buildx build --no-cache --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" --output type=docker,rewrite-timestamp=true -f release/Dockerfile.release -t central-ai-locked-ci:local .
+          docker image inspect central-ai-locked-ci:local --format '{{.Id}}' > release-evidence/candidate-image-id.txt
+          docker run --rm --network none --entrypoint python central-ai-locked-ci:local -m pip freeze --all > release-evidence/installed-dependencies.txt
+          docker run --rm --network none --entrypoint python central-ai-locked-ci:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/import-smoke.txt
+          docker buildx build --no-cache --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" --output type=docker,rewrite-timestamp=true -f release/Dockerfile.release -t central-ai-locked-rebuild:local .
+          docker image inspect central-ai-locked-rebuild:local --format '{{.Id}}' > release-evidence/rebuilt-image-id.txt
+          docker run --rm --network none --entrypoint python central-ai-locked-rebuild:local -m pip freeze --all > release-evidence/rebuilt-dependencies.txt
+          cmp release-evidence/installed-dependencies.txt release-evidence/rebuilt-dependencies.txt
+          docker run --rm --network none --entrypoint python central-ai-locked-rebuild:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/rebuilt-import-smoke.txt
+          cmp release-evidence/import-smoke.txt release-evidence/rebuilt-import-smoke.txt
+      - name: Accept exact release API with task execution disabled
+        run: |
+          set -eu
+          name="central-ai-release-acceptance"
+          volume=""
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true; if [ -n "$volume" ]; then docker volume rm "$volume" >/dev/null 2>&1 || true; fi' EXIT
+          for pair in candidate:central-ai-locked-ci:local rebuilt:central-ai-locked-rebuild:local; do
+            label="${pair%%:*}"
+            image="${pair#*:}"
+            volume="central-ai-ci-${GITHUB_RUN_ID}-$label"
+            if docker volume inspect "$volume" >/dev/null 2>&1; then
+              echo "Disposable acceptance volume already exists; refusing reuse" >&2
+              exit 1
+            fi
+            docker volume create "$volume" >/dev/null
+            docker run -d --name "$name" --network none --mount "type=volume,src=$volume,dst=/var/lib/central-ai" --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=64 --memory=256m --cpus=1 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=8m -e CENTRAL_API_TOKEN=ci-only-release-token-000000000000 -e CENTRAL_TASK_API_ENABLED=NO -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite "$image"
+            docker exec -i "$name" python - <<'PY' > "release-evidence/$label-api-acceptance.json"
+          import json,os,time,urllib.request,urllib.error
+          from pathlib import Path
+          base="http://127.0.0.1:8010"
+          for attempt in range(30):
+              try:
+                  with urllib.request.urlopen(base+"/health",timeout=1) as response:
+                      health=json.load(response)
+                  break
+              except (urllib.error.URLError,TimeoutError):
+                  time.sleep(0.5)
+          else:
+              raise AssertionError("RELEASE_API_NOT_READY")
+          assert health["status"]=="ok" and health["service"]=="central-ai"
+          def request(path,method="GET",authenticated=False):
+              headers={"Content-Type":"application/json"}
+              if authenticated:
+                  headers["x-api-token"]="ci-only-release-token-000000000000"
+              data=b'{"description":"CI disabled-task probe"}' if method=="POST" else None
+              req=urllib.request.Request(base+path,data=data,headers=headers,method=method)
+              try:
+                  with urllib.request.urlopen(req,timeout=3) as response:
+                      return response.status,json.load(response)
+              except urllib.error.HTTPError as error:
+                  return error.code,json.load(error)
+          assert os.geteuid()==10001
+          assert os.getenv("CENTRAL_TASK_API_ENABLED")=="NO"
+          assert request("/providers")[0]==401
+          assert request("/tasks","POST")[0]==401
+          assert request("/ask","POST")[0]==401
+          code,providers=request("/providers",authenticated=True)
+          assert code==200 and all(not value["configured"] for value in providers.values())
+          code,body=request("/tasks","POST",True)
+          assert code==503 and body["detail"]=="TASK_API_DISABLED"
+          code,body=request("/tasks/00000000-0000-0000-0000-000000000000",authenticated=True)
+          assert code==503 and body["detail"]=="TASK_API_DISABLED"
+          probe=Path("/var/lib/central-ai/.ci-volume-probe")
+          probe.write_text("disposable acceptance only")
+          assert probe.read_text()=="disposable acceptance only"
+          probe.unlink()
+          assert not Path("/var/lib/central-ai/tasks.sqlite").exists()
+          print(json.dumps({"health":"ok","uid":os.geteuid(),"unauthenticated":401,"task_api":503,"provider_credentials":False,"task_database_created":False,"disposable_volume_writable":True,"production_modified":False,"deployment_authorized":False},sort_keys=True))
+          PY
+            docker rm -f "$name"
+            docker volume rm "$volume" >/dev/null
+            volume=""
+          done
+          cmp release-evidence/candidate-api-acceptance.json release-evidence/rebuilt-api-acceptance.json
+      - name: Capture image differences without normalizing evidence
+        run: |
+          set -eu
+          git rev-parse HEAD > release-evidence/checkout-sha.txt
+          docker version > release-evidence/docker-version.txt
+          for pair in candidate:central-ai-locked-ci:local rebuilt:central-ai-locked-rebuild:local; do
+            label="${pair%%:*}"
+            image="${pair#*:}"
+            docker image inspect "$image" > "release-evidence/$label-inspect.json"
+            docker history --no-trunc --format '{{json .}}' "$image" > "release-evidence/$label-history.jsonl"
+            docker run --rm --network none --read-only --user 0 --entrypoint python "$image" -c '
+          import hashlib,json,os,stat
+          roots=("/usr/local/lib/python3.12/site-packages","/srv","/var/lib/central-ai")
+          for root in roots:
+              for directory,dirs,files in os.walk(root):
+                  dirs.sort()
+                  for name in sorted(dirs+files):
+                      path=os.path.join(directory,name)
+                      s=os.lstat(path)
+                      row={"path":path,"mode":s.st_mode,"uid":s.st_uid,"gid":s.st_gid,"mtime_ns":s.st_mtime_ns}
+                      if stat.S_ISLNK(s.st_mode):
+                          row["link"]=os.readlink(path)
+                      elif stat.S_ISREG(s.st_mode):
+                          with open(path,"rb") as f:
+                              row["sha256"]=hashlib.file_digest(f,"sha256").hexdigest()
+                      print(json.dumps(row,sort_keys=True))
+          ' > "release-evidence/$label-files.jsonl"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("release-evidence")
+          a=json.loads((root/"candidate-inspect.json").read_text())[0]
+          b=json.loads((root/"rebuilt-inspect.json").read_text())[0]
+          def inventory(name):
+              return {r["path"]:r for r in map(json.loads,(root/name).read_text().splitlines())}
+          x,y=inventory("candidate-files.jsonl"),inventory("rebuilt-files.jsonl")
+          paths=sorted(x.keys()|y.keys())
+          report={
+              "image_ids_equal":a["Id"]==b["Id"],
+              "runtime_config_equal":a["Config"]==b["Config"],
+              "rootfs_layers_equal":a["RootFS"]==b["RootFS"],
+              "created_equal":a["Created"]==b["Created"],
+              "filesystem_scope":["site-packages","/srv","/var/lib/central-ai"],
+              "filesystem_differences":[{"path":p,"candidate":x.get(p),"rebuilt":y.get(p)} for p in paths if x.get(p)!=y.get(p)],
+              "deployment_authorized":False,
+              "scope":"Two clean builds on one runner with source-derived timestamp rewriting; not independent-builder or deployment acceptance."
+          }
+          (root/"image-comparison.json").write_text(json.dumps(report,indent=2)+"\n")
+          assert not any(p.startswith("/srv/") and (p.endswith(".pyc") or "/__pycache__/" in p) for p in paths), "HOST_BYTECODE_COPIED"
+          assert report["image_ids_equal"], "IMAGE_ID_DRIFT"
+          assert report["rootfs_layers_equal"], "ROOTFS_LAYER_DRIFT"
+          assert not report["filesystem_differences"], "FILESYSTEM_DRIFT"
+          assert report["runtime_config_equal"], "RUNTIME_CONFIG_DRIFT"
+          assert a["Config"]["User"]==b["Config"]["User"]=="10001", "NONROOT_REQUIRED"
+          PY
+      - name: Export tested API-only transfer candidate
+        if: matrix.builder == 'first'
+        env:
+          CANDIDATE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -eu
+          mkdir -p /tmp/central-ai-api-transfer
+          docker save central-ai-locked-ci:local -o /tmp/central-ai-api-transfer/central-ai-image.tar
+          cp release-evidence/candidate-image-id.txt /tmp/central-ai-api-transfer/image-id.txt
+          cp release-evidence/checkout-sha.txt release-evidence/source-date-epoch.txt release-evidence/source-sha256.txt release-evidence/candidate-api-acceptance.json /tmp/central-ai-api-transfer/
+          cp scripts/ai24_vps_readonly_preflight.sh /tmp/central-ai-api-transfer/vps-readonly-preflight.sh
+          cp docs/audits/CENTRAL_AI_API_TRANSFER_2026-11-03.md /tmp/central-ai-api-transfer/TRANSFER.md
+          printf '%s\n' "$CANDIDATE_HEAD_SHA" > /tmp/central-ai-api-transfer/head-sha.txt
+          echo "Candidate only. Require successful independent-comparison and all CI before use. No deployment authorized." > /tmp/central-ai-api-transfer/SCOPE.txt
+          cd /tmp/central-ai-api-transfer
+          sha256sum central-ai-image.tar image-id.txt checkout-sha.txt head-sha.txt source-date-epoch.txt source-sha256.txt candidate-api-acceptance.json vps-readonly-preflight.sh TRANSFER.md SCOPE.txt > manifest.sha256
+      - name: Archive tested API-only transfer candidate
+        if: matrix.builder == 'first'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: central-ai-api-transfer-candidate
+          path: /tmp/central-ai-api-transfer/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Seal diagnostic evidence
+        if: ${{ always() }}
+        run: |
+          echo "Inspect image-comparison.json and workflow conclusion; equality is required for two clean builds on one runner, not independent-builder or deployment acceptance." > release-evidence/comparison-scope.txt
+          find release-evidence -maxdepth 1 -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum > release-evidence/manifest.sha256
+      - name: Archive source-controlled release evidence (never deploy)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p0-locked-image-candidate-${{ matrix.builder }}
+          path: release-evidence/
+          retention-days: 14
+
+  independent-comparison:
+    needs: locked-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: p0-locked-image-candidate-*
+          path: independent-evidence
+      - name: Compare separate runner evidence
+        run: |
+          python - <<'PY'
+          import hashlib,json,re
+          from pathlib import Path
+          root=Path("independent-evidence")
+          first=root/"p0-locked-image-candidate-first"
+          second=root/"p0-locked-image-candidate-second"
+          files=("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","Dockerfile.release.dockerignore","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-api-acceptance.json","rebuilt-api-acceptance.json","candidate-files.jsonl","rebuilt-files.jsonl")
+          for directory in (first,second):
+              checked=set()
+              for line in (directory/"manifest.sha256").read_text().splitlines():
+                  digest,name=line.split(None,1)
+                  name=Path(name.strip()).name
+                  assert re.fullmatch("[0-9a-f]{64}",digest), "INVALID_MANIFEST_DIGEST"
+                  assert name not in checked, "DUPLICATE_MANIFEST_ENTRY"
+                  checked.add(name)
+                  assert hashlib.sha256((directory/name).read_bytes()).hexdigest()==digest, "ARTIFACT_HASH_MISMATCH"
+              assert set(files)<=checked, "INCOMPLETE_MANIFEST"
+              report=json.loads((directory/"image-comparison.json").read_text())
+              assert all(report[k] for k in ("image_ids_equal","rootfs_layers_equal","runtime_config_equal","created_equal")), "LOCAL_COMPARISON_FAILED"
+              assert not report["filesystem_differences"], "LOCAL_FILESYSTEM_DRIFT"
+          matches={name:(first/name).read_bytes()==(second/name).read_bytes() for name in files}
+          result={"matches":matches,"independent_runner_equal":all(matches.values()),"deployment_authorized":False,"scope":"Two separate GitHub-hosted runners in one workflow, same platform and source; not independent trust domains or VPS acceptance."}
+          Path("independent-comparison.json").write_text(json.dumps(result,indent=2)+"\n")
+          assert result["independent_runner_equal"], "INDEPENDENT_BUILD_DRIFT"
+          PY
+      - name: Archive independent comparison
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p0-independent-comparison
+          path: independent-comparison.json
+          if-no-files-found: error
+          retention-days: 14

@@ -9,8 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - name: Pull vetted runner image
@@ -36,7 +38,7 @@ jobs:
               digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
               before = {x for x in subprocess.check_output(["docker", "ps", "-a", "--format", "{{.Names}}"], text=True).splitlines() if x.startswith("central-ai-verifier-")}
               started = time.monotonic()
-              result = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(tests), image=image, timeout=5)
+              result = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(tests), expected_test_sha256=hashlib.sha256(tests.read_bytes()).hexdigest(), image=image, timeout=5)
               assert result["status"] == "timeout", result
               assert not result["passed"], result
               after = {x for x in subprocess.check_output(["docker", "ps", "-a", "--format", "{{.Names}}"], text=True).splitlines() if x.startswith("central-ai-verifier-")}
