@@ -18,7 +18,7 @@ def validate_release_dockerfile(path):
         r"FROM python(?:[:][a-zA-Z0-9._-]+)?@sha256:[0-9a-f]{64}",
         from_lines[0]):
         raise ValueError("UNPINNED_BASE_IMAGE")
-    copied = re.findall(r"(?m)^COPY (\S*requirements\.lock) /srv/requirements\.lock\s*$", source)
+    copied = re.findall(r"(?m)^COPY (\S*requirements(?:-linux-amd64)?\.lock) /srv/requirements\.lock\s*$", source)
     if len(copied) != 1:
         raise ValueError("LOCKFILE_NOT_COPIED")
     if not re.search(
