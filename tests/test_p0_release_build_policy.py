@@ -129,7 +129,7 @@ def test_separate_runner_comparison_checks_integrity(tmp_path, monkeypatch, tamp
     block = workflow.split("- name: Compare separate runner evidence", 1)[1]
     script = textwrap.dedent(block.split("          python - <<'PY'\n", 1)[1].split("          PY\n", 1)[0])
     monkeypatch.chdir(tmp_path)
-    names = ("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","Dockerfile.release.dockerignore","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-files.jsonl","rebuilt-files.jsonl")
+    names = ("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","Dockerfile.release.dockerignore","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-api-acceptance.json","rebuilt-api-acceptance.json","candidate-files.jsonl","rebuilt-files.jsonl")
     for label in ("first", "second"):
         directory = tmp_path / "independent-evidence" / ("p0-locked-image-candidate-" + label)
         directory.mkdir(parents=True)

@@ -54,6 +54,57 @@ jobs:
           cmp release-evidence/installed-dependencies.txt release-evidence/rebuilt-dependencies.txt
           docker run --rm --network none --entrypoint python central-ai-locked-rebuild:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/rebuilt-import-smoke.txt
           cmp release-evidence/import-smoke.txt release-evidence/rebuilt-import-smoke.txt
+      - name: Accept exact release API with task execution disabled
+        run: |
+          set -eu
+          name="central-ai-release-acceptance"
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          for pair in candidate:central-ai-locked-ci:local rebuilt:central-ai-locked-rebuild:local; do
+            label="${pair%%:*}"
+            image="${pair#*:}"
+            docker run -d --name "$name" --network none --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=64 --memory=256m --cpus=1 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=8m -e CENTRAL_API_TOKEN=ci-only-release-token-000000000000 -e CENTRAL_TASK_API_ENABLED=NO -e CENTRAL_TASK_DB=/var/lib/central-ai/tasks.sqlite "$image"
+            docker exec -i "$name" python - <<'PY' > "release-evidence/$label-api-acceptance.json"
+          import json,os,time,urllib.request,urllib.error
+          from pathlib import Path
+          base="http://127.0.0.1:8010"
+          for attempt in range(30):
+              try:
+                  with urllib.request.urlopen(base+"/health",timeout=1) as response:
+                      health=json.load(response)
+                  break
+              except (urllib.error.URLError,TimeoutError):
+                  time.sleep(0.5)
+          else:
+              raise AssertionError("RELEASE_API_NOT_READY")
+          assert health["status"]=="ok" and health["service"]=="central-ai"
+          def request(path,method="GET",authenticated=False):
+              headers={"Content-Type":"application/json"}
+              if authenticated:
+                  headers["x-api-token"]="ci-only-release-token-000000000000"
+              data=b'{"description":"CI disabled-task probe"}' if method=="POST" else None
+              req=urllib.request.Request(base+path,data=data,headers=headers,method=method)
+              try:
+                  with urllib.request.urlopen(req,timeout=3) as response:
+                      return response.status,json.load(response)
+              except urllib.error.HTTPError as error:
+                  return error.code,json.load(error)
+          assert os.geteuid()==10001
+          assert os.getenv("CENTRAL_TASK_API_ENABLED")=="NO"
+          assert request("/providers")[0]==401
+          assert request("/tasks","POST")[0]==401
+          assert request("/ask","POST")[0]==401
+          code,providers=request("/providers",authenticated=True)
+          assert code==200 and all(not value["configured"] for value in providers.values())
+          code,body=request("/tasks","POST",True)
+          assert code==503 and body["detail"]=="TASK_API_DISABLED"
+          code,body=request("/tasks/00000000-0000-0000-0000-000000000000",authenticated=True)
+          assert code==503 and body["detail"]=="TASK_API_DISABLED"
+          assert not Path("/var/lib/central-ai/tasks.sqlite").exists()
+          print(json.dumps({"health":"ok","uid":os.geteuid(),"unauthenticated":401,"task_api":503,"provider_credentials":False,"task_database_created":False,"production_modified":False,"deployment_authorized":False},sort_keys=True))
+          PY
+            docker rm -f "$name"
+          done
+          cmp release-evidence/candidate-api-acceptance.json release-evidence/rebuilt-api-acceptance.json
       - name: Capture image differences without normalizing evidence
         run: |
           set -eu
@@ -143,7 +194,7 @@ jobs:
           root=Path("independent-evidence")
           first=root/"p0-locked-image-candidate-first"
           second=root/"p0-locked-image-candidate-second"
-          files=("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","Dockerfile.release.dockerignore","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-files.jsonl","rebuilt-files.jsonl")
+          files=("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","Dockerfile.release.dockerignore","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-api-acceptance.json","rebuilt-api-acceptance.json","candidate-files.jsonl","rebuilt-files.jsonl")
           for directory in (first,second):
               checked=set()
               for line in (directory/"manifest.sha256").read_text().splitlines():
