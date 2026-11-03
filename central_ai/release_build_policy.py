@@ -26,7 +26,7 @@ def validate_release_dockerfile(path):
         source):
         raise ValueError("UNLOCKED_DEPENDENCIES")
     # Docker COPY is resolved against the repository build context, not Dockerfile.parent.
-    lock = path.parent.parent / copied[0] if path.parent.name == "release-evidence" else path.parent / copied[0]
+    lock = path.parent.parent / copied[0] if path.parent.name in ("release-evidence", "release") else path.parent / copied[0]
     if not lock.is_file() or lock.is_symlink():
         raise ValueError("LOCKFILE_MISSING")
     # pip-compile generated files use backslash continuations and comments.
