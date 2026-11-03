@@ -42,9 +42,65 @@ jobs:
           cmp release-evidence/installed-dependencies.txt release-evidence/rebuilt-dependencies.txt
           docker run --rm --network none --entrypoint python central-ai-locked-rebuild:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/rebuilt-import-smoke.txt
           cmp release-evidence/import-smoke.txt release-evidence/rebuilt-import-smoke.txt
-          echo "CI package and import equality only; byte-for-byte image reproducibility not proven." > release-evidence/comparison-scope.txt
-          sha256sum release-evidence/* > release-evidence/manifest.sha256
+      - name: Capture image differences without normalizing evidence
+        run: |
+          set -eu
+          git rev-parse HEAD > release-evidence/checkout-sha.txt
+          docker version > release-evidence/docker-version.txt
+          for pair in candidate:central-ai-locked-ci:local rebuilt:central-ai-locked-rebuild:local; do
+            label="${pair%%:*}"
+            image="${pair#*:}"
+            docker image inspect "$image" > "release-evidence/$label-inspect.json"
+            docker history --no-trunc --format '{{json .}}' "$image" > "release-evidence/$label-history.jsonl"
+            docker run --rm --network none --read-only --user 0 --entrypoint python "$image" -c '
+          import hashlib,json,os,stat
+          roots=("/usr/local/lib/python3.12/site-packages","/srv","/var/lib/central-ai")
+          for root in roots:
+              for directory,dirs,files in os.walk(root):
+                  dirs.sort()
+                  for name in sorted(dirs+files):
+                      path=os.path.join(directory,name)
+                      s=os.lstat(path)
+                      row={"path":path,"mode":s.st_mode,"uid":s.st_uid,"gid":s.st_gid,"mtime_ns":s.st_mtime_ns}
+                      if stat.S_ISLNK(s.st_mode):
+                          row["link"]=os.readlink(path)
+                      elif stat.S_ISREG(s.st_mode):
+                          with open(path,"rb") as f:
+                              row["sha256"]=hashlib.file_digest(f,"sha256").hexdigest()
+                      print(json.dumps(row,sort_keys=True))
+          ' > "release-evidence/$label-files.jsonl"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("release-evidence")
+          a=json.loads((root/"candidate-inspect.json").read_text())[0]
+          b=json.loads((root/"rebuilt-inspect.json").read_text())[0]
+          def inventory(name):
+              return {r["path"]:r for r in map(json.loads,(root/name).read_text().splitlines())}
+          x,y=inventory("candidate-files.jsonl"),inventory("rebuilt-files.jsonl")
+          paths=sorted(x.keys()|y.keys())
+          report={
+              "image_ids_equal":a["Id"]==b["Id"],
+              "runtime_config_equal":a["Config"]==b["Config"],
+              "rootfs_layers_equal":a["RootFS"]==b["RootFS"],
+              "created_equal":a["Created"]==b["Created"],
+              "filesystem_scope":["site-packages","/srv","/var/lib/central-ai"],
+              "filesystem_differences":[{"path":p,"candidate":x.get(p),"rebuilt":y.get(p)} for p in paths if x.get(p)!=y.get(p)],
+              "deployment_authorized":False,
+              "scope":"Diagnostics only; no normalization or full reproducibility claim."
+          }
+          (root/"image-comparison.json").write_text(json.dumps(report,indent=2)+"\n")
+          assert report["runtime_config_equal"], "RUNTIME_CONFIG_DRIFT"
+          assert a["Config"]["User"]==b["Config"]["User"]=="10001", "NONROOT_REQUIRED"
+          PY
+      - name: Seal diagnostic evidence
+        if: ${{ always() }}
+        run: |
+          echo "CI package and import equality only; inspect image-comparison.json; byte-for-byte image reproducibility not proven." > release-evidence/comparison-scope.txt
+          find release-evidence -maxdepth 1 -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum > release-evidence/manifest.sha256
       - name: Archive source-controlled release evidence (never deploy)
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: p0-locked-image-candidate
