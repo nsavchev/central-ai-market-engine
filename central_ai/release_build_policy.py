@@ -25,6 +25,28 @@ def validate_release_dockerfile(path):
         r"(?m)^RUN pip install --no-cache-dir (?:--no-compile )?--require-hashes -r /srv/requirements\.lock\s*$",
         source):
         raise ValueError("UNLOCKED_DEPENDENCIES")
+    # This policy accepts the isolated single-line recipe, not arbitrary Docker syntax.
+    instructions = [line.strip() for line in source.splitlines()
+                    if line.strip() and not line.lstrip().startswith("#")]
+    allowed = {"FROM", "WORKDIR", "ENV", "COPY", "RUN", "USER", "CMD"}
+    if any(line.split()[0].upper() not in allowed for line in instructions):
+        raise ValueError("UNSUPPORTED_RELEASE_INSTRUCTION")
+    if any(re.match(r"#\s*(syntax|escape)\s*=", line.lstrip(), re.I)
+           for line in source.splitlines()):
+        raise ValueError("UNSUPPORTED_RELEASE_INSTRUCTION")
+    users = [line for line in instructions if line.split()[0].upper() == "USER"]
+    if users != ["USER 10001"]:
+        raise ValueError("NONROOT_REQUIRED")
+    install = re.compile(
+        r"RUN pip install --no-cache-dir (?:--no-compile )?--require-hashes -r /srv/requirements\.lock")
+    setup = "RUN mkdir -p /var/lib/central-ai && chown 10001:10001 /var/lib/central-ai"
+    runs = [line for line in instructions if line.split()[0].upper() == "RUN"]
+    if (sum(bool(install.fullmatch(line)) for line in runs) != 1
+            or runs.count(setup) > 1
+            or any(not install.fullmatch(line) and line != setup for line in runs)
+            or any(line.split()[0].upper() == "RUN"
+                   for line in instructions[instructions.index("USER 10001") + 1:])):
+        raise ValueError("UNAPPROVED_RELEASE_RUN")
     # Docker COPY is resolved against the repository build context, not Dockerfile.parent.
     lock = path.parent.parent / copied[0] if path.parent.name in ("release-evidence", "release") else path.parent / copied[0]
     if not lock.is_file() or lock.is_symlink():

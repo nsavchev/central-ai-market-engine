@@ -155,3 +155,44 @@ def test_release_context_excludes_nested_host_bytecode():
     assert set((root / ".dockerignore").read_text().splitlines()) <= set(ignores)
     assert "**/__pycache__" in ignores
     assert "**/*.pyc" in ignores
+
+
+
+@pytest.mark.parametrize("extra,error", [
+    ("USER 0", "NONROOT_REQUIRED"),
+    (" user root", "NONROOT_REQUIRED"),
+    ("USER\t0", "NONROOT_REQUIRED"),
+    ("USER 10001", "NONROOT_REQUIRED"),
+    ("RUN pip install requests", "UNAPPROVED_RELEASE_RUN"),
+    ("run python -m pip install requests", "UNAPPROVED_RELEASE_RUN"),
+    ("RUN uv pip install requests", "UNAPPROVED_RELEASE_RUN"),
+    ("RUN apt-get update", "UNAPPROVED_RELEASE_RUN"),
+    ("ONBUILD RUN pip install requests", "UNSUPPORTED_RELEASE_INSTRUCTION"),
+    ("SHELL [\"sh\",\"-c\"]", "UNSUPPORTED_RELEASE_INSTRUCTION"),
+])
+def test_release_rejects_appended_overrides(tmp_path, extra, error):
+    root = Path(__file__).resolve().parents[1]
+    directory = tmp_path / "release"
+    directory.mkdir()
+    (directory / "requirements-linux-amd64.lock").write_text(
+        "fastapi==0.162.0 --hash=sha256:" + "b" * 64 + "\n")
+    path = directory / "Dockerfile.release"
+    path.write_text((root / "release/Dockerfile.release").read_text() + extra + "\n")
+    with pytest.raises(ValueError, match=error):
+        validate_release_dockerfile(path)
+
+
+def test_release_rejects_chained_install_and_run_after_user(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    directory = tmp_path / "release"
+    directory.mkdir()
+    (directory / "requirements-linux-amd64.lock").write_text(
+        "fastapi==0.162.0 --hash=sha256:" + "b" * 64 + "\n")
+    path = directory / "Dockerfile.release"
+    recipe = (root / "release/Dockerfile.release").read_text()
+    path.write_text(recipe.replace("RUN mkdir -p", "RUN pip install requests && mkdir -p"))
+    with pytest.raises(ValueError, match="UNAPPROVED_RELEASE_RUN"):
+        validate_release_dockerfile(path)
+    path.write_text(recipe + "RUN mkdir -p /var/lib/central-ai && chown 10001:10001 /var/lib/central-ai\n")
+    with pytest.raises(ValueError, match="UNAPPROVED_RELEASE_RUN"):
+        validate_release_dockerfile(path)
