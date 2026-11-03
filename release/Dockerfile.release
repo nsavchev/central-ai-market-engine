@@ -1,0 +1,9 @@
+FROM python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
+WORKDIR /srv
+COPY release/requirements-linux-amd64.lock /srv/requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r /srv/requirements.lock
+COPY central_ai /srv/central_ai
+COPY developer_agent /srv/developer_agent
+RUN mkdir -p /var/lib/central-ai && chown 10001:10001 /var/lib/central-ai
+USER 10001
+CMD ["uvicorn","central_ai.app:app","--host","0.0.0.0","--port","8010"]
