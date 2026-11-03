@@ -1,5 +1,8 @@
 import hashlib
 import subprocess
+import os
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
@@ -59,6 +62,7 @@ def test_nonzero_and_timeout_fail_closed(tmp_path):
         raise subprocess.TimeoutExpired("docker",30)
     r=run_functional_tests(**params,run=fail)
     assert r["status"]=="cleanup_unconfirmed" and not r["passed"]
+    shutil.rmtree(r["snapshot_directory"])
 
 
 def test_timeout_cleanup_is_checked(tmp_path):
@@ -102,3 +106,73 @@ def test_malformed_test_hash_never_executes(tmp_path,digest):
         run_functional_tests(enabled="YES",candidate=str(candidate),
             expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
             test_file=str(trusted),expected_test_sha256=digest,image=IMAGE,run=forbidden)
+
+
+
+def test_original_replacement_cannot_change_mounted_bytes(tmp_path):
+    candidate,trusted=setup_files(tmp_path)
+    originals=[candidate.read_bytes(),trusted.read_bytes()]
+    snapshots=[]
+    def replace_before_docker(args,**kwargs):
+        candidate.unlink()
+        candidate.write_text("raise RuntimeError('replaced candidate')\n")
+        trusted.unlink()
+        trusted.write_text("raise RuntimeError('replaced tests')\n")
+        mounts=[arg for arg in args if arg.startswith("type=bind,src=")]
+        for original,mount,expected in zip((candidate,trusted),mounts,originals):
+            frozen=Path(mount.split("src=",1)[1].split(",dst=",1)[0])
+            snapshots.append(frozen)
+            assert frozen != original
+            assert frozen.read_bytes()==expected
+            assert frozen.stat().st_mode & 0o222 == 0
+            assert frozen.parent.stat().st_mode & 0o077 == 0
+        return SimpleNamespace(returncode=0)
+    result=run_functional_tests(enabled="YES",candidate=str(candidate),
+        expected_sha256=hashlib.sha256(originals[0]).hexdigest(),
+        test_file=str(trusted),expected_test_sha256=hashlib.sha256(originals[1]).hexdigest(),
+        image=IMAGE,run=replace_before_docker)
+    assert result["passed"]
+    assert snapshots and all(not path.parent.exists() for path in snapshots)
+
+
+@pytest.mark.parametrize("kind",["symlink","hardlink","fifo","oversize"])
+def test_unsafe_input_never_reaches_docker(tmp_path,kind):
+    candidate,trusted=setup_files(tmp_path)
+    digest=hashlib.sha256(candidate.read_bytes()).hexdigest()
+    if kind=="symlink":
+        target=tmp_path/"target.py"
+        candidate.rename(target)
+        candidate.symlink_to(target)
+    elif kind=="hardlink":
+        os.link(candidate,tmp_path/"alias.py")
+    elif kind=="fifo":
+        candidate.unlink()
+        os.mkfifo(candidate)
+    else:
+        candidate.write_bytes(b"x"*32769)
+    def forbidden(*args,**kwargs):
+        raise AssertionError("Docker must not start")
+    with pytest.raises(ValueError,match="UNSAFE_INPUT"):
+        run_functional_tests(enabled="YES",candidate=str(candidate),expected_sha256=digest,
+            test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),
+            image=IMAGE,run=forbidden)
+
+
+def test_uncertain_cleanup_retains_snapshot_for_quarantine(tmp_path):
+    candidate,trusted=setup_files(tmp_path)
+    def unavailable(args,**kwargs):
+        if args[1]=="run":
+            raise subprocess.TimeoutExpired("docker",30)
+        return SimpleNamespace(returncode=1)
+    result=run_functional_tests(enabled="YES",candidate=str(candidate),
+        expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),
+        image=IMAGE,run=unavailable)
+    root=Path(result["snapshot_directory"])
+    try:
+        assert result["status"]=="cleanup_unconfirmed" and result["passed"] is False
+        assert (root/"candidate.py").read_bytes()==candidate.read_bytes()
+        assert (root/"test_candidate.py").read_bytes()==trusted.read_bytes()
+        assert result["container_name"].startswith("central-ai-verifier-")
+    finally:
+        shutil.rmtree(root)

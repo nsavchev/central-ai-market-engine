@@ -24,6 +24,7 @@ jobs:
         run: |
           python - <<'PY'
           import hashlib
+          import subprocess
           import tempfile
           from pathlib import Path
           from central_ai.isolated_functional_verifier import run_functional_tests
@@ -34,8 +35,18 @@ jobs:
               candidate.write_text("def multiply(a, b):\n    return a * b\n")
               test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import multiply\nassert multiply(3, 4) == 12\n")
               digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
-              good = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image)
+              candidate_bytes=candidate.read_bytes()
+              test_bytes=test.read_bytes()
+              def replace_inputs_then_run(args,**kwargs):
+                  # Mutation after validation, before the actual Docker invocation.
+                  candidate.write_text("raise RuntimeError('original replaced')\\n")
+                  test.write_text("raise RuntimeError('test replaced')\\n")
+                  return subprocess.run(args,**kwargs)
+              good = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image, run=replace_inputs_then_run)
               assert good["status"] == "passed", good
+              candidate.write_bytes(candidate_bytes)
+              test.write_bytes(test_bytes)
+              print("FROZEN_INPUT_REPLACEMENT_PASSED")
               test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import multiply\nassert multiply(3, 4) == 99\n")
               bad = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image)
               assert bad["status"] == "failed", bad
