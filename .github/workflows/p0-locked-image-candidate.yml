@@ -21,6 +21,27 @@ jobs:
           printf 'fastapi>=0.115,<1\nuvicorn>=0.30,<1\nhttpx>=0.27,<1\n' > release-evidence/requirements.in
           pip-compile --generate-hashes --allow-unsafe --output-file release-evidence/requirements.lock release-evidence/requirements.in
           python -m pip install --dry-run --require-hashes -r release-evidence/requirements.lock > release-evidence/hash-validation.txt
+      - name: Derive minimal Linux x86_64 wheel-hash lock from verified downloads
+        run: |
+          set -eu
+          python -m pip download --only-binary=:all: --require-hashes -r release-evidence/requirements.lock -d release-evidence/wheels
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          from packaging.utils import parse_wheel_filename
+          wheels = sorted(Path("release-evidence/wheels").glob("*.whl"))
+          assert len(wheels) == 17, f"Expected 17 package wheels, received {len(wheels)}"
+          lines = []
+          for wheel in wheels:
+              name, version, _, _ = parse_wheel_filename(wheel.name)
+              digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+              lines.append(f"{name}=={version} --hash=sha256:{digest}")
+          out = Path("release-evidence/requirements-linux-amd64.lock")
+          out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+          python -m pip install --dry-run --no-index --find-links release-evidence/wheels --require-hashes -r release-evidence/requirements-linux-amd64.lock > release-evidence/compact-lock-validation.txt
+          # Wheel cache is test-only; keep uploaded artifact small.
+          rm -rf release-evidence/wheels
       - name: Resolve immutable base image digest and build isolated image
         run: |
           set -eu
@@ -32,7 +53,7 @@ jobs:
           {
             printf 'FROM %s\n' "$BASE"
             printf 'WORKDIR /srv\n'
-            printf 'COPY release-evidence/requirements.lock /srv/requirements.lock\n'
+            printf 'COPY release-evidence/requirements-linux-amd64.lock /srv/requirements.lock\n'
             printf 'RUN pip install --no-cache-dir --require-hashes -r /srv/requirements.lock\n'
             printf 'COPY central_ai /srv/central_ai\n'
             printf 'COPY developer_agent /srv/developer_agent\n'
