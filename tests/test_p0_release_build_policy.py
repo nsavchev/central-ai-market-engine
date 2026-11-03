@@ -129,7 +129,7 @@ def test_separate_runner_comparison_checks_integrity(tmp_path, monkeypatch, tamp
     block = workflow.split("- name: Compare separate runner evidence", 1)[1]
     script = textwrap.dedent(block.split("          python - <<'PY'\n", 1)[1].split("          PY\n", 1)[0])
     monkeypatch.chdir(tmp_path)
-    names = ("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-files.jsonl","rebuilt-files.jsonl")
+    names = ("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","Dockerfile.release.dockerignore","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-files.jsonl","rebuilt-files.jsonl")
     for label in ("first", "second"):
         directory = tmp_path / "independent-evidence" / ("p0-locked-image-candidate-" + label)
         directory.mkdir(parents=True)
@@ -146,3 +146,12 @@ def test_separate_runner_comparison_checks_integrity(tmp_path, monkeypatch, tamp
     else:
         exec(compile(script, "<separate-runner-comparison>", "exec"), {})
         assert json.loads(Path("independent-comparison.json").read_text())["independent_runner_equal"]
+
+
+
+def test_release_context_excludes_nested_host_bytecode():
+    root = Path(__file__).resolve().parents[1]
+    ignores = (root / "release/Dockerfile.release.dockerignore").read_text().splitlines()
+    assert set((root / ".dockerignore").read_text().splitlines()) <= set(ignores)
+    assert "**/__pycache__" in ignores
+    assert "**/*.pyc" in ignores

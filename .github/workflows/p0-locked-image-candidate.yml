@@ -12,6 +12,8 @@ jobs:
         builder: [first, second]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,7 +27,8 @@ jobs:
           python -c 'from central_ai.release_build_policy import validate_release_dockerfile; assert validate_release_dockerfile("release/Dockerfile.release")'
           cp release/requirements-linux-amd64.lock release-evidence/requirements-linux-amd64.lock
           cp release/Dockerfile.release release-evidence/Dockerfile.release
-          sha256sum release/requirements-linux-amd64.lock release/Dockerfile.release > release-evidence/source-sha256.txt
+          cp release/Dockerfile.release.dockerignore release-evidence/Dockerfile.release.dockerignore
+          sha256sum release/requirements-linux-amd64.lock release/Dockerfile.release release/Dockerfile.release.dockerignore > release-evidence/source-sha256.txt
           python -m pip download --only-binary=:all: --require-hashes -r release/requirements-linux-amd64.lock -d release-evidence/wheels
           test "$(find release-evidence/wheels -name '*.whl' -type f | wc -l)" -eq 17
           python -m pip install --dry-run --no-index --find-links release-evidence/wheels --require-hashes -r release/requirements-linux-amd64.lock > release-evidence/lock-validation.txt
@@ -100,6 +103,7 @@ jobs:
               "scope":"Two clean builds on one runner with source-derived timestamp rewriting; not independent-builder or deployment acceptance."
           }
           (root/"image-comparison.json").write_text(json.dumps(report,indent=2)+"\n")
+          assert not any(p.startswith("/srv/") and (p.endswith(".pyc") or "/__pycache__/" in p) for p in paths), "HOST_BYTECODE_COPIED"
           assert report["image_ids_equal"], "IMAGE_ID_DRIFT"
           assert report["rootfs_layers_equal"], "ROOTFS_LAYER_DRIFT"
           assert not report["filesystem_differences"], "FILESYSTEM_DRIFT"
@@ -139,7 +143,7 @@ jobs:
           root=Path("independent-evidence")
           first=root/"p0-locked-image-candidate-first"
           second=root/"p0-locked-image-candidate-second"
-          files=("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-files.jsonl","rebuilt-files.jsonl")
+          files=("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","Dockerfile.release.dockerignore","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-files.jsonl","rebuilt-files.jsonl")
           for directory in (first,second):
               checked=set()
               for line in (directory/"manifest.sha256").read_text().splitlines():
