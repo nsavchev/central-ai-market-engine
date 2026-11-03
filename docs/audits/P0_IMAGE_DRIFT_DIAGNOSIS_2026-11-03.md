@@ -9,3 +9,15 @@ Remediation: disable pip bytecode compilation with --no-compile and runtime byte
 Architecture: no new runtime module or alternate worker, queue, verifier or deployment path. Diagnostic Python runs in disposable read-only containers without network or host mounts. The temporary root override is for reading the filesystem only; the image Config must still declare USER 10001.
 
 Remaining gates: inspect the new CI artifact to verify removal of .pyc content drift; timestamp/layer reproducibility remains open. Builds are on the same runner, not independent-builder proof. Registry provenance, full security review, isolated acceptance and issue #90 VPS evidence remain required. No merge, production changes, live trading or deployment authorized.
+
+## Bytecode remediation verified
+
+Commit 2ffa178206a9ff8a8163586a8478cd5afc837cf7: 33/33 Actions succeeded. Run 41586000621, artifact 13208380023: all 21 manifest entries validated; 674 scoped filesystem differences remained, all mtime_ns only, with no scoped content hash differences. Runtime Config remained equal. Image IDs and RootFS layers remained different.
+
+## Timestamp gate
+
+Buildx clean builds target linux/amd64 and pass SOURCE_DATE_EPOCH derived from the exact checkout commit timestamp. The Docker exporter uses rewrite-timestamp=true. This intentionally normalizes build-time metadata, not diagnostic output or dependency content. Both builds must match image ID, RootFS layers, runtime Config and all collected filesystem records; failures retain artifacts.
+
+References: https://docs.docker.com/build/ci/github-actions/reproducible-builds/ and https://reproducible-builds.org/docs/source-date-epoch/ . Buildx/BuildKit and Docker versions are recorded. This is same-runner repeatability, not independent-builder verification, registry authenticity, vulnerability scanning or issue #90 acceptance. No deployment authorized.
+
+Regression tests execute the actual embedded comparison against synthetic inputs, rejecting changed image IDs, layers, file mtimes, runtime configuration and root user. Ten release-policy tests pass locally. Timestamp-build CI must be checked on the final commit before claiming equality.

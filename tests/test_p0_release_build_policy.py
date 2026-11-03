@@ -72,3 +72,47 @@ def test_source_controlled_release_recipe_and_no_compile_gate(tmp_path):
     lock.write_text("fastapi==0.162.0\n")
     with pytest.raises(ValueError, match="UNPINNED_LOCK_ENTRY"):
         validate_release_dockerfile(path)
+
+
+
+@pytest.mark.parametrize("drift,expected", [
+    ("none", None),
+    ("id", "IMAGE_ID_DRIFT"),
+    ("layers", "ROOTFS_LAYER_DRIFT"),
+    ("files", "FILESYSTEM_DRIFT"),
+    ("config", "RUNTIME_CONFIG_DRIFT"),
+    ("root", "NONROOT_REQUIRED"),
+])
+def test_image_comparison_fails_closed(tmp_path, monkeypatch, drift, expected):
+    import copy
+    import json
+    import textwrap
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github/workflows/p0-locked-image-candidate.yml").read_text()
+    script = textwrap.dedent(workflow.split("          python - <<'PY'\n", 1)[1].split("          PY\n", 1)[0])
+    monkeypatch.chdir(tmp_path)
+    evidence = tmp_path / "release-evidence"
+    evidence.mkdir()
+    a = {"Id": "sha256:a", "Config": {"User": "10001"}, "RootFS": {"Layers": ["a"]}, "Created": "fixed"}
+    b = copy.deepcopy(a)
+    if drift == "id":
+        b["Id"] = "sha256:b"
+    elif drift == "layers":
+        b["RootFS"]["Layers"] = ["b"]
+    elif drift == "config":
+        b["Config"]["Cmd"] = ["unexpected"]
+    elif drift == "root":
+        a["Config"]["User"] = b["Config"]["User"] = "0"
+    for label, image in (("candidate", a), ("rebuilt", b)):
+        (evidence / (label + "-inspect.json")).write_text(json.dumps([image]))
+        row = {"path": "/srv/example", "sha256": "content", "mtime_ns": 1}
+        if drift == "files" and label == "rebuilt":
+            row["mtime_ns"] = 2
+        (evidence / (label + "-files.jsonl")).write_text(json.dumps(row) + "\n")
+    if expected:
+        with pytest.raises(AssertionError, match=expected):
+            exec(compile(script, "<workflow-comparison>", "exec"), {})
+    else:
+        exec(compile(script, "<workflow-comparison>", "exec"), {})
+    report = json.loads((evidence / "image-comparison.json").read_text())
+    assert report["deployment_authorized"] is False
