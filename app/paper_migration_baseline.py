@@ -14,7 +14,11 @@ def inspect_legacy_baseline(engine):
     if engine.dialect.name != "postgresql":
         return {"baseline_eligible": False, "errors": ["POSTGRES_REQUIRED"]}
     problems=[]
-    with engine.connect() as con:
+    with engine.connect().execution_options(
+        isolation_level="REPEATABLE READ", postgresql_readonly=True
+    ) as con:
+        con.execute(text("SET LOCAL statement_timeout = '10s'"))
+        con.execute(text("SET LOCAL lock_timeout = '2s'"))
         inspector=inspect(con)
         names=set(inspector.get_table_names(schema="public"))
         for table,columns in REQUIRED.items():
@@ -37,3 +41,4 @@ def inspect_legacy_baseline(engine):
             if table in names:
                 counts[table]=con.execute(text("SELECT count(*) FROM public."+table)).scalar()
     return {"baseline_eligible":not problems,"errors":sorted(problems),"paper_counts":counts}
+
