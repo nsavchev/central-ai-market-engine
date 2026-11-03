@@ -6,6 +6,10 @@ permissions:
   contents: read
 jobs:
   locked-candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: [first, second]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -111,6 +115,54 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: p0-locked-image-candidate
+          name: p0-locked-image-candidate-${{ matrix.builder }}
           path: release-evidence/
+          retention-days: 14
+
+  independent-comparison:
+    needs: locked-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: p0-locked-image-candidate-*
+          path: independent-evidence
+      - name: Compare separate runner evidence
+        run: |
+          python - <<'PY'
+          import hashlib,json,re
+          from pathlib import Path
+          root=Path("independent-evidence")
+          first=root/"p0-locked-image-candidate-first"
+          second=root/"p0-locked-image-candidate-second"
+          files=("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-files.jsonl","rebuilt-files.jsonl")
+          for directory in (first,second):
+              checked=set()
+              for line in (directory/"manifest.sha256").read_text().splitlines():
+                  digest,name=line.split(None,1)
+                  name=Path(name.strip()).name
+                  assert re.fullmatch("[0-9a-f]{64}",digest), "INVALID_MANIFEST_DIGEST"
+                  assert name not in checked, "DUPLICATE_MANIFEST_ENTRY"
+                  checked.add(name)
+                  assert hashlib.sha256((directory/name).read_bytes()).hexdigest()==digest, "ARTIFACT_HASH_MISMATCH"
+              assert set(files)<=checked, "INCOMPLETE_MANIFEST"
+              report=json.loads((directory/"image-comparison.json").read_text())
+              assert all(report[k] for k in ("image_ids_equal","rootfs_layers_equal","runtime_config_equal","created_equal")), "LOCAL_COMPARISON_FAILED"
+              assert not report["filesystem_differences"], "LOCAL_FILESYSTEM_DRIFT"
+          matches={name:(first/name).read_bytes()==(second/name).read_bytes() for name in files}
+          result={"matches":matches,"independent_runner_equal":all(matches.values()),"deployment_authorized":False,"scope":"Two separate GitHub-hosted runners in one workflow, same platform and source; not independent trust domains or VPS acceptance."}
+          Path("independent-comparison.json").write_text(json.dumps(result,indent=2)+"\n")
+          assert result["independent_runner_equal"], "INDEPENDENT_BUILD_DRIFT"
+          PY
+      - name: Archive independent comparison
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-independent-comparison
+          path: independent-comparison.json
+          if-no-files-found: error
           retention-days: 14

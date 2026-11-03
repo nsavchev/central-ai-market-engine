@@ -21,3 +21,11 @@ Buildx clean builds target linux/amd64 and pass SOURCE_DATE_EPOCH derived from t
 References: https://docs.docker.com/build/ci/github-actions/reproducible-builds/ and https://reproducible-builds.org/docs/source-date-epoch/ . Buildx/BuildKit and Docker versions are recorded. This is same-runner repeatability, not independent-builder verification, registry authenticity, vulnerability scanning or issue #90 acceptance. No deployment authorized.
 
 Regression tests execute the actual embedded comparison against synthetic inputs, rejecting changed image IDs, layers, file mtimes, runtime configuration and root user. Ten release-policy tests pass locally. Timestamp-build CI must be checked on the final commit before claiming equality.
+
+## Same-runner equality verified; cross-runner gate
+
+Commit dfa57e916b4fee72cfa76dcd6fe9f2be2b347999 completed 33/33 workflows. Run 41586424603 artifact 13207904679 passed all 24 manifest checks. Both clean builds have image ID sha256:21e30f2a5935e63f5fcb9fe4068bb839f1c53a515a3ee14aa99801fb57b8f4c6 and equal runtime config, layer IDs and creation times, with zero scoped filesystem differences. Checkout merge SHA d9cb69dddde5c50bb291b6e825da13452d5e07b6.
+
+The next gate runs the existing recipe in a two-job matrix on separate GitHub-hosted runners. A dependent comparison job checks artifact integrity, local equality reports, exact checkout, epoch, recipe, lock, installed dependencies, image IDs and scoped file inventories across runners. Thirteen local regression cases include corrupted artifacts and validly rehashed but divergent builds. CI for this change remains to be verified.
+
+Separate runners share the same provider and workflow/toolchain; this is not independent trust-domain verification. Registry provenance, vulnerability review and issue #90 isolated/VPS acceptance remain open. No runtime ownership changes or deployment authorization.

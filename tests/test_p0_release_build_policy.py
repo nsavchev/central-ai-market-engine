@@ -116,3 +116,33 @@ def test_image_comparison_fails_closed(tmp_path, monkeypatch, drift, expected):
         exec(compile(script, "<workflow-comparison>", "exec"), {})
     report = json.loads((evidence / "image-comparison.json").read_text())
     assert report["deployment_authorized"] is False
+
+
+
+@pytest.mark.parametrize("tamper", ["none", "corrupt", "drift"])
+def test_separate_runner_comparison_checks_integrity(tmp_path, monkeypatch, tamper):
+    import hashlib
+    import json
+    import textwrap
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github/workflows/p0-locked-image-candidate.yml").read_text()
+    block = workflow.split("- name: Compare separate runner evidence", 1)[1]
+    script = textwrap.dedent(block.split("          python - <<'PY'\n", 1)[1].split("          PY\n", 1)[0])
+    monkeypatch.chdir(tmp_path)
+    names = ("candidate-image-id.txt","rebuilt-image-id.txt","checkout-sha.txt","source-date-epoch.txt","source-sha256.txt","Dockerfile.release","requirements-linux-amd64.lock","installed-dependencies.txt","candidate-files.jsonl","rebuilt-files.jsonl")
+    for label in ("first", "second"):
+        directory = tmp_path / "independent-evidence" / ("p0-locked-image-candidate-" + label)
+        directory.mkdir(parents=True)
+        for name in names:
+            (directory / name).write_text("same")
+        (directory / "image-comparison.json").write_text(json.dumps({"image_ids_equal":True,"rootfs_layers_equal":True,"runtime_config_equal":True,"created_equal":True,"filesystem_differences":[]}))
+        (directory / "manifest.sha256").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  release-evidence/" + p.name + "\n" for p in sorted(directory.iterdir()) if p.name != "manifest.sha256"))
+    if tamper != "none":
+        (directory / "candidate-image-id.txt").write_text("changed")
+        if tamper == "drift":
+            (directory / "manifest.sha256").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest() + "  release-evidence/" + p.name + "\n" for p in sorted(directory.iterdir()) if p.name != "manifest.sha256"))
+        with pytest.raises(AssertionError, match="ARTIFACT_HASH_MISMATCH" if tamper == "corrupt" else "INDEPENDENT_BUILD_DRIFT"):
+            exec(compile(script, "<separate-runner-comparison>", "exec"), {})
+    else:
+        exec(compile(script, "<separate-runner-comparison>", "exec"), {})
+        assert json.loads(Path("independent-comparison.json").read_text())["independent_runner_equal"]
