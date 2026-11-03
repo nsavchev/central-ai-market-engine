@@ -24,7 +24,7 @@ def test_docker_sandbox_contract(tmp_path):
         return SimpleNamespace(returncode=0)
     result=run_functional_tests(enabled="YES",candidate=str(candidate),
         expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
-        test_file=str(trusted),image=IMAGE,run=fake_run)
+        test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image=IMAGE,run=fake_run)
     assert result["passed"] and result["executed_candidate"]
     cmd=commands[0][0]
     for required in ("--network=none","--read-only","--cap-drop=ALL",
@@ -39,20 +39,20 @@ def test_denies_unsafe_inputs(tmp_path):
     digest=hashlib.sha256(candidate.read_bytes()).hexdigest()
     with pytest.raises(ValueError,match="FUNCTIONAL_TESTS_DISABLED"):
         run_functional_tests(enabled="",candidate=str(candidate),expected_sha256=digest,
-                             test_file=str(trusted),image=IMAGE)
+                             test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image=IMAGE)
     with pytest.raises(ValueError,match="UNPINNED_IMAGE"):
         run_functional_tests(enabled="YES",candidate=str(candidate),expected_sha256=digest,
-                             test_file=str(trusted),image="python:latest")
+                             test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image="python:latest")
     with pytest.raises(ValueError,match="CANDIDATE_HASH_MISMATCH"):
         run_functional_tests(enabled="YES",candidate=str(candidate),expected_sha256="0"*64,
-                             test_file=str(trusted),image=IMAGE)
+                             test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image=IMAGE)
 
 
 def test_nonzero_and_timeout_fail_closed(tmp_path):
     candidate,trusted=setup_files(tmp_path)
     params=dict(enabled="YES",candidate=str(candidate),
                 expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
-                test_file=str(trusted),image=IMAGE)
+                test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image=IMAGE)
     r=run_functional_tests(**params,run=lambda *a,**k:SimpleNamespace(returncode=1))
     assert r["status"]=="failed" and not r["passed"]
     def fail(*a,**k):
@@ -71,7 +71,34 @@ def test_timeout_cleanup_is_checked(tmp_path):
         return SimpleNamespace(returncode=0)
     result=run_functional_tests(enabled="YES",candidate=str(candidate),
         expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
-        test_file=str(trusted),image=IMAGE,run=fake_run)
+        test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image=IMAGE,run=fake_run)
     assert result["status"]=="timeout" and not result["passed"]
     assert calls[0][2]=="--name"
     assert calls[1]==["docker","rm","-f",calls[0][3]]
+
+
+
+def test_test_integrity_is_required_before_docker(tmp_path):
+    candidate,trusted=setup_files(tmp_path)
+    calls=[]
+    params=dict(enabled="YES",candidate=str(candidate),
+        expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        test_file=str(trusted),image=IMAGE,run=lambda *a,**k:calls.append(a))
+    with pytest.raises(ValueError,match="INVALID_TEST_HASH"):
+        run_functional_tests(**params)
+    digest=hashlib.sha256(trusted.read_bytes()).hexdigest()
+    trusted.write_text("raise RuntimeError('tampered test')\n")
+    with pytest.raises(ValueError,match="TEST_HASH_MISMATCH"):
+        run_functional_tests(**params,expected_test_sha256=digest)
+    assert calls==[]
+
+
+@pytest.mark.parametrize("digest", ["", "a"*63, "A"*64, "z"*64])
+def test_malformed_test_hash_never_executes(tmp_path,digest):
+    candidate,trusted=setup_files(tmp_path)
+    def forbidden(*args,**kwargs):
+        raise AssertionError("Docker must not run")
+    with pytest.raises(ValueError,match="INVALID_TEST_HASH"):
+        run_functional_tests(enabled="YES",candidate=str(candidate),
+            expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            test_file=str(trusted),expected_test_sha256=digest,image=IMAGE,run=forbidden)

@@ -38,7 +38,7 @@ jobs:
               digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
               before = {x for x in subprocess.check_output(["docker", "ps", "-a", "--format", "{{.Names}}"], text=True).splitlines() if x.startswith("central-ai-verifier-")}
               started = time.monotonic()
-              result = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(tests), image=image, timeout=5)
+              result = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(tests), expected_test_sha256=hashlib.sha256(tests.read_bytes()).hexdigest(), image=image, timeout=5)
               assert result["status"] == "timeout", result
               assert not result["passed"], result
               after = {x for x in subprocess.check_output(["docker", "ps", "-a", "--format", "{{.Names}}"], text=True).splitlines() if x.startswith("central-ai-verifier-")}

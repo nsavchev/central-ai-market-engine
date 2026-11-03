@@ -29,13 +29,14 @@ def test_full_process_preserves_source_and_refuses_deploy(tmp_path, passed):
     def verifier(**kwargs):
         assert kwargs["enabled"]=="YES"
         assert kwargs["candidate"].endswith(".py")
+        assert kwargs["expected_test_sha256"]=="b"*64
         assert kwargs["expected_sha256"]
         return {"passed": passed, "status":"passed" if passed else "failed"}
     report=prepare_and_verify(
         enabled="YES",database=str(db),task_id=task["task_id"],
         handoffs=paths[0],proposals=paths[1],candidates=paths[2],
         recommendation="```python\ndef candidate():\n    return 3\n```",
-        trusted_test_file="/isolated/operator_test.py",
+        trusted_test_file="/isolated/operator_test.py",trusted_test_sha256="b"*64,
         image="python@sha256:"+"a"*64,verifier=verifier)
     assert report["tests_passed"] is passed
     assert report["approved"] is False and report["deployment_allowed"] is False

@@ -34,10 +34,10 @@ jobs:
               candidate.write_text("def multiply(a, b):\n    return a * b\n")
               test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import multiply\nassert multiply(3, 4) == 12\n")
               digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
-              good = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), image=image)
+              good = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image)
               assert good["status"] == "passed", good
               test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import multiply\nassert multiply(3, 4) == 99\n")
-              bad = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), image=image)
+              bad = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image)
               assert bad["status"] == "failed", bad
               print("AI19_REAL_FUNCTIONAL_DOCKER_PASSED")
           PY

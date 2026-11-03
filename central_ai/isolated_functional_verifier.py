@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, image,
-                         timeout=30, run=subprocess.run):
+                         expected_test_sha256=None, timeout=30, run=subprocess.run):
     if enabled != "YES":
         raise ValueError("FUNCTIONAL_TESTS_DISABLED")
     paths = [Path(candidate), Path(test_file)]
@@ -27,6 +27,10 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
         raise ValueError("INVALID_HASH")
     if hashlib.sha256(paths[0].read_bytes()).hexdigest() != expected_sha256:
         raise ValueError("CANDIDATE_HASH_MISMATCH")
+    if not isinstance(expected_test_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_test_sha256):
+        raise ValueError("INVALID_TEST_HASH")
+    if hashlib.sha256(paths[1].read_bytes()).hexdigest() != expected_test_sha256:
+        raise ValueError("TEST_HASH_MISMATCH")
     if not isinstance(image, str) or not re.fullmatch(
         r"[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}", image
     ):
@@ -60,6 +64,6 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
         if cleanup.returncode != 0:
             return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True}
         return {"status": "timeout", "passed": False, "executed_candidate": True}
-    return {"status": "passed" if result.returncode == 0 else "failed",
+    return {"test_sha256": expected_test_sha256, "status": "passed" if result.returncode == 0 else "failed",
             "passed": result.returncode == 0, "executed_candidate": True,
             "returncode": result.returncode}
