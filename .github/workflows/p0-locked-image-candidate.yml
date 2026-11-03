@@ -13,69 +13,38 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Generate exact transitive dependency lock with real hashes
+      - name: Verify version-controlled release lock and immutable base
         run: |
           set -eu
-          python -m pip install 'pip==25.3' 'pip-tools==7.5.2'
           mkdir -p release-evidence
-          printf 'fastapi>=0.115,<1\nuvicorn>=0.30,<1\nhttpx>=0.27,<1\n' > release-evidence/requirements.in
-          pip-compile --generate-hashes --allow-unsafe --output-file release-evidence/requirements.lock release-evidence/requirements.in
-          python -m pip install --dry-run --require-hashes -r release-evidence/requirements.lock > release-evidence/hash-validation.txt
-      - name: Derive minimal Linux x86_64 wheel-hash lock from verified downloads
-        run: |
-          set -eu
-          python -m pip download --only-binary=:all: --require-hashes -r release-evidence/requirements.lock -d release-evidence/wheels
-          python - <<'PY'
-          import hashlib
-          from pathlib import Path
-          from packaging.utils import parse_wheel_filename
-          wheels = sorted(Path("release-evidence/wheels").glob("*.whl"))
-          assert len(wheels) == 17, f"Expected 17 package wheels, received {len(wheels)}"
-          lines = []
-          for wheel in wheels:
-              name, version, _, _ = parse_wheel_filename(wheel.name)
-              digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-              lines.append(f"{name}=={version} --hash=sha256:{digest}")
-          out = Path("release-evidence/requirements-linux-amd64.lock")
-          out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-          PY
-          python -m pip install --dry-run --no-index --find-links release-evidence/wheels --require-hashes -r release-evidence/requirements-linux-amd64.lock > release-evidence/compact-lock-validation.txt
-          # Wheel cache is test-only; keep uploaded artifact small.
+          python -c 'from central_ai.release_build_policy import validate_release_dockerfile; assert validate_release_dockerfile("release/Dockerfile.release")'
+          cp release/requirements-linux-amd64.lock release-evidence/requirements-linux-amd64.lock
+          cp release/Dockerfile.release release-evidence/Dockerfile.release
+          sha256sum release/requirements-linux-amd64.lock release/Dockerfile.release > release-evidence/source-sha256.txt
+          python -m pip download --only-binary=:all: --require-hashes -r release/requirements-linux-amd64.lock -d release-evidence/wheels
+          test "$(find release-evidence/wheels -name '*.whl' -type f | wc -l)" -eq 17
+          python -m pip install --dry-run --no-index --find-links release-evidence/wheels --require-hashes -r release/requirements-linux-amd64.lock > release-evidence/lock-validation.txt
           rm -rf release-evidence/wheels
-      - name: Resolve immutable base image digest and build isolated image
+      - name: Build from pinned source twice and inspect runtime
         run: |
           set -eu
           BASE='python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30'
+          grep -Fxq "FROM $BASE" release/Dockerfile.release
           docker pull "$BASE"
           printf '%s\n' "$BASE" > release-evidence/base-image.txt
-          grep -Eq '^python@sha256:[a-f0-9]{64}$' release-evidence/base-image.txt
-          BASE=$(cat release-evidence/base-image.txt)
-          {
-            printf 'FROM %s\n' "$BASE"
-            printf 'WORKDIR /srv\n'
-            printf 'COPY release-evidence/requirements-linux-amd64.lock /srv/requirements.lock\n'
-            printf 'RUN pip install --no-cache-dir --require-hashes -r /srv/requirements.lock\n'
-            printf 'COPY central_ai /srv/central_ai\n'
-            printf 'COPY developer_agent /srv/developer_agent\n'
-            printf 'RUN mkdir -p /var/lib/central-ai && chown 10001:10001 /var/lib/central-ai\n'
-            printf 'USER 10001\n'
-            printf 'CMD ["uvicorn","central_ai.app:app","--host","0.0.0.0","--port","8010"]\n'
-          } > release-evidence/Dockerfile.release
-          python -c 'from central_ai.release_build_policy import validate_release_dockerfile; assert validate_release_dockerfile("release-evidence/Dockerfile.release")'
-          docker build -f release-evidence/Dockerfile.release -t central-ai-locked-ci:local .
+          docker build -f release/Dockerfile.release -t central-ai-locked-ci:local .
           docker image inspect central-ai-locked-ci:local --format '{{.Id}}' > release-evidence/candidate-image-id.txt
           docker run --rm --network none --entrypoint python central-ai-locked-ci:local -m pip freeze --all > release-evidence/installed-dependencies.txt
           docker run --rm --network none --entrypoint python central-ai-locked-ci:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/import-smoke.txt
-          # Rebuild with the same resolved base and lock, then compare runtime packages.
-          docker build --no-cache -f release-evidence/Dockerfile.release -t central-ai-locked-rebuild:local .
+          docker build --no-cache -f release/Dockerfile.release -t central-ai-locked-rebuild:local .
+          docker image inspect central-ai-locked-rebuild:local --format '{{.Id}}' > release-evidence/rebuilt-image-id.txt
           docker run --rm --network none --entrypoint python central-ai-locked-rebuild:local -m pip freeze --all > release-evidence/rebuilt-dependencies.txt
           cmp release-evidence/installed-dependencies.txt release-evidence/rebuilt-dependencies.txt
           docker run --rm --network none --entrypoint python central-ai-locked-rebuild:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/rebuilt-import-smoke.txt
           cmp release-evidence/import-smoke.txt release-evidence/rebuilt-import-smoke.txt
-          docker image inspect central-ai-locked-rebuild:local --format '{{.Id}}' > release-evidence/rebuilt-image-id.txt
-          echo "Verified package-set equivalence across two CI builds; byte-for-byte image reproducibility not proven." > release-evidence/comparison-scope.txt
+          echo "CI package and import equality only; byte-for-byte image reproducibility not proven." > release-evidence/comparison-scope.txt
           sha256sum release-evidence/* > release-evidence/manifest.sha256
-      - name: Archive candidate evidence only, never deploy
+      - name: Archive source-controlled release evidence (never deploy)
         uses: actions/upload-artifact@v4
         with:
           name: p0-locked-image-candidate
