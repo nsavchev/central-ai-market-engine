@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: docker/setup-buildx-action@v3
       - name: Verify version-controlled release lock and immutable base
         run: |
           set -eu
@@ -32,11 +33,15 @@ jobs:
           grep -Fxq "FROM $BASE" release/Dockerfile.release
           docker pull "$BASE"
           printf '%s\n' "$BASE" > release-evidence/base-image.txt
-          docker build -f release/Dockerfile.release -t central-ai-locked-ci:local .
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          printf '%s\n' "$SOURCE_DATE_EPOCH" > release-evidence/source-date-epoch.txt
+          docker buildx version > release-evidence/buildx-version.txt
+          docker buildx inspect --bootstrap > release-evidence/builder-info.txt
+          docker buildx build --no-cache --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" --output type=docker,rewrite-timestamp=true -f release/Dockerfile.release -t central-ai-locked-ci:local .
           docker image inspect central-ai-locked-ci:local --format '{{.Id}}' > release-evidence/candidate-image-id.txt
           docker run --rm --network none --entrypoint python central-ai-locked-ci:local -m pip freeze --all > release-evidence/installed-dependencies.txt
           docker run --rm --network none --entrypoint python central-ai-locked-ci:local -c 'import fastapi,httpx,starlette,uvicorn; print("LOCKED_IMAGE_IMPORT_PASSED")' > release-evidence/import-smoke.txt
-          docker build --no-cache -f release/Dockerfile.release -t central-ai-locked-rebuild:local .
+          docker buildx build --no-cache --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" --output type=docker,rewrite-timestamp=true -f release/Dockerfile.release -t central-ai-locked-rebuild:local .
           docker image inspect central-ai-locked-rebuild:local --format '{{.Id}}' > release-evidence/rebuilt-image-id.txt
           docker run --rm --network none --entrypoint python central-ai-locked-rebuild:local -m pip freeze --all > release-evidence/rebuilt-dependencies.txt
           cmp release-evidence/installed-dependencies.txt release-evidence/rebuilt-dependencies.txt
@@ -88,16 +93,19 @@ jobs:
               "filesystem_scope":["site-packages","/srv","/var/lib/central-ai"],
               "filesystem_differences":[{"path":p,"candidate":x.get(p),"rebuilt":y.get(p)} for p in paths if x.get(p)!=y.get(p)],
               "deployment_authorized":False,
-              "scope":"Diagnostics only; no normalization or full reproducibility claim."
+              "scope":"Two clean builds on one runner with source-derived timestamp rewriting; not independent-builder or deployment acceptance."
           }
           (root/"image-comparison.json").write_text(json.dumps(report,indent=2)+"\n")
+          assert report["image_ids_equal"], "IMAGE_ID_DRIFT"
+          assert report["rootfs_layers_equal"], "ROOTFS_LAYER_DRIFT"
+          assert not report["filesystem_differences"], "FILESYSTEM_DRIFT"
           assert report["runtime_config_equal"], "RUNTIME_CONFIG_DRIFT"
           assert a["Config"]["User"]==b["Config"]["User"]=="10001", "NONROOT_REQUIRED"
           PY
       - name: Seal diagnostic evidence
         if: ${{ always() }}
         run: |
-          echo "CI package and import equality only; inspect image-comparison.json; byte-for-byte image reproducibility not proven." > release-evidence/comparison-scope.txt
+          echo "Inspect image-comparison.json and workflow conclusion; equality is required for two clean builds on one runner, not independent-builder or deployment acceptance." > release-evidence/comparison-scope.txt
           find release-evidence -maxdepth 1 -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum > release-evidence/manifest.sha256
       - name: Archive source-controlled release evidence (never deploy)
         if: ${{ always() }}
