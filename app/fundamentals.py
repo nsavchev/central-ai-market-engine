@@ -1,7 +1,7 @@
 """Financial ratios for annual/TTM inputs, not investment recommendations."""
 from decimal import Decimal
 from typing import Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 class Financials(BaseModel):
     symbol: str = Field(pattern=r'^[A-Za-z0-9._-]{1,32}$')
@@ -9,6 +9,12 @@ class Financials(BaseModel):
     period_type: Literal['FY','TTM']
     currency: str = Field(pattern=r'^[A-Z]{3}$')
     source: str = 'manual'
+    # Current calculations require full monetary units; no implicit scaling.
+    # None preserves parsing of legacy calculation inputs, never import approval.
+    units: Literal['ones'] | None = None
+    accounting_standard: Literal['US_GAAP','IFRS','OTHER'] | None = None
+    retrieved_at: AwareDatetime | None = None
+    total_liabilities: Decimal | None = None
     revenue: Decimal | None = None
     net_income: Decimal | None = None
     operating_income: Decimal | None = None

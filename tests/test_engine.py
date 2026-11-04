@@ -198,3 +198,81 @@ def test_http_legacy_fill_rejects_unsafe_values_before_ledger_access(market_api,
     response = request('POST', '/paper/trades', json=data)
     assert response.status_code == 422, response.text
     database.begin.assert_not_called()
+
+
+def financial_history_payload(**changes):
+    payload = dict(symbol='DEMO', period_end='2025-12-31', period_type='FY',
+                   currency='USD', source='manual', units='ones',
+                   total_assets='100', total_liabilities='40', shareholders_equity='60',
+                   revenue='100.125')
+    payload.update(changes)
+    return payload
+
+
+def test_http_financial_history_preserves_metadata_and_idempotent_identity(market_api):
+    from app.db import FinancialSnapshot
+    request, sessions = market_api
+    payload = financial_history_payload()
+    for revenue in ('100.125', '200.25'):
+        payload['revenue'] = revenue
+        response = request('POST', '/fundamentals/history/import', json=[payload])
+        assert response.status_code == 200, response.text
+    with sessions() as db:
+        row = db.query(FinancialSnapshot).one()
+        assert row.payload['units'] == 'ones' and row.payload['total_liabilities'] == '40'
+        assert row.payload['revenue'] == '200.25'
+    report = request('GET', '/fundamentals/history/DEMO')
+    assert report.status_code == 200, report.text
+    assert report.json()['records'] == 1 and report.json()['units'] == 'ones'
+    assert any('MISSING_RETRIEVAL_TIME' in warning for warning in report.json()['warnings'])
+
+
+@pytest.mark.parametrize('changes', [
+    {'units': None}, {'total_liabilities': 20}, {'period_end': '2099-12-31'},
+    {'units': 'millions'}, {'source': 'investolens'}, {'source': 'sec_edgar'},
+])
+def test_http_financial_history_rejects_invalid_inputs_without_rows(market_api, changes):
+    from app.db import FinancialSnapshot
+    request, sessions = market_api
+    response = request('POST', '/fundamentals/history/import',
+                       json=[financial_history_payload(**changes)])
+    assert response.status_code == 422, response.text
+    with sessions() as db:
+        assert db.query(FinancialSnapshot).count() == 0
+
+
+def test_http_financial_history_batch_is_atomic_on_quality_rejection(market_api):
+    from app.db import FinancialSnapshot
+    request, sessions = market_api
+    response = request('POST', '/fundamentals/history/import', json=[
+        financial_history_payload(),
+        financial_history_payload(period_end='2024-12-31', units=None),
+    ])
+    assert response.status_code == 422 and 'UNITS_UNCONFIRMED' in response.json()['detail']
+    with sessions() as db:
+        assert db.query(FinancialSnapshot).count() == 0
+
+
+def test_http_legacy_history_refusal_does_not_infer_or_rewrite_units(market_api):
+    from app.db import FinancialSnapshot
+    request, sessions = market_api
+    payload = financial_history_payload()
+    payload.pop('units')
+    with sessions.begin() as db:
+        db.add(FinancialSnapshot(symbol='DEMO', period_end=date(2025, 12, 31),
+                                period_type='FY', currency='USD', source='manual', payload=payload))
+    response = request('GET', '/fundamentals/history/DEMO')
+    assert response.status_code == 422 and 'UNITS_UNCONFIRMED' in response.json()['detail']
+    with sessions() as db:
+        assert db.query(FinancialSnapshot).one().payload == payload
+
+
+def test_http_financial_history_requires_auth_before_database_access(market_api, monkeypatch):
+    from unittest.mock import MagicMock
+    request, _ = market_api
+    database = MagicMock()
+    monkeypatch.setattr(main, 'SessionLocal', database)
+    response = request('POST', '/fundamentals/history/import', headers={},
+                       json=[financial_history_payload()])
+    assert response.status_code == 401
+    assert not database.mock_calls
