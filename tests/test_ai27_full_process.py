@@ -35,6 +35,7 @@ def test_full_process_preserves_source_and_refuses_deploy(tmp_path, passed):
         assert kwargs["expected_sha256"]
         return {"passed": passed, "status":"passed" if passed else "failed",
                 "executed_candidate":True,"returncode":0 if passed else 1,
+                "execution_policy":"bounded-arithmetic-v1","completion_confirmed":passed,
                 "test_sha256":kwargs["expected_test_sha256"]}
     def authorize(binding):
         assert binding["task_id"]==task["task_id"]
@@ -96,7 +97,9 @@ def test_existing_pipeline_low_level_verifier_and_journal_together(tmp_path, mon
             handles.append(root)
             if mode == 'timeout':
                 raise subprocess.TimeoutExpired('docker', 30)
-            return SimpleNamespace(returncode=1 if mode == 'failed' else 0)
+            import ast
+            record = ast.parse((root/'harness.py').read_text()).body[-1].value.args[1].value.decode()
+            return SimpleNamespace(returncode=1 if mode == 'failed' else 0, stdout=record)
         return SimpleNamespace(returncode=1 if mode == 'quarantine' else 0, stdout='')
     def authorize(binding):
         return dict(verification_authorized=True, binding=dict(binding), reviewer_id='ci-synthetic',

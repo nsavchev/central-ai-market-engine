@@ -81,15 +81,18 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
                 or type(result.get("passed")) is not bool):
             raise ValueError("INVALID_VERIFIER_RESULT")
         status = result.get("status")
-        if (status not in ("passed", "failed", "timeout", "execution_error", "cleanup_unconfirmed")
+        if (status not in ("passed", "failed", "completion_unconfirmed", "timeout", "execution_error", "cleanup_unconfirmed")
                 or result["passed"] is not (status == "passed")
+                or result.get("execution_policy") != "bounded-arithmetic-v1"
+                or type(result.get("completion_confirmed")) is not bool
+                or result["completion_confirmed"] is not result["passed"]
                 or result.get("executed_candidate") is not True
                 or result.get("approved", False) is not False
                 or result.get("deployment_allowed", False) is not False):
             raise ValueError("INVALID_VERIFIER_RESULT")
-        if status in ("passed", "failed"):
+        if status in ("passed", "failed", "completion_unconfirmed"):
             code = result.get("returncode")
-            if (type(code) is not int or (code == 0) is not result["passed"]
+            if (type(code) is not int or (code == 0) is not (status != "failed")
                     or result.get("test_sha256") != trusted_test_sha256):
                 raise ValueError("INVALID_VERIFIER_RESULT")
         quarantine = None
@@ -116,6 +119,8 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
             "verification_binding": dict(binding),
             "test_status": status,
             "tests_passed": result["passed"],
+            "completion_confirmed": result["completion_confirmed"],
+            "execution_policy": result["execution_policy"],
             "quarantine_required": status == "cleanup_unconfirmed",
             "quarantine_resources": quarantine,
             "approved": False,

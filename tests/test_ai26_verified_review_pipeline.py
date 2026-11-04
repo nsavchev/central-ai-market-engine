@@ -210,7 +210,7 @@ def verification_fixture(monkeypatch, result, tmp_path):
                 'approved': False, 'deployment_allowed': False}
     def verifier(**kwargs):
         record_fixture_resources(kwargs)
-        return result
+        return {'execution_policy':'bounded-arithmetic-v1', 'completion_confirmed':result.get('passed',False), **result}
     return dict(enabled='YES', database=database, task_id=task_id, handoffs='', proposals='',
                 candidates='', recommendation='', trusted_test_file='/ci/test.py',
                 trusted_test_sha256='b'*64, image='python@sha256:'+'c'*64,
@@ -219,8 +219,11 @@ def verification_fixture(monkeypatch, result, tmp_path):
 
 def valid_result(**changes):
     result = dict(passed=True, status='passed', executed_candidate=True,
+                  execution_policy='bounded-arithmetic-v1', completion_confirmed=True,
                   test_sha256='b'*64, returncode=0)
     result.update(changes)
+    if 'passed' in changes and 'completion_confirmed' not in changes:
+        result['completion_confirmed'] = changes['passed']
     return result
 
 
@@ -601,3 +604,26 @@ run_functional_tests(enabled='YES', candidate=str(candidate),
             store.begin_verification(task_id, 'b'*32)
     finally:
         shutil.rmtree(root)  # Test-owned orphan; no Docker command was dispatched.
+
+
+@pytest.mark.parametrize('change', [
+    {'completion_confirmed':False}, {'completion_confirmed':1},
+    {'execution_policy':'arbitrary-python'}, {'execution_policy':None},
+])
+def test_pass_requires_bounded_policy_and_confirmed_completion(monkeypatch, tmp_path, change):
+    params = verification_fixture(monkeypatch, valid_result(**change), tmp_path)
+    with pytest.raises(ValueError, match='INVALID_VERIFIER_RESULT'):
+        prepare_and_verify(**params)
+
+
+def test_completion_uncertainty_is_durable_failure_without_deployment(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = verification_fixture(monkeypatch, valid_result(passed=False, completion_confirmed=False,
+        status='completion_unconfirmed', returncode=0), tmp_path)
+    report = prepare_and_verify(**params)
+    audit = TaskStorage(params['database']).get(params['task_id'])['verification']
+    assert audit['phase'] == 'completed'
+    assert audit['outcome']['test_status'] == 'completion_unconfirmed'
+    assert report['tests_passed'] is report['completion_confirmed'] is False
+    assert report['approved'] is report['deployment_allowed'] is False
+    assert report['execution_policy'] == 'bounded-arithmetic-v1'

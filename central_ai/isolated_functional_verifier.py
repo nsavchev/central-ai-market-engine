@@ -3,6 +3,9 @@
 Untrusted candidate *is executed*, but only in a disposable restricted container.
 No claim of a hardened security boundary against kernel-level exploits.
 """
+import ast
+import math
+import secrets
 import hashlib
 import os
 import re
@@ -31,6 +34,54 @@ def _read_input(path):
             return data
     except OSError as error:
         raise ValueError("UNSAFE_INPUT") from error
+
+
+# This deliberately supports only the first reviewed arithmetic scenario. It is
+# not a sandbox for arbitrary Python; unsupported candidates never reach Docker.
+EXECUTION_POLICY = 'bounded-arithmetic-v1'
+
+
+def _validate_bounded_candidate(data):
+    def reject():
+        raise ValueError('CANDIDATE_OUTSIDE_EXECUTION_POLICY')
+    try:
+        tree = ast.parse(data)
+    except (SyntaxError, ValueError, RecursionError):
+        reject()
+    if not 1 <= len(tree.body) <= 8 or sum(1 for _ in ast.walk(tree)) > 256:
+        reject()
+    identifiers = set()
+    def expression(node, parameters, depth=0):
+        if depth > 16:
+            reject()
+        if isinstance(node, ast.Constant):
+            if type(node.value) not in (int, float) or abs(node.value) > 1_000_000 or not math.isfinite(node.value):
+                reject()
+        elif isinstance(node, ast.Name) and node.id in parameters and isinstance(node.ctx, ast.Load):
+            pass
+        elif isinstance(node, ast.BinOp) and type(node.op) in (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod):
+            expression(node.left, parameters, depth+1)
+            expression(node.right, parameters, depth+1)
+        elif isinstance(node, ast.UnaryOp) and type(node.op) in (ast.UAdd, ast.USub):
+            expression(node.operand, parameters, depth+1)
+        else:
+            reject()
+    def identifier(name):
+        return isinstance(name, str) and re.fullmatch(r'[a-z][a-z0-9_]{0,63}', name) and '__' not in name
+    for function in tree.body:
+        if (not isinstance(function, ast.FunctionDef) or not identifier(function.name)
+                or function.name in identifiers or function.decorator_list or function.returns
+                or getattr(function, 'type_params', []) or function.type_comment
+                or len(function.body) != 1 or not isinstance(function.body[0], ast.Return)):
+            reject()
+        identifiers.add(function.name)
+        args = function.args
+        parameters = args.posonlyargs + args.args
+        if (args.vararg or args.kwarg or args.kwonlyargs or args.defaults or args.kw_defaults
+                or len(parameters) > 8 or any(not identifier(arg.arg) or arg.annotation or arg.type_comment for arg in parameters)
+                or len({arg.arg for arg in parameters}) != len(parameters)):
+            reject()
+        expression(function.body[0].value, {arg.arg for arg in parameters})
 
 
 def _confirm_container_absent(run, container_name):
@@ -83,6 +134,7 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
         raise ValueError("INVALID_TIMEOUT")
     if record_resources is not None and not callable(record_resources):
         raise ValueError("INVALID_RESOURCE_RECORDER")
+    _validate_bounded_candidate(contents[0])
     # Never bind caller-owned paths after checking their hashes.
     # The dedicated runner account/host is trusted; this is not host-root isolation.
     snapshot_root = Path(tempfile.mkdtemp(prefix="central-ai-input-"))
@@ -92,6 +144,16 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
         for path, data in zip(snapshot_paths, contents):
             path.write_bytes(data)
             path.chmod(0o444)
+        completion_record = ('CENTRAL_AI_COMPLETED_V1:' + secrets.token_hex(32) + ':'
+                             + expected_sha256 + ':' + expected_test_sha256)
+        harness = snapshot_root / 'harness.py'
+        # Candidate policy excludes imports/calls/attributes and all executable
+        # module statements except undecorated arithmetic function definitions.
+        # Operator-supplied tests and the Python/image/host remain trusted.
+        harness.write_text("import os\nimport runpy\n"
+                           "runpy.run_path('/sandbox/test_candidate.py', run_name='__main__')\n"
+                           + "os.write(1, " + repr(('\n' + completion_record + '\n').encode()) + ")\n")
+        harness.chmod(0o444)
         container_name = 'central-ai-verifier-' + uuid.uuid4().hex
         cmd = [
             'docker', 'run', '--name', container_name, '--rm', '--pull=never',
@@ -100,9 +162,10 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
             "--memory=128m", "--cpus=0.5", "--user=65534:65534",
             "--mount", "type=bind,src=" + str(snapshot_paths[0]) + ",dst=/sandbox/candidate.py,readonly",
             "--mount", "type=bind,src=" + str(snapshot_paths[1]) + ",dst=/sandbox/test_candidate.py,readonly",
+            "--mount", "type=bind,src=" + str(harness) + ",dst=/sandbox/harness.py,readonly",
             "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=8m",
             "--workdir", "/tmp", "--entrypoint", "python",
-            image, "-I", "-B", "/sandbox/test_candidate.py",
+            image, "-I", "-B", "/sandbox/harness.py",
         ]
         resources = {"snapshot_directory": str(snapshot_root), "container_name": container_name}
         # A durable journal callback must return before Docker can see a command.
@@ -111,9 +174,13 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
         cleanup_confirmed = False
         try:
             result = run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+            lines = result.stdout.splitlines() if isinstance(getattr(result, "stdout", None), str) else []
+            completed = (result.returncode == 0 and bool(lines)
+                         and lines[-1] == completion_record and lines.count(completion_record) == 1)
             report = {"test_sha256": expected_test_sha256,
-                      "status": "passed" if result.returncode == 0 else "failed",
-                      "passed": result.returncode == 0, "executed_candidate": True,
+                      "status": ("passed" if completed else "completion_unconfirmed") if result.returncode == 0 else "failed",
+                      "passed": completed, "executed_candidate": True,
+                      "completion_confirmed": completed, "execution_policy": EXECUTION_POLICY,
                       "returncode": result.returncode}
         except subprocess.TimeoutExpired:
             report = {"status": "timeout", "passed": False, "executed_candidate": True}
@@ -124,8 +191,10 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
             # Also run on cancellation; an interrupted/failed probe keeps inputs.
             cleanup_confirmed = _confirm_container_absent(run, container_name)
         if not cleanup_confirmed:
-            return dict(resources, status="cleanup_unconfirmed", passed=False, executed_candidate=True)
-        return report
+            return dict(resources, status="cleanup_unconfirmed", passed=False, executed_candidate=True,
+                        execution_policy=EXECUTION_POLICY, completion_confirmed=False)
+        return dict(report, execution_policy=EXECUTION_POLICY,
+                    completion_confirmed=report.get("completion_confirmed", False))
 
     finally:
         # Preserve inputs on cleanup uncertainty for operator quarantine/inspection.

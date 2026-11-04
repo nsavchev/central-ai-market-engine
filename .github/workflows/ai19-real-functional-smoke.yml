@@ -50,7 +50,22 @@ jobs:
               test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import multiply\nassert multiply(3, 4) == 99\n")
               bad = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image)
               assert bad["status"] == "failed", bad
-              print("AI19_REAL_FUNCTIONAL_DOCKER_PASSED")
+              test.write_text("raise SystemExit(0)\n")
+              early = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest,
+                  test_file=str(test), expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image)
+              assert early['status'] == 'completion_unconfirmed' and early['passed'] is False, early
+              candidate.write_text("import os\nos._exit(0)\n")
+              def forbidden(*args, **kwargs):
+                  raise AssertionError('unsupported candidate must not reach Docker')
+              try:
+                  run_functional_tests(enabled="YES", candidate=str(candidate),
+                      expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(test),
+                      expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image, run=forbidden)
+              except ValueError as error:
+                  assert str(error) == 'CANDIDATE_OUTSIDE_EXECUTION_POLICY'
+              else:
+                  raise AssertionError('candidate early-exit code accepted')
+              print("AI19_REAL_FUNCTIONAL_AND_EARLY_EXIT_GATES_PASSED")
           PY
       - name: Real bounded pipeline with synthetic authorization and durable outcome
         run: |
@@ -93,7 +108,7 @@ jobs:
               original_bytes = original.read_bytes()
               bridge = PersistentTaskBridge(database)
               targets = TaskFileTargets(database); targets.initialize()
-              for expected, expression in [('passed', '== 2'), ('failed', '== 99')]:
+              for expected, expression in [('passed', '== 2'), ('failed', '== 99'), ('completion_unconfirmed', None)]:
                   task_id = bridge.submit('Synthetic real Docker lifecycle '+expected)['task_id']
                   targets.register(task_id, str(source), 'sample.py')
                   assert run_batch(enabled='YES', database=str(database), agent='ci-lifecycle',
@@ -102,7 +117,8 @@ jobs:
                   for name in ('handoffs', 'proposals', 'candidates'):
                       path = root/(expected+'-'+name); path.mkdir(mode=0o700); paths.append(str(path))
                   test = root/(expected+'_test.py')
-                  test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import f\nassert f() "+expression+"\n")
+                  test.write_text("raise SystemExit(0)\n" if expression is None else
+                      "import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import f\nassert f() "+expression+"\n")
                   params = dict(enabled='YES', database=str(database), task_id=task_id,
                       handoffs=paths[0], proposals=paths[1], candidates=paths[2],
                       recommendation='```python\ndef f(): return 2\n```', trusted_test_file=str(test),
@@ -112,6 +128,8 @@ jobs:
                   audit = TaskStorage(database).get(task_id)['verification']
                   assert report['test_status'] == expected
                   assert report['tests_passed'] is (expected == 'passed')
+                  assert report['completion_confirmed'] is (expected == 'passed')
+                  assert report['execution_policy'] == 'bounded-arithmetic-v1'
                   assert report['audit_recorded'] and audit['phase'] == 'completed'
                   assert audit['outcome']['verification_binding'] == report['verification_binding']
                   assert audit['resources']['container_name'].startswith('central-ai-verifier-')
@@ -126,5 +144,5 @@ jobs:
                   else:
                       raise AssertionError('replay accepted')
                   assert containers() == before
-              print('SYNTHETIC_AUTH_REAL_DOCKER_DURABLE_PASS_FAIL_REPLAY_PASSED')
+              print('SYNTHETIC_AUTH_REAL_DOCKER_DURABLE_COMPLETION_AND_REPLAY_PASSED')
           PY

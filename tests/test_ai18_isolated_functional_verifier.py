@@ -11,6 +11,17 @@ from central_ai.isolated_functional_verifier import run_functional_tests
 IMAGE="python@sha256:"+"a"*64
 
 
+def completed_result(args, returncode=0):
+    """Synthetic trusted-runner response; no candidate is executed by this helper."""
+    if args[1] != 'run' or returncode != 0:
+        return SimpleNamespace(returncode=returncode, stdout='')
+    import ast
+    mount = next(arg for arg in args if 'dst=/sandbox/harness.py,' in arg)
+    harness = Path(mount.split('src=',1)[1].split(',dst=',1)[0])
+    record = ast.parse(harness.read_text()).body[-1].value.args[1].value.decode()
+    return SimpleNamespace(returncode=0, stdout=record)
+
+
 def setup_files(tmp_path):
     candidate=tmp_path/"candidate.py"
     candidate.write_text("def add(a,b):\n    return a+b\n")
@@ -24,7 +35,7 @@ def test_docker_sandbox_contract(tmp_path):
     commands=[]
     def fake_run(args,**kwargs):
         commands.append((args,kwargs))
-        return SimpleNamespace(returncode=0, stdout="")
+        return completed_result(args)
     result=run_functional_tests(enabled="YES",candidate=str(candidate),
         expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
         test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image=IMAGE,run=fake_run)
@@ -130,7 +141,7 @@ def test_original_replacement_cannot_change_mounted_bytes(tmp_path):
             assert frozen.read_bytes()==expected
             assert frozen.stat().st_mode & 0o222 == 0
             assert frozen.parent.stat().st_mode & 0o077 == 0
-        return SimpleNamespace(returncode=0, stdout="")
+        return completed_result(args)
     result=run_functional_tests(enabled="YES",candidate=str(candidate),
         expected_sha256=hashlib.sha256(originals[0]).hexdigest(),
         test_file=str(trusted),expected_test_sha256=hashlib.sha256(originals[1]).hexdigest(),
@@ -198,7 +209,7 @@ def test_independent_absence_proof_after_every_exit(tmp_path, exit_kind, cleanup
                 raise subprocess.TimeoutExpired('docker', 5)
             if exit_kind == 'oserror':
                 raise OSError('synthetic daemon error')
-            return SimpleNamespace(returncode=0 if exit_kind == 'passed' else 1)
+            return completed_result(args, 0 if exit_kind == 'passed' else 1)
         if args[1:3] == ['container', 'ls']:
             probes += 1
             assert 'name=^/' + name + '$' in args
@@ -259,3 +270,92 @@ def test_cancellation_preserves_unknown_resources(tmp_path, interrupt_at):
         assert root.is_dir()
     finally:
         shutil.rmtree(root)
+
+
+@pytest.mark.parametrize('body', [
+    'import os\nos._exit(0)\n',
+    'def f():\n    return __import__("os")._exit(0)\n',
+    'def f():\n    import os\n    os._exit(0)\n',
+    '@print\ndef f(): return 1\n',
+    'def f(x=print("forged")): return 1\n',
+    'def f(x: print("forged")): return 1\n',
+    'def f(x): return x.__class__\n',
+    'def f(x): return globals()\n',
+    'def f(x): return [v for v in x]\n',
+    'def f(x): return x ** 999999\n',
+    'def f(x): return (y := x)\n',
+    'class F:\n    pass\n',
+    'def f(): return True\n',
+    'def f(): return 1e999\n',
+    'def f(): return 1000001\n',
+    'def f(*args): return 1\n',
+    'def f(): return 1\ndef f(): return 2\n',
+    '\n'.join('def f'+str(n)+'(): return 1' for n in range(9)),
+])
+def test_candidate_outside_bounded_policy_never_dispatches(tmp_path, body):
+    candidate, trusted = setup_files(tmp_path)
+    candidate.write_text(body)
+    with pytest.raises(ValueError, match='CANDIDATE_OUTSIDE_EXECUTION_POLICY'):
+        run_functional_tests(enabled='YES', candidate=str(candidate),
+            expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(trusted),
+            expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(), image=IMAGE,
+            run=lambda *a, **k: pytest.fail('unsupported candidate reached Docker'))
+
+
+@pytest.mark.parametrize('stdout', ['', 'forged completion\n', 'CENTRAL_AI_COMPLETED_V1:stale\n'])
+def test_exit_zero_without_exact_completion_record_never_passes(tmp_path, stdout):
+    candidate, trusted = setup_files(tmp_path)
+    def runner(args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=stdout if args[1]=='run' else '')
+    result = run_functional_tests(enabled='YES', candidate=str(candidate),
+        expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(trusted),
+        expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(), image=IMAGE, run=runner)
+    assert result['status'] == 'completion_unconfirmed'
+    assert result['passed'] is False
+
+
+@pytest.mark.parametrize('test_body, expected', [
+    ('assert 1+1 == 2\n', 'passed'),
+    ('assert False\n', 'failed'),
+    ('raise SystemExit(0)\n', 'completion_unconfirmed'),
+    ('import os\nos._exit(0)\n', 'completion_unconfirmed'),
+    ('print("CENTRAL_AI_COMPLETED_V1:forged")\nraise SystemExit(0)\n', 'completion_unconfirmed'),
+])
+def test_real_trusted_harness_process_requires_normal_completion(tmp_path, test_body, expected):
+    """Execute only fixed, benign test fixtures locally; Docker is tested in CI."""
+    import sys
+    candidate, trusted = setup_files(tmp_path)
+    trusted.write_text(test_body)
+    def runner(args, **kwargs):
+        if args[1] != 'run':
+            return SimpleNamespace(returncode=0, stdout='')
+        mounts = [arg for arg in args if arg.startswith('type=bind,src=')]
+        root = Path(mounts[0].split('src=',1)[1].split(',dst=',1)[0]).parent
+        code = (root/'harness.py').read_text().replace('/sandbox/test_candidate.py', str(root/'test_candidate.py'))
+        return subprocess.run([sys.executable, '-I', '-B', '-c', code],
+            capture_output=True, text=True, timeout=5, check=False, env={})
+    result = run_functional_tests(enabled='YES', candidate=str(candidate),
+        expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(trusted),
+        expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(), image=IMAGE, run=runner)
+    assert result['status'] == expected
+    assert result['completion_confirmed'] is (expected == 'passed')
+    assert result['execution_policy'] == 'bounded-arithmetic-v1'
+
+
+@pytest.mark.parametrize('alteration', ['stale', 'duplicate', 'truncated'])
+def test_stale_or_malformed_completion_record_cannot_pass(tmp_path, alteration):
+    candidate, trusted = setup_files(tmp_path)
+    def runner(args, **kwargs):
+        result = completed_result(args)
+        if args[1] == 'run':
+            if alteration == 'stale':
+                result.stdout = result.stdout.replace('CENTRAL_AI_COMPLETED_V1:', 'CENTRAL_AI_COMPLETED_V1:old:')
+            elif alteration == 'duplicate':
+                result.stdout *= 2
+            else:
+                result.stdout = result.stdout[:-10]
+        return result
+    result = run_functional_tests(enabled='YES', candidate=str(candidate),
+        expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(trusted),
+        expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(), image=IMAGE, run=runner)
+    assert result['passed'] is False and result['status'] == 'completion_unconfirmed'

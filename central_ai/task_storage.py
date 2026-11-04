@@ -199,13 +199,17 @@ class TaskStorage:
         """Atomically store only the bounded pipeline report; never promote task status."""
         fields = {'task_id','candidate_sha256','test_sha256','reviewer_id','authorization_id',
                   'verification_nonce','verification_binding','test_status','tests_passed',
-                  'quarantine_required','quarantine_resources','approved','deployment_allowed'}
+                  'quarantine_required','quarantine_resources','approved','deployment_allowed',
+                  'completion_confirmed','execution_policy'}
         if (not isinstance(report, dict) or set(report) != fields
                 or report.get('task_id') != task_id or report.get('verification_nonce') != nonce
                 or report.get('approved') is not False or report.get('deployment_allowed') is not False
+                or report.get('execution_policy') != 'bounded-arithmetic-v1'
+                or type(report.get('completion_confirmed')) is not bool
+                or report['completion_confirmed'] is not report.get('tests_passed')
                 or type(report.get('tests_passed')) is not bool
                 or type(report.get('quarantine_required')) is not bool
-                or report.get('test_status') not in ('passed','failed','timeout','execution_error','cleanup_unconfirmed')
+                or report.get('test_status') not in ('passed','failed','completion_unconfirmed','timeout','execution_error','cleanup_unconfirmed')
                 or report['tests_passed'] is not (report['test_status'] == 'passed')
                 or report['quarantine_required'] is not (report['test_status'] == 'cleanup_unconfirmed')):
             raise ValueError('INVALID_VERIFICATION_REPORT')
