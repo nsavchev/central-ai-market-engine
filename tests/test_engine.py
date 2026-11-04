@@ -129,3 +129,72 @@ def test_http_analysis_rejects_ambiguous_symbol(market_api):
 def test_analysis_and_valuation_http_routes_require_auth(market_api, method, path):
     request, _ = market_api
     assert request(method, path, headers={}).status_code == 401
+
+
+def test_http_ibkr_failure_redacts_client_and_log_details(market_api, monkeypatch, caplog):
+    import re
+    from unittest.mock import MagicMock
+
+    request, _ = market_api
+    private_detail = 'broker password=synthetic-secret; account=private-account\nprivate-path'
+    monkeypatch.setattr(main, 'fetch_daily', MagicMock(side_effect=RuntimeError(private_detail)))
+    database = MagicMock()
+    monkeypatch.setattr(main, 'SessionLocal', database)
+
+    response = request('POST', '/ingest/ibkr', json={'symbol': 'SPY'})
+    assert response.status_code == 502
+    detail = response.json()['detail']
+    assert detail['code'] == 'IBKR_INGEST_FAILED'
+    assert re.fullmatch(r'[0-9a-f]{24}', detail['error_id'])
+    assert private_detail not in response.text
+    assert 'synthetic-secret' not in caplog.text
+    assert 'private-account' not in caplog.text
+    assert 'private-path' not in caplog.text
+    assert f"IBKR_INGEST_FAILED id={detail['error_id']}" in caplog.text
+    database.begin.assert_not_called()
+
+
+def test_http_ibkr_errors_have_distinct_correlation_ids(market_api, monkeypatch):
+    from unittest.mock import MagicMock
+
+    request, _ = market_api
+    monkeypatch.setattr(main, 'fetch_daily', MagicMock(side_effect=RuntimeError('synthetic failure')))
+    responses = [request('POST', '/ingest/ibkr', json={'symbol': 'SPY'}) for _ in range(2)]
+    assert all(response.status_code == 502 for response in responses)
+    ids = [response.json()['detail']['error_id'] for response in responses]
+    assert ids[0] != ids[1]
+
+
+def test_http_ibkr_success_preserves_import_and_update(market_api, monkeypatch):
+    request, sessions = market_api
+    bar = {'day': '2026-10-30', 'open': 100, 'high': 102,
+           'low': 99, 'close': 101, 'volume': 1000}
+    monkeypatch.setattr(main, 'fetch_daily', lambda *args: [bar])
+    for close in (101, 102):
+        bar['close'] = close
+        response = request('POST', '/ingest/ibkr', json={'symbol': 'SPY'})
+        assert response.status_code == 200, response.text
+        assert response.json() == {'symbol': 'SPY', 'bars_received': 1}
+    with sessions() as db:
+        assert db.query(Instrument).count() == 1
+        rows = db.query(DailyBar).all()
+        assert len(rows) == 1 and rows[0].close == 102
+
+
+@pytest.mark.parametrize('field,value', [
+    ('quantity', 'Infinity'), ('price', 'Infinity'), ('fee', 'Infinity'),
+    ('price', 100.001), ('fee', 0.001), ('quantity', 0.1234567),
+])
+def test_http_legacy_fill_rejects_unsafe_values_before_ledger_access(market_api, monkeypatch, field, value):
+    from unittest.mock import MagicMock
+
+    request, _ = market_api
+    monkeypatch.setenv('PAPER_LEGACY_WRITES_ENABLED', 'YES')
+    monkeypatch.delenv('PAPER_V2_ENABLED', raising=False)
+    database = MagicMock()
+    monkeypatch.setattr(main, 'SessionLocal', database)
+    data = dict(symbol='SPY', side='SELL', quantity=1, price=100, fee=0)
+    data[field] = value
+    response = request('POST', '/paper/trades', json=data)
+    assert response.status_code == 422, response.text
+    database.begin.assert_not_called()
