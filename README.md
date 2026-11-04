@@ -42,8 +42,8 @@ curl -H "X-API-Token: $TOKEN" http://127.0.0.1:8000/paper/account
 ## Tests
 
 ```bash
-pip install -r requirements.txt
-pytest -q
+pip install -r requirements-test.txt 'alembic>=1.13,<2'
+python -m pytest -q
 ```
 
 ## Explicit limitations and next milestones
