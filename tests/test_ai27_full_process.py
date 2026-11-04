@@ -31,7 +31,9 @@ def test_full_process_preserves_source_and_refuses_deploy(tmp_path, passed):
         assert kwargs["candidate"].endswith(".py")
         assert kwargs["expected_test_sha256"]=="b"*64
         assert kwargs["expected_sha256"]
-        return {"passed": passed, "status":"passed" if passed else "failed"}
+        return {"passed": passed, "status":"passed" if passed else "failed",
+                "executed_candidate":True,"returncode":0 if passed else 1,
+                "test_sha256":kwargs["expected_test_sha256"]}
     def authorize(binding):
         assert binding["task_id"]==task["task_id"]
         assert binding["scope"]=="verify_only"
