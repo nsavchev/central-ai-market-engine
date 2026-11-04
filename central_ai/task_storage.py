@@ -179,17 +179,33 @@ class TaskStorage:
                 family = {'schema':'revision-family-v1', 'members':[root_id],
                           'source_sha256':digest, 'test_sha256':test_sha256}
                 root['revision_family'] = family
+            spec = task['task']['task']
+            root_spec = root['task']['task']
+            if (not isinstance(spec, str) or not 1 <= len(spec) <= 4000
+                    or not isinstance(root_spec, str) or not 1 <= len(root_spec) <= 4000):
+                raise ValueError('GENERATION_FAMILY_CONFLICT')
+            spec_digest = hashlib.sha256(spec.encode('utf-8')).hexdigest()
+            root_spec_digest = hashlib.sha256(root_spec.encode('utf-8')).hexdigest()
+            root_generation = root.get('generation')
             if (not isinstance(family, dict) or family.get('schema') != 'revision-family-v1'
                     or not isinstance(family.get('members'), list) or not 1 <= len(family['members']) <= 3
+                    or any(not isinstance(member, str) for member in family['members'])
+                    or len(set(family['members'])) != len(family['members'])
                     or family['members'][0] != root_id or family['members'][-1] != task_id
+                    or root.get('analysis', {}).get('source_sha256') != digest
+                    or spec_digest != root_spec_digest
+                    or family.get('spec_sha256', root_spec_digest) != root_spec_digest
+                    or (root_generation is not None and (not isinstance(root_generation, dict)
+                        or root_generation.get('binding', {}).get('spec_sha256') != root_spec_digest))
                     or family.get('source_sha256') != digest or family.get('test_sha256') != test_sha256
                     or (revision and (revision.get('ordinal') != len(family['members'])
                         or revision.get('test_sha256') != test_sha256 or revision.get('source_sha256') != digest))):
                 raise ValueError('GENERATION_FAMILY_CONFLICT')
-            spec = task['task']['task']
+            family = dict(family, spec_sha256=root_spec_digest)
+            root['revision_family'] = family
             binding = {'schema':'generation-request-v1', 'task_id':task_id, 'nonce':nonce,
                 'root_task_id':root_id, 'ordinal':len(family['members']), 'source_sha256':digest,
-                'spec_sha256':hashlib.sha256(spec.encode('utf-8')).hexdigest(),
+                'spec_sha256':spec_digest,
                 'test_sha256':test_sha256, 'image':image, 'execution_policy':'bounded-arithmetic-v1',
                 'provider_id':provider_id}
             task['generation'] = {'schema':'task-generation-v1', 'phase':'requested', 'binding':binding,
@@ -210,7 +226,9 @@ class TaskStorage:
             generation = task.get('generation', {})
             audit = task.get('verification', {})
             if (audit.get('phase') != 'preparing' or audit.get('nonce') != nonce
-                    or generation.get('phase') != 'requested' or generation.get('binding', {}).get('nonce') != nonce):
+                    or generation.get('phase') != 'requested' or generation.get('binding', {}).get('nonce') != nonce
+                    or task.get('analysis', {}).get('source_sha256') != generation['binding'].get('source_sha256')
+                    or hashlib.sha256(task['task']['task'].encode('utf-8')).hexdigest() != generation['binding'].get('spec_sha256')):
                 raise ValueError('GENERATION_AUDIT_CONFLICT')
             generation.update(phase='completed', response_sha256=hashlib.sha256(recommendation.encode('utf-8')).hexdigest())
             self._write_review_task(conn, task_id, task)

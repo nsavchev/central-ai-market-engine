@@ -325,3 +325,26 @@ def test_only_completed_semantic_failure_can_reserve_revision(monkeypatch,tmp_pa
     report=prepare_and_verify(**params)
     with pytest.raises(ValueError,match='REVISION_PARENT_NOT_ELIGIBLE'):
         PersistentTaskBridge(params['database']).submit_revision(params['task_id'],report['verification_nonce'])
+
+
+@pytest.mark.parametrize('change',['child_spec','root_source'])
+def test_generated_revision_rejects_corrupted_root_context_before_dispatch(monkeypatch,tmp_path,change):
+    import json
+    import sqlite3
+    params,report=revision_fixture(monkeypatch,tmp_path)
+    root=params['task_id']
+    child=PersistentTaskBridge(params['database']).submit_revision(root,report['verification_nonce'])
+    run_batch(enabled='YES',database=params['database'],agent='negative-revision',max_tasks=1,
+              idle_checks=1,sleep=lambda _:None)
+    victim=child['task_id'] if change=='child_spec' else root
+    with sqlite3.connect(params['database']) as conn:
+        task=json.loads(conn.execute('SELECT payload FROM tasks WHERE task_id=?',(victim,)).fetchone()[0])
+        if change=='child_spec': task['task']['task']='Synthetic unrelated task substitution'
+        else: task['analysis']['source_sha256']='f'*64
+        conn.execute('UPDATE tasks SET payload=? WHERE task_id=?',(json.dumps(task),victim))
+    params.update(task_id=child['task_id']);params.pop('recommendation')
+    calls=[]
+    with pytest.raises(ValueError,match='GENERATION_FAMILY_CONFLICT'):
+        prepare_and_verify(**params,generator=lambda request:calls.append(request) or '```python\ndef f(): return 2\n```',
+                           generator_id='ci-synthetic')
+    assert calls==[]

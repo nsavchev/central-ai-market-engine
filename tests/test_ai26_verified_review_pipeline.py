@@ -702,3 +702,69 @@ def test_process_exit_inside_generator_preserves_one_shot_intent(monkeypatch,tmp
     assert saved['verification']['phase']=='preparing'
     with pytest.raises(ValueError,match='VERIFICATION_ALREADY_STARTED'):
         prepare_and_verify(**params,generator=lambda _:pytest.fail('replay'),generator_id='ci-synthetic')
+
+
+@pytest.mark.parametrize('kind',['denied','stale'])
+def test_generated_candidate_requires_independent_current_authority(monkeypatch,tmp_path,kind):
+    from central_ai.task_storage import TaskStorage
+    params=verification_fixture(monkeypatch,valid_result(),tmp_path);params.pop('recommendation')
+    def authorize(binding):
+        return dict(verification_authorized=kind!='denied',binding=dict(binding,nonce='0'*32) if kind=='stale' else dict(binding),
+                    reviewer_id='ci-only',authorization_id='ci-only',approved=False,deployment_allowed=False)
+    params['authorization_check']=authorize
+    params['verifier']=lambda **_:pytest.fail('must not dispatch')
+    with pytest.raises(ValueError,match='REVIEW_AUTHORIZATION_DENIED'):
+        prepare_and_verify(**params,generator=lambda _:'```python\ndef f(): return 2\n```',generator_id='ci-synthetic')
+    audit=TaskStorage(params['database']).get(params['task_id'])
+    assert audit['generation']['phase']=='completed' and audit['verification']['phase']=='blocked'
+
+
+def test_generated_response_write_failure_never_retries_or_authorizes(monkeypatch,tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params=verification_fixture(monkeypatch,valid_result(),tmp_path);params.pop('recommendation')
+    params['authorization_check']=lambda _:pytest.fail('no authorization before response journal')
+    def fail(*args,**kwargs): raise OSError('synthetic-sensitive-audit-error')
+    with monkeypatch.context() as context:
+        context.setattr(TaskStorage,'complete_generation',fail)
+        with pytest.raises(OSError):
+            prepare_and_verify(**params,generator=lambda _:'```python\ndef f(): return 2\n```',generator_id='ci-synthetic')
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['phase']=='requested' and saved['verification']['phase']=='blocked'
+    assert 'synthetic-sensitive-audit-error' not in str(saved)
+    with pytest.raises(ValueError,match='VERIFICATION_ALREADY_STARTED'):
+        prepare_and_verify(**params,generator=lambda _:pytest.fail('retry'),generator_id='ci-synthetic')
+
+
+def test_concurrent_requests_dispatch_generator_once(monkeypatch,tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    params=verification_fixture(monkeypatch,valid_result(),tmp_path);params.pop('recommendation')
+    calls=[]
+    def generate(request): calls.append(request['binding']['nonce']);return '```python\ndef f(): return 2\n```'
+    def attempt(_):
+        try:
+            prepare_and_verify(**params,generator=generate,generator_id='ci-synthetic')
+            return True
+        except ValueError as error:
+            assert str(error)=='VERIFICATION_ALREADY_STARTED'
+            return False
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sum(pool.map(attempt,range(2)))==1
+    assert len(calls)==1
+
+
+def test_context_change_during_callback_rejects_response_commit(monkeypatch,tmp_path):
+    import json
+    import sqlite3
+    from central_ai.task_storage import TaskStorage
+    params=verification_fixture(monkeypatch,valid_result(),tmp_path);params.pop('recommendation')
+    params['authorization_check']=lambda _:pytest.fail('changed task must not authorize')
+    def generate(_):
+        with sqlite3.connect(params['database']) as conn:
+            saved=json.loads(conn.execute('SELECT payload FROM tasks WHERE task_id=?',(params['task_id'],)).fetchone()[0])
+            saved['task']['task']='Synthetic changed specification'
+            conn.execute('UPDATE tasks SET payload=? WHERE task_id=?',(json.dumps(saved),params['task_id']))
+        return '```python\ndef f(): return 2\n```'
+    with pytest.raises(ValueError,match='GENERATION_AUDIT_CONFLICT'):
+        prepare_and_verify(**params,generator=generate,generator_id='ci-synthetic')
+    audit=TaskStorage(params['database']).get(params['task_id'])
+    assert audit['generation']['phase']=='requested' and audit['verification']['phase']=='blocked'
