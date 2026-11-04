@@ -45,13 +45,13 @@ P0/P1 precede new P2 features. DB inventory/restore work is prerequisite evidenc
 
 ## Next active task and handoff rule
 
-**Next: P1-ACCEPTANCE-HANDOFF-01.** Source `749be72f7d647aafb0d03b82987238a14741c12a` fixes commit/context-exit registry cleanup and pins candidate extraction to the exact supplied/generated recommendation. Commit-then-error retains the DB child/budget slot; no automatic refund/retry. Local **509 passed / 47 skipped**, zero warnings; **33/33 exact-source CI successful**. Next reconcile a single bounded source/CI candidate with remaining P0/P1/P2/#90 evidence and a read-only operator checklist/go-no-go. The 16–17 optional block becomes core reconciliation, not new Market features. Full worker-driven autonomy, real provider/cost/disclosure controls, independent production authority, hardened isolation and operational/restore/full-diff proof remain open; no promotion permission.
+**Next: P0-OPS-RECON-01.** The [canonical register §24](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md#24-p1-acceptance-handoff-01--2026-11-04-1638-europesofia) contains the bounded-candidate decision and OPS-E01–E07 read-only evidence checklist. Runtime candidate `749be72f7d647aafb0d03b82987238a14741c12a` and documentation head `d40bf28e6d76fdcd13e9a2079528ec9a54df3300` both have freshly confirmed 33/33 successful CI runs; only Markdown differs. GO is limited to the demonstrated synthetic arithmetic CI fixture. Complete P0/P1, developer VPS acceptance, rollout and Market MVP remain NO-GO for the listed evidence/control gaps. Review current deployment evidence first when the operator is available; no new VPS collection was performed by this handoff. No real provider wiring or new P2 features are authorized by green CI.
 
 For every change record TASK_ID, objective, existing owner/functions, files, PR/base/head, exact test SHA and result, GitHub/CI versus VPS evidence, blockers and one next action in the canonical register. The Git commit/diff preserves exact edits; the register explains why. Refresh the generated inventory on source-review checkpoints. No new dated master register, duplicated runtime module or percentage-based readiness claim.
 
 ## Day plan — 2026-11-04 (Europe/Sofia)
 
-PLAN-DAY-01 is a target schedule, not evidence of completed work. Starting source: FIN-QUALITY-01 `af585fd9a33585782ac2854cc59552ea00e16f67` (373 local passed / 44 PostgreSQL-dependent skipped; 33/33 CI), documentation checkpoint `e4ed9610667ba28ce2e546697e6c85872fd5a3bf`. The canonical register owns actual progress. P0-REVIEW-01 remains the single active technical task.
+PLAN-DAY-01 is a target schedule, not evidence of completed work. Starting source: FIN-QUALITY-01 `af585fd9a33585782ac2854cc59552ea00e16f67` (373 local passed / 44 PostgreSQL-dependent skipped; 33/33 CI), documentation checkpoint `e4ed9610667ba28ce2e546697e6c85872fd5a3bf`. The canonical register owns actual progress. These starting task names are historical; the Next active task section and latest canonical entry define the current task.
 
 | Local time | Work package | Acceptance for the block |
 |---|---|---|

@@ -1,6 +1,6 @@
 # Central AI / Market Engine — архитектура, решения и напредък
 
-**Основен жив регистър. Обновен: 2026-11-04 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Текущ checkpoint: P0-REVIEW-01 / P0-AUDIT-01; предходните P0-RECON, IBKR/legacy guards и OPS-02 са запазени в историята. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
+**Основен жив регистър. Обновен: 2026-11-04 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Текущ checkpoint: P1-ACCEPTANCE-HANDOFF-01 (§24); предходните checkpoints са запазени в историята. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
 
 ## 1. Кой код и коя среда описваме
 
@@ -463,3 +463,50 @@ Measured checks: **116 targeted passed / 3 Docker skipped**, full **509 local pa
 Review disposition: the scoped transaction/provenance/interface task is complete only with exact-source checks. This is NOT a full review of every historical PR/main changed file, deployed import/image, real reviewer identity, DB owner/ACL, restore equivalence or hardened isolation. Generator callbacks still require trusted host setup and a reviewed timeout/cost/disclosure policy before real external use; no generic generated-code execution or fully automatic worker-driven model manager is enabled.
 
 **Next: P1-ACCEPTANCE-HANDOFF-01** — reconcile one exact bounded candidate and its source/CI evidence with remaining P0/P1/P2/#90 blockers, produce a concrete read-only operator evidence checklist and explicit go/no-go for separately authorized acceptance. Use the 16–17 optional block for core reconciliation instead of adding Market features; preserve 17–18 reserve. Do not close P0/P1/the project or infer deployment permission from green checks.
+
+
+## 24. P1-ACCEPTANCE-HANDOFF-01 — 2026-11-04 16:38 Europe/Sofia
+
+Objective: reconcile the bounded candidate already accepted in source/CI with the remaining operational and product gates. Recovery found that GENERATION-NEGATIVE-01 and DIFF-REVIEW-01 had already landed; their tests were not duplicated. This is a documentation-only handoff, not a new runtime capability or approval.
+
+### Exact candidate and evidence provenance
+
+- PR [#130](https://github.com/nsavchev/central-ai-market-engine/pull/130), base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`, branch `audit/architecture-progress-20261104`; inspected head `d40bf28e6d76fdcd13e9a2079528ec9a54df3300`, still draft/unmerged.
+- Bounded runtime/test/workflow candidate: **`749be72f7d647aafb0d03b82987238a14741c12a`**. Fresh GitHub reads confirmed **33/33 completed successful PR workflow runs** for both that source and inspected head `d40bf28…`. Git diff between them lists only README and three audit Markdown files: runtime/test/workflow bytes are unchanged. This handoff's eventual commit has its own CI state; success is not inherited automatically.
+- Exact inspected-head [AI-19 run 41842836939](https://github.com/nsavchev/central-ai-market-engine/actions/runs/41842836939), job `126618623766`: real functional pass/fail and bounded synthetic-authorization/durable-outcome steps successful. Existing workflow includes generated root failure → linked corrected child with fixed independent tests. This is synthetic generation/authority, not real model reasoning or production identity.
+- Exact inspected-head [AI-22 run 41842836829](https://github.com/nsavchev/central-ai-market-engine/actions/runs/41842836829), job `126618622233`: timeout removal and real-Docker interrupted-process/quarantined-observation recovery steps successful. Observation failure is injected; this does not prove a real daemon outage or hardened hostile-code isolation.
+- §23 records **509 local passed / 47 skipped / zero warnings**, with 44 PostgreSQL and 3 Docker prerequisites. Those are prior measured results, not a fresh local run in this documentation task. No behavior tests were repeated for bookkeeping.
+- Existing owners remain `TaskStorage`, `PersistentTaskBridge`, review/candidate pipeline and isolated verifier. No module/queue/controller/schema is added. Static JSON inventory stays the explicitly dated `a2aee7b…` snapshot; no new runtime inventory claim.
+
+### Go/no-go by scope
+
+| Decision | Disposition | Evidence or blocker |
+|---|---|---|
+| Bounded synthetic arithmetic lifecycle in existing isolated CI | **GO for this demonstrated fixture scope only** | Source/CI above; max-three linked candidates, immutable tests/source/spec, one-shot intent, independent synthetic verify-only receipt, cleanup/quarantine and false promotion flags |
+| Complete Central AI / close P1 | **NO-GO** | No worker-driven model loop; real generator timeout/cost/disclosure controls, independent production tests/reviewer and dedicated isolation are not accepted |
+| Close P0 / Issue #90 | **NO-GO** | Full historical PR/main diff, deployed source/image/import/ACL/schema comparison and current restore evidence remain incomplete |
+| Developer-loop VPS acceptance / P3 | **NO-GO pending separately scoped review** | Exact execution image/build provenance, disposable isolation without production mounts/secrets, independent authority and operator evidence required; CI image pin alone is insufficient |
+| Merge, worker/timer activation or P4 rollout | **NO-GO** | No promotion authorization; API-only cutover does not extend to developer execution or Market Engine |
+| Market MVP / P2 completion | **NO-GO** | Safe SEC persistence, authorized feeds, report scheduling, internal paper/DB acceptance and migration rehearsals remain open; IBKR paper follows internal simulator, no live orders |
+
+### Concrete operator evidence checklist — read-only collection first
+
+Keep operational reports in the protected evidence channel; public GitHub receives only sanitized dispositions/references. Do not paste task contents, environment values, provider/reviewer keys, raw logs or full container configuration. For each row record timestamp, evidence reference, observed identity/result, discrepancy, owner and next action. Missing evidence stays UNVERIFIED; a failed probe is not repaired by activating or replacing a service.
+
+| ID / owner | Read-only evidence to review | Acceptance and stop condition |
+|---|---|---|
+| OPS-E01 / operator | Current deployment Git SHA/branch/dirty state, selected service/image/resource/mount metadata, health and Task API disabled state; use the existing [collector procedure](ISSUE90_READONLY_EVIDENCE_PREPARATION_2026-11-03.md) and [collector](../../scripts/ai24_vps_readonly_preflight.sh) from this frozen candidate | Review standalone copy before running; no pull/checkout/build/restart. Record collector SHA separately from deployed SHA/image. Hardcoded prerequisites must match; stop on mismatch/nonzero/collection_failed. Existing timer assertion is an observation, not authorization to enable it |
+| OPS-E02 / operator + source reviewer | Map deployed entrypoints/imports/writers and release overrides to the frozen candidate and DUP-01–07 owners | Explicit drift matrix; repository AST imports and healthy API are not a deployed call graph. No consolidation/deletion to obtain a clean result |
+| OPS-E03 / operator + DB reviewer | SQLite schema/indexes/counts from a reviewed read-only procedure, including workflow/queue/journal ownership and unresolved states; exclude task payloads | No ad hoc live file copy or write/backfill/checkpoint; consistent snapshot procedure must be agreed first. Preparing/running/quarantined/uncertain states require reconciliation, never automatic reset/refund |
+| OPS-E04 / operator + DB reviewer | Actual PostgreSQL schema/revision/defaults/sequences/FKs/unique indexes/writer roles and ACL under read-only credentials; existing [runbook](stage2-production-inventory-runbook.md) / [SQL](stage2-production-inventory.sql) are starting points | Confirm DB target and relations before running counts: SQL assumes legacy paper tables exist. Missing tables require reviewed adaptation, not creation. SQL does not prove complete ACL/revision-value coverage; keep those explicit gaps. No migration/stamp/create_all/fixture tests on VPS |
+| OPS-E05 / operator + integration reviewer | Source permission and configured-versus-observed availability for SEC/IBKR/Finviz/InvestoLens/calendar/provider/verifier | Record unavailable/unverified integrations without enabling accounts, scraping, issuing paid requests or connecting trading sessions |
+| OPS-E06 / operator + release reviewer | Current backup inventory and existing isolated restore/recovery evidence, with timestamps and source/image/schema compatibility | File presence is not restore proof. Earlier operator-provided limited API/restore/table evidence is historical and does not accept this developer candidate. A new restore exercise writes only a separately approved disposable target; it is not part of read-only collection |
+| OPS-E07 / source + release reviewer | Remaining PR/main changed-file review and negative/recovery evidence matched to exact deployed and proposed identities | Scoped §23 review is not the full stack audit. Record unresolved files/requirements and go/no-go; never mark all historical PRs obsolete or mass-merge |
+
+Full P3 execution/restore rehearsal requires its own concrete disposable-environment plan and scope decision after reviewing these inputs. This checklist authorizes no new provider connection, reviewer credential provisioning or production action.
+
+### Handoff and one next action
+
+Files changed for this task: this canonical register, the existing focus plan and duplication triage next-task pointer. Validation: Markdown local targets and recorded Git references checked; `git diff --check`; exact runtime equivalence and existing CI/job evidence above. No new test suite or inventory implementation. Public evidence is GitHub/source only; **no current VPS collection or new restore test was performed**.
+
+**Next: P0-OPS-RECON-01** — review OPS-E01–E07 evidence against the frozen candidate, beginning with the existing reviewed read-only deployment collector when the operator is available. Operational collection is blocked on operator-provided evidence, not on a request to redeploy. Independently reviewable source gaps may proceed under existing owners; real provider wiring and P2 feature expansion stay behind their recorded gates. At 16:38 the optional Market block is being used for core reconciliation as planned; 17–18 remains reserve, not a completion claim.
