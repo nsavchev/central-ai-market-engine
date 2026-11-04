@@ -11,7 +11,7 @@ Updated 2026-11-04 for source `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`. The [l
 | DUP-05 | Paper schema preflight modules | Phase-specific owners | Legacy/numeric/constraint/value coverage and consumer contracts | Compose results; retain specialized guards |
 | DUP-06 | Many CI workflows | Eventual domain grouping | Required-check parity, coverage, isolated DB permissions | Defer consolidation until release checks are green and reviewed |
 | DUP-07 | Code after unconditional rejection in v3/workflow_controller.py | Blocked legacy report CLI | Caller search found only its own CLI; rejection/no-read/nonzero-exit tests | Unreachable parser/output removed; unconditional rejection retained in cleanup candidate |
-| ME-API-01 | Two different analyze imports in app/main.py | engine.analyze for relative strength; advanced_valuation.analyze for DCF | Source conflict confirmed; route regression with isolated data for both contracts | Explicit market/valuation aliases implemented; HTTP regression tests reproduce the old 500 and pass after correction; CI pending |
+| ME-API-01 | Two different analyze imports in app/main.py | engine.analyze for relative strength; advanced_valuation.analyze for DCF | Source conflict confirmed; route regression with isolated data for both contracts | Explicit market/valuation aliases implemented; HTTP regression tests reproduce the old 500 and pass after correction; CI 33/33 passed at `b67b288…` |
 
 ## Controls
 
@@ -22,4 +22,4 @@ Updated 2026-11-04 for source `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`. The [l
 5. Record task ID, objective, existing owner/functions, changed files, PR/base/head, exact CI SHA/result, blockers and next action in the living register.
 6. No production migration, worker activation, live trading or automatic merge/deploy from an audit result.
 
-The next active task is **P0-CI** for the cleanup candidate. The source-equivalent #130 documentation checkpoint passed all 33 workflows. Current code changes resolve ME-API-01 and remove DUP-07 unreachable tails, with local aggregate 295 passed / 43 skipped / 1 warning. Other same-name groups retain compatibility/trust decisions; no speculative deletion or production change is authorized.
+The cleanup source `b67b288f56d310a8bfea8ad16667b641039a377f` passed all 33 workflows, including ME-API-01 and DUP-07 regressions. OPS-02 / CI-COV-01 source `cfdce9591ebf3e4668f42a28402119c25c4ecf02` adds test-only httpx2, narrow warning-as-error enforcement and 12 omitted test files to existing CI commands; local aggregate **300 passed / 43 skipped / 0 warnings**; **33/33 CI successful**. The next active task is **P0-RECON**: PR stack/ownership and remaining protected VPS evidence under #90. Other same-name groups retain compatibility/trust decisions; no speculative deletion or production change is authorized.
