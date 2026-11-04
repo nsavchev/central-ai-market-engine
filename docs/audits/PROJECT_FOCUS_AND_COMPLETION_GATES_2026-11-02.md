@@ -1,41 +1,46 @@
-# Project focus and completion gates — 2026-11-02
+# Project focus and completion gates
 
-## Non-negotiable project objective
+**Living plan; created 2026-11-02, updated 2026-11-04.** Current statuses, decisions and evidence live in [the architecture/progress register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). This file defines scope and ordering; historical audit snapshots do not override that register.
 
-Build **two collaborating systems**, not an endless sequence of AI-XX gates:
+## Project objective
 
-1. **Central AI manager** coordinating approved models and a Developer Agent, persisting tasks, producing reviewed code changes with a bounded develop/test/revise loop. Production promotion always needs an explicit human decision.
-2. **Market Engine** ingesting authorized market/SEC/fundamental and macro/calendar data, benchmarking US equity relative strength, providing bullish/base/bearish scenarios and two reports per period, and operating **paper-only** via the internal simulator first, IBKR paper connector later. No live trades.
+1. **Central AI:** one manager coordinating approved models and the existing Developer Agent, with durable tasks and a bounded develop/test/revise/review loop. Production promotion requires an explicit human decision.
+2. **Market Engine:** authorized market/SEC/fundamental and macro/calendar inputs; benchmark relative strength; bullish/base/bearish scenarios; two daily reports; **internal paper simulator first, IBKR paper later**. No live orders.
 
-VPS Ubuntu, Docker, PostgreSQL, and the existing agent/queue must be retained. Budget target EUR 50–150 monthly. Security/provenance and evidence take precedence over autonomy.
+Retain the existing VPS/Docker/PostgreSQL/queue architecture. Budget target EUR 50–150 monthly. Provider adapters in source do not prove connected accounts or successful external calls; detailed runtime/provider configuration is outside this public checkpoint.
 
-## Verified evidence and limits
+## Current checkpoint — facts rather than completion percentages
 
-- Operator ran read-only **AI24_VPS_ACCEPTANCE_PASSED** against the **older deployed** Central AI; production Task API explicitly NO, volume mounted, health and backup checks passed. This does **not** validate the new GitHub release stack on VPS.
-- Latest AI-27 integration commit df4a20f0fede80617696e34b88e50a549217ac5a: **32/32 CI success**. AI-27 injects a fake verifier. Real Docker syntax, functional and timeout smoke were tested independently in CI.
-- GitHub comparison with main: **249 commits ahead, 158 changed files**; stacked draft PRs are **not merged**. Green CI does not imply deployment.
-- AI-25..27 require an externally supplied code recommendation and separately supplied tests. They do **not** automatically synthesize a candidate, generate trusted tests, persist an execution/review result or repair a failing candidate.
-- Current `central_ai/app.py` provides model access and opt-in task endpoints, but not a verified end-to-end development run. `central_ai/verified_review_pipeline.py` invokes verification and returns a transient dictionary; it does not persist post-test state.
-- Existing `TaskQueue` and persisted workflow already limit attempts; avoid creating a second retry engine or queue.
-- Docker with host daemon access is **not** a high-assurance boundary for hostile generated code. Dedicated isolated runner and artifact integrity must be designed before automatic execution.
-- SEC EDGAR Company Facts import is **not complete**: must pass source validation/permissions, audit and Financials schema contracts before enabling.
+- Source inspected: PR #129, `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`, **293 commits / 187 changed files** ahead of main `d987387f45dbe25940502ea25542e7ad99673359`. PR #126–129 remain draft/unmerged.
+- PR #128 source `c38f12b9f7b1d6d61ab469c90c9ce2af8068ac1b`: **33/33 CI runs successful**. Public build evidence is not permission to activate the developer loop.
+- VPS/DB acceptance evidence is a separate protected operator record. This public source snapshot does not reproduce deployment, image, volume, database or backup metadata. Full #90 reconciliation remains open.
+- Repository became public on 2026-11-04 after the documented limited secret review. The operator confirms the included Actions allowance was exhausted; this is not recorded as an account suspension.
+- PR #129 baseline [run 41725530297](https://github.com/nsavchev/central-ai-market-engine/actions/runs/41725530297), job `126385986276`: **7 passed** after publication. The other **32** old failed workflow runs have not yet been retried; PR #129 is not fully green.
+- The updated static inventory covers **89 source modules / 275 definitions / 72 import records**. It is not a complete runtime call graph or closure of Issue #90.
+- Source defect **ME-API-01**: two `analyze` imports collide in `app/main.py`; record and fix separately before Market API acceptance.
+- AI-25–27 accept supplied recommendations/tests; `prepare_and_verify` returns a transient result. A persisted autonomous repair lifecycle and independently provisioned test/authorization source are still incomplete.
+- Dedicated isolation for untrusted candidate execution, cleanup uncertainty handling, SEC safe automatic persistence, verified report scheduling and the final TestClient warning cleanup remain pending.
 
-## Freeze: disallowed scope growth
+## Freeze on unnecessary growth
 
-Do not add new AI-XX wrappers, extra queues, alternate workflow controllers or second container verifiers unless a documented failing requirement proves necessity. Do not make opportunistic Ubuntu upgrades, broker live execution, deploy to production, enable task API or run arbitrary model code on the production VPS.
+Use existing TaskQueue, PersistentTaskBridge, DeveloperWorkerCoordinator, DeveloperTaskRunner, review pipeline and verifiers. Add no parallel AI manager, queue, retry engine, workflow controller, scheduler or verifier without a documented failing requirement and ownership decision. Similar names alone are not evidence that modules can be deleted.
 
-## Work packages, in strict priority
+No opportunistic OS upgrade, live trading, production migration, arbitrary generated-code execution on the production VPS, task activation or automatic merge/deploy. API-only approval did not authorize these operations.
 
-**P0 — Stabilize release**: review 249-commit diff and dependency/entrypoint map; consolidate reviewed patches into one immutable test candidate with reproducible full CI; account for every stacked draft PR; rollback provenance; review secrets and CI permissions. Acceptance: exact SHA and manifest, no unresolved safety/merge conflicts.
+## Priority and acceptance
 
-**P1 — Finish Central AI developer loop**: use existing persistent TaskBridge -> queue -> DeveloperWorkerCoordinator; integrate existing proposal/candidate/verifier modules into an explicitly opted-in executor for an **allowlisted task**; persist test results and state transitions atomically. Only a vetted generator may supply candidate patches; independent trusted test source; limit three attempts, cancellation/cleanup and review artifact. Acceptance: single isolated scenario, successful and failing branches, restart/recovery, no writes to production, approval required.
+| Package | Work and reuse boundary | Acceptance / current disposition |
+|---|---|---|
+| **P0 — Stabilize and reconcile** | Complete exact-source CI; review stack/main drift, ownership/callers, entrypoints and remaining #90 evidence | Public source/CI and protected operational evidence must be reconciled before P0 closure. No new feature module until unresolved safety/dependency gaps are assessed |
+| **P1 — Finish Central AI developer loop** | Existing bridge/queue/coordinator + opt-in proposal/candidate/verifier path; trusted tests/authorization, atomic post-test results, max three attempts, recovery/cancel/cleanup | One allowlisted isolated scenario, success/failure/restart evidence, review artifact and no production writes. No new parallel engine |
+| **P2 — Finish Market Engine MVP** | Repair existing analysis binding; audit current paper/data/migration/consumer paths; safe sources, relative strength, macro/catalysts, scenarios, two daily reports | Deterministic fixtures, provenance/assumptions/risks, internal simulator/DB consistency; SEC import obeys validate_source/permissions. Production schema changes require separate reviewed baseline/runbook and two restored-copy rehearsals |
+| **P3 — Isolated VPS acceptance per release** | Disposable project/network/storage, exact image, no production mounts/secrets, cleanup verification | Central AI API-only acceptance already passed. Developer-loop and Market Engine acceptance remain pending |
+| **P4 — Controlled rollout per release** | Explicit sign-off for one service at a time, health/negative security checks and rollback | Central AI API-only cutover completed in its approved scope. No general permission for worker activation, Market DB migration or IBKR integration |
 
-**P2 — Finish Market Engine MVP**: inspect current paper-trading APIs and PostgreSQL migrations; isolate restore/migration tests; implement authorized data sourcing and validation; quantitative benchmark relative-strength signals; macro/calendar and catalysts; valuation scenarios with assumptions; two daily reports and no trades other than internal paper simulator. Acceptance: deterministic historical fixtures, report evidence/risks, simulator and DB consistency, no real orders.
+P0/P1 precede new P2 features. DB inventory/restore work is prerequisite evidence, not permission to jump to a production migration. P3/P4 are repeated for each reviewed release, not globally marked complete by one source/CI result.
 
-**P3 — Isolated VPS acceptance**: separate project, disposable networks and test volumes, no production mounts or secrets; immutable image build/digest and rollback validation. Production API/database identities unchanged. Task API NO and live trading off throughout.
+## Next active task and handoff rule
 
-**P4 — Controlled rollout**: explicit human sign-off, one service change at a time, health/negative security smoke, restore test and rollback. IBKR paper connector only after internal simulator is validated.
+**Next: P0-CI.** Retry the remaining 32 previously blocked PR #129 workflows on the unchanged `7fd9c85…` source, inspect actual failures and record exact results. Then reconcile the remaining P0/#90 blockers before selecting one bounded P1 change. The documentation checkpoint itself changes no runtime code and does not authorize a merge or deployment.
 
-## Decision rule
-
-For each task record: exact code ref, original objective, owner, acceptance tests, status (not started / blocked / CI passed / VPS passed / deployed), dependencies and next blocker. No labels such as COMPLETE unless the acceptance evidence exists. Prefer one consolidated release PR over another numbered PR. Progress is measured by P0–P4 acceptance, not PR count.
+For every change record TASK_ID, objective, existing owner/functions, files, PR/base/head, exact test SHA and result, GitHub/CI versus VPS evidence, blockers and one next action in the canonical register. The Git commit/diff preserves exact edits; the register explains why. Refresh the generated inventory on source-review checkpoints. No new dated master register, duplicated runtime module or percentage-based readiness claim.
