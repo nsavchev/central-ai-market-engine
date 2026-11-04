@@ -6,7 +6,7 @@ Minimal working foundation: IBKR historical daily bars -> PostgreSQL -> relative
 
 Start with the [living architecture, ownership, decisions and task register](docs/audits/PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). Its filename records its creation date; the document is updated in place. The [P0–P4 focus plan](docs/audits/PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) defines the order of work; [static module/function/import and PR metadata](docs/audits/project-architecture-inventory.json) describe the exact inspected source snapshot.
 
-Checkpoint 2026-11-04: the repository is public. PR #130 cleanup source `b67b288…` passed **33/33 workflows**, including PostgreSQL boundaries. OPS-02 / CI-COV-01 source `cfdce959…` adds test-only httpx2, fails on the deprecated TestClient fallback and runs 12 previously omitted test files through existing workflows; local aggregate **300 passed / 43 skipped / 0 warnings**; **33/33 CI successful**. Task API remains opt-in in source. Source/CI does not prove production activation, a database migration or a complete autonomous developer loop. Detailed operational evidence is kept outside this public documentation change.
+Checkpoint 2026-11-04: PR #130 source `a2aee7b…` passed **33/33 workflows**; local aggregate **325 passed / 43 PostgreSQL-dependent skipped / 0 warnings**. P0-RECON classified 128 draft PRs (87 heads in ancestry, 41 outside) and restored missing IBKR error redaction and legacy paper input guards from #15/#16. The TestClient warning is fixed. Older conflicting alternatives remain on hold; FIN-QUALITY-01 and the reproduced direct-acquire retry gap P0-LEASE-01 are recorded. Next: fix that existing lease boundary before new developer-loop features. Task API stays opt-in; complete #90/VPS reconciliation and production migration remain separate open gates.
 
 Contributors: follow [AGENTS.md](AGENTS.md), reuse the existing owner, and record every change and handoff in the living register. No second queue/AI manager or new dated master audit.
 
@@ -49,6 +49,7 @@ python -m pytest -q
 ## Explicit limitations and next milestones
 
 - IBKR import is a synchronous blocking request; production requires background job queue, pacing control, retries, monitoring and client-ID coordination.
+- Legacy manual paper fills are finite, capped at 1,000,000 per quantity/price/fee input, with at most six quantity decimals and two price/fee decimals; the legacy route stays disabled by default. The V2 Decimal path has separate checks.
 - Daily TRADES bars with `useRTH=1` and `formatDate=1`; returns are price-only, not total returns. Corporate actions and FX normalization must be addressed before cross-market comparisons.
 - SMA200 needs >=200 aligned observations; one year of daily bars may suffice but not always. All returns use intersecting sessions; align to a canonical market calendar in v0.3.
 - Multiple listings of the same ticker are rejected as ambiguous in the analysis endpoint. Use instrument identifiers in v0.3.
