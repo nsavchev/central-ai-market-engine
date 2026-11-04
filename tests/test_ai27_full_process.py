@@ -348,3 +348,33 @@ def test_generated_revision_rejects_corrupted_root_context_before_dispatch(monke
         prepare_and_verify(**params,generator=lambda request:calls.append(request) or '```python\ndef f(): return 2\n```',
                            generator_id='ci-synthetic')
     assert calls==[]
+
+
+@pytest.mark.parametrize('commit_happened',[False,True])
+def test_revision_commit_uncertainty_clears_transient_registry(monkeypatch,tmp_path,commit_happened):
+    from contextlib import contextmanager
+    params,report=revision_fixture(monkeypatch,tmp_path)
+    bridge=PersistentTaskBridge(params['database'])
+    original_connect=bridge.storage._connect
+    @contextmanager
+    def uncertain_connection():
+        connection=original_connect()
+        try:
+            yield connection
+            if commit_happened: connection.commit()
+            else: connection.rollback()
+            raise OSError('synthetic commit uncertainty')
+        finally:
+            connection.close()
+    monkeypatch.setattr(bridge.storage,'_connect',uncertain_connection)
+    with pytest.raises(OSError,match='commit uncertainty'):
+        bridge.submit_revision(params['task_id'],report['verification_nonce'])
+    assert bridge.bridge.registry=={}
+    reopened=PersistentTaskBridge(params['database'])
+    tasks=reopened.list_tasks()
+    assert len(tasks)==(2 if commit_happened else 1)
+    if commit_happened:
+        with pytest.raises(ValueError,match='REVISION_FAMILY_CONFLICT'):
+            reopened.submit_revision(params['task_id'],report['verification_nonce'])
+    else:
+        assert 'revision_family' not in reopened.status(params['task_id'])
