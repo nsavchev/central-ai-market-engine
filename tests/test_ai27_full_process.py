@@ -27,6 +27,8 @@ def test_full_process_preserves_source_and_refuses_deploy(tmp_path, passed):
         directory.mkdir(mode=0o700)
         paths.append(str(directory))
     def verifier(**kwargs):
+        kwargs['record_resources']({'snapshot_directory':'/tmp/central-ai-input-ci-fixture',
+                                    'container_name':'central-ai-verifier-'+'f'*32})
         assert kwargs["enabled"]=="YES"
         assert kwargs["candidate"].endswith(".py")
         assert kwargs["expected_test_sha256"]=="b"*64
@@ -50,3 +52,81 @@ def test_full_process_preserves_source_and_refuses_deploy(tmp_path, passed):
     assert report["approved"] is False and report["deployment_allowed"] is False
     assert file.read_bytes()==untouched
     assert PersistentTaskBridge(db).status(task["task_id"])["status"]=="analyzed"
+
+
+@pytest.mark.parametrize('mode', ['passed', 'failed', 'timeout', 'quarantine', 'record_failure'])
+def test_existing_pipeline_low_level_verifier_and_journal_together(tmp_path, monkeypatch, mode):
+    from functools import partial
+    from hashlib import sha256
+    from pathlib import Path
+    from types import SimpleNamespace
+    import shutil
+    import subprocess
+    from central_ai.isolated_functional_verifier import run_functional_tests
+    from central_ai.task_storage import TaskStorage
+    db = tmp_path/'tasks.sqlite'
+    source = tmp_path/'source'
+    source.mkdir()
+    original = source/'sample.py'
+    original.write_text('def f(): return 1\n')
+    before = original.read_bytes()
+    task_id = PersistentTaskBridge(db).submit('Synthetic isolated lifecycle')['task_id']
+    registry = TaskFileTargets(db)
+    registry.initialize()
+    registry.register(task_id, str(source), 'sample.py')
+    assert run_batch(enabled='YES', database=str(db), agent='ci-lifecycle', max_tasks=1,
+                     idle_checks=1, sleep=lambda _:None)['processed'] == 1
+    directories = []
+    for name in ('handoffs', 'proposals', 'candidates'):
+        path = tmp_path/name
+        path.mkdir(mode=0o700)
+        directories.append(str(path))
+    test = tmp_path/'test_candidate.py'
+    test.write_text('assert 1 == 1\n')
+    commands = []
+    handles = []
+    def runner(args, **kwargs):
+        commands.append(args)
+        if args[1] == 'run':
+            audit = TaskStorage(db).get(task_id)['verification']
+            assert audit['phase'] == 'running'
+            assert audit['resources']['container_name'] == args[3]
+            root = Path(audit['resources']['snapshot_directory'])
+            assert root.is_dir()
+            handles.append(root)
+            if mode == 'timeout':
+                raise subprocess.TimeoutExpired('docker', 30)
+            return SimpleNamespace(returncode=1 if mode == 'failed' else 0)
+        return SimpleNamespace(returncode=1 if mode == 'quarantine' else 0, stdout='')
+    def authorize(binding):
+        return dict(verification_authorized=True, binding=dict(binding), reviewer_id='ci-synthetic',
+                    authorization_id='ci-only', approved=False, deployment_allowed=False)
+    if mode == 'record_failure':
+        def fail(*args, **kwargs):
+            raise OSError('synthetic audit unavailable')
+        monkeypatch.setattr(TaskStorage, 'record_verification_resources', fail)
+    params = dict(enabled='YES', database=str(db), task_id=task_id, handoffs=directories[0],
+        proposals=directories[1], candidates=directories[2], recommendation='```python\ndef f(): return 2\n```',
+        trusted_test_file=str(test), trusted_test_sha256=sha256(test.read_bytes()).hexdigest(),
+        image='python@sha256:'+'a'*64, authorization_check=authorize,
+        verifier=partial(run_functional_tests, run=runner))
+    if mode == 'record_failure':
+        with pytest.raises(OSError, match='synthetic audit'):
+            prepare_and_verify(**params)
+        assert commands == []
+        assert TaskStorage(db).get(task_id)['verification']['phase'] == 'quarantined'
+        return
+    try:
+        report = prepare_and_verify(**params)
+        audit = TaskStorage(db).get(task_id)['verification']
+        assert report['test_status'] == ('cleanup_unconfirmed' if mode == 'quarantine' else mode)
+        assert audit['phase'] == ('quarantined' if mode == 'quarantine' else 'completed')
+        assert report['tests_passed'] is (mode == 'passed')
+        assert report['approved'] is report['deployment_allowed'] is False
+        assert handles[0].exists() is (mode == 'quarantine')
+        assert original.read_bytes() == before
+        assert TaskStorage(db).get(task_id)['status'] == 'analyzed'
+    finally:
+        for root in handles:
+            if root.exists():
+                shutil.rmtree(root)  # Only synthetic, test-owned retained snapshots.

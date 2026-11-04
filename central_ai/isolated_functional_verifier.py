@@ -33,8 +33,34 @@ def _read_input(path):
         raise ValueError("UNSAFE_INPUT") from error
 
 
+def _confirm_container_absent(run, container_name):
+    """Require a successful exact-name daemon query, including after removal."""
+    def probe():
+        result = run(
+            ['docker', 'container', 'ls', '--all', '--filter', 'name=^/' + container_name + '$',
+             '--format', '{{.Names}}'],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode != 0 or not isinstance(result.stdout, str):
+            return None
+        names = result.stdout.splitlines()
+        if not names:
+            return True
+        return False if names == [container_name] else None
+    try:
+        absent = probe()
+        if absent is not False:
+            return absent is True
+        removed = run(['docker', 'rm', '-f', container_name],
+                      capture_output=True, text=True, timeout=10, check=False)
+        return removed.returncode == 0 and probe() is True
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, image,
-                         expected_test_sha256=None, timeout=30, run=subprocess.run):
+                         expected_test_sha256=None, timeout=30, run=subprocess.run,
+                         record_resources=None):
     if enabled != "YES":
         raise ValueError("FUNCTIONAL_TESTS_DISABLED")
     paths = [Path(candidate), Path(test_file)]
@@ -55,6 +81,8 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
         raise ValueError("UNPINNED_IMAGE")
     if type(timeout) is not int or not 5 <= timeout <= 60:
         raise ValueError("INVALID_TIMEOUT")
+    if record_resources is not None and not callable(record_resources):
+        raise ValueError("INVALID_RESOURCE_RECORDER")
     # Never bind caller-owned paths after checking their hashes.
     # The dedicated runner account/host is trusted; this is not host-root isolation.
     snapshot_root = Path(tempfile.mkdtemp(prefix="central-ai-input-"))
@@ -76,32 +104,28 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
             "--workdir", "/tmp", "--entrypoint", "python",
             image, "-I", "-B", "/sandbox/test_candidate.py",
         ]
+        resources = {"snapshot_directory": str(snapshot_root), "container_name": container_name}
+        # A durable journal callback must return before Docker can see a command.
+        if record_resources is not None:
+            record_resources(dict(resources))
+        cleanup_confirmed = False
         try:
-            cleanup_confirmed = False
             result = run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
-            cleanup_confirmed = True
+            report = {"test_sha256": expected_test_sha256,
+                      "status": "passed" if result.returncode == 0 else "failed",
+                      "passed": result.returncode == 0, "executed_candidate": True,
+                      "returncode": result.returncode}
         except subprocess.TimeoutExpired:
-            # A client timeout does not prove Docker stopped its container.
-            # Fail closed until a forced removal has been confirmed.
-            try:
-                cleanup = run(
-                    ["docker", "rm", "-f", container_name],
-                    capture_output=True, text=True, timeout=10, check=False,
-                )
-            except (subprocess.TimeoutExpired, OSError):
-                return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True,
-                        "snapshot_directory": str(snapshot_root), "container_name": container_name}
-            if cleanup.returncode != 0:
-                return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True,
-                        "snapshot_directory": str(snapshot_root), "container_name": container_name}
-            cleanup_confirmed = True
-            return {"status": "timeout", "passed": False, "executed_candidate": True}
+            report = {"status": "timeout", "passed": False, "executed_candidate": True}
         except OSError:
-            return {"status": "cleanup_unconfirmed", "passed": False, "executed_candidate": True,
-                    "snapshot_directory": str(snapshot_root), "container_name": container_name}
-        return {"test_sha256": expected_test_sha256, "status": "passed" if result.returncode == 0 else "failed",
-                "passed": result.returncode == 0, "executed_candidate": True,
-                "returncode": result.returncode}
+            report = {"status": "execution_error", "passed": False, "executed_candidate": True}
+        finally:
+            # Neither client exit nor a successful rm proves daemon-side absence.
+            # Also run on cancellation; an interrupted/failed probe keeps inputs.
+            cleanup_confirmed = _confirm_container_absent(run, container_name)
+        if not cleanup_confirmed:
+            return dict(resources, status="cleanup_unconfirmed", passed=False, executed_candidate=True)
+        return report
 
     finally:
         # Preserve inputs on cleanup uncertainty for operator quarantine/inspection.

@@ -24,7 +24,7 @@ def test_docker_sandbox_contract(tmp_path):
     commands=[]
     def fake_run(args,**kwargs):
         commands.append((args,kwargs))
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="")
     result=run_functional_tests(enabled="YES",candidate=str(candidate),
         expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
         test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image=IMAGE,run=fake_run)
@@ -56,7 +56,7 @@ def test_nonzero_and_timeout_fail_closed(tmp_path):
     params=dict(enabled="YES",candidate=str(candidate),
                 expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
                 test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image=IMAGE)
-    r=run_functional_tests(**params,run=lambda *a,**k:SimpleNamespace(returncode=1))
+    r=run_functional_tests(**params,run=lambda args,**k:SimpleNamespace(returncode=1 if args[1]=="run" else 0, stdout=""))
     assert r["status"]=="failed" and not r["passed"]
     def fail(*a,**k):
         raise subprocess.TimeoutExpired("docker",30)
@@ -72,13 +72,15 @@ def test_timeout_cleanup_is_checked(tmp_path):
         calls.append(args)
         if args[1]=="run":
             raise subprocess.TimeoutExpired("docker",30)
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout=calls[0][3]+"\n" if len(calls)==2 else "")
     result=run_functional_tests(enabled="YES",candidate=str(candidate),
         expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
         test_file=str(trusted),expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),image=IMAGE,run=fake_run)
     assert result["status"]=="timeout" and not result["passed"]
     assert calls[0][2]=="--name"
-    assert calls[1]==["docker","rm","-f",calls[0][3]]
+    assert calls[1][1:3] == ["container", "ls"]
+    assert calls[2]==["docker","rm","-f",calls[0][3]]
+    assert calls[3] == calls[1]
 
 
 
@@ -114,6 +116,8 @@ def test_original_replacement_cannot_change_mounted_bytes(tmp_path):
     originals=[candidate.read_bytes(),trusted.read_bytes()]
     snapshots=[]
     def replace_before_docker(args,**kwargs):
+        if args[1] != "run":
+            return SimpleNamespace(returncode=0, stdout="")
         candidate.unlink()
         candidate.write_text("raise RuntimeError('replaced candidate')\n")
         trusted.unlink()
@@ -126,7 +130,7 @@ def test_original_replacement_cannot_change_mounted_bytes(tmp_path):
             assert frozen.read_bytes()==expected
             assert frozen.stat().st_mode & 0o222 == 0
             assert frozen.parent.stat().st_mode & 0o077 == 0
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stdout="")
     result=run_functional_tests(enabled="YES",candidate=str(candidate),
         expected_sha256=hashlib.sha256(originals[0]).hexdigest(),
         test_file=str(trusted),expected_test_sha256=hashlib.sha256(originals[1]).hexdigest(),
@@ -174,5 +178,84 @@ def test_uncertain_cleanup_retains_snapshot_for_quarantine(tmp_path):
         assert (root/"candidate.py").read_bytes()==candidate.read_bytes()
         assert (root/"test_candidate.py").read_bytes()==trusted.read_bytes()
         assert result["container_name"].startswith("central-ai-verifier-")
+    finally:
+        shutil.rmtree(root)
+
+
+@pytest.mark.parametrize('exit_kind', ['passed', 'failed', 'timeout', 'oserror'])
+@pytest.mark.parametrize('cleanup_kind', ['absent', 'removed', 'daemon_error', 'rm_error', 'still_present'])
+def test_independent_absence_proof_after_every_exit(tmp_path, exit_kind, cleanup_kind):
+    candidate, trusted = setup_files(tmp_path)
+    calls = []
+    name = None
+    probes = 0
+    def runner(args, **kwargs):
+        nonlocal name, probes
+        calls.append(args)
+        if args[1] == 'run':
+            name = args[3]
+            if exit_kind == 'timeout':
+                raise subprocess.TimeoutExpired('docker', 5)
+            if exit_kind == 'oserror':
+                raise OSError('synthetic daemon error')
+            return SimpleNamespace(returncode=0 if exit_kind == 'passed' else 1)
+        if args[1:3] == ['container', 'ls']:
+            probes += 1
+            assert 'name=^/' + name + '$' in args
+            if cleanup_kind == 'daemon_error':
+                return SimpleNamespace(returncode=1, stdout='')
+            absent = cleanup_kind == 'absent' or (cleanup_kind == 'removed' and probes > 1)
+            return SimpleNamespace(returncode=0, stdout='' if absent else name+'\n')
+        assert args == ['docker', 'rm', '-f', name]
+        return SimpleNamespace(returncode=1 if cleanup_kind == 'rm_error' else 0)
+    result = run_functional_tests(enabled='YES', candidate=str(candidate),
+        expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(trusted),
+        expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(), image=IMAGE, run=runner)
+    uncertain = cleanup_kind not in ('absent', 'removed')
+    try:
+        assert result['status'] == ('cleanup_unconfirmed' if uncertain else
+            {'passed':'passed', 'failed':'failed', 'timeout':'timeout', 'oserror':'execution_error'}[exit_kind])
+        assert result['passed'] is (exit_kind == 'passed' and not uncertain)
+        assert probes >= 1
+        if uncertain:
+            assert Path(result['snapshot_directory']).is_dir()
+    finally:
+        if 'snapshot_directory' in result:
+            shutil.rmtree(result['snapshot_directory'])
+
+
+def test_resource_record_failure_prevents_any_docker_dispatch(tmp_path):
+    candidate, trusted = setup_files(tmp_path)
+    resources = []
+    def cannot_record(handles):
+        resources.append(handles)
+        assert Path(handles['snapshot_directory']).is_dir()
+        raise OSError('synthetic audit write error')
+    with pytest.raises(OSError, match='synthetic audit'):
+        run_functional_tests(enabled='YES', candidate=str(candidate),
+            expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(trusted),
+            expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(), image=IMAGE,
+            record_resources=cannot_record, run=lambda *a, **k: pytest.fail('must not dispatch'))
+    assert resources and not Path(resources[0]['snapshot_directory']).exists()
+
+
+@pytest.mark.parametrize('interrupt_at', ['run', 'probe'])
+def test_cancellation_preserves_unknown_resources(tmp_path, interrupt_at):
+    candidate, trusted = setup_files(tmp_path)
+    resources = []
+    def runner(args, **kwargs):
+        if args[1] == 'run':
+            raise KeyboardInterrupt('synthetic cancellation')
+        if interrupt_at == 'probe':
+            raise KeyboardInterrupt('synthetic cancellation')
+        raise OSError('synthetic daemon unavailable')
+    with pytest.raises(KeyboardInterrupt):
+        run_functional_tests(enabled='YES', candidate=str(candidate),
+            expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(trusted),
+            expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(), image=IMAGE,
+            record_resources=lambda handles: resources.append(handles), run=runner)
+    root = Path(resources[0]['snapshot_directory'])
+    try:
+        assert root.is_dir()
     finally:
         shutil.rmtree(root)

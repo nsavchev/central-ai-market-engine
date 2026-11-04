@@ -2,6 +2,12 @@ import pytest
 from central_ai.verified_review_pipeline import prepare_and_verify
 
 
+def record_fixture_resources(kwargs):
+    """Synthetic host-verifier contract, not a claim that Docker was invoked."""
+    kwargs['record_resources']({'snapshot_directory':'/tmp/central-ai-input-ci-fixture',
+                                'container_name':'central-ai-verifier-'+'f'*32})
+
+
 def analyzed_task(tmp_path):
     from central_ai.persistent_bridge import PersistentTaskBridge
     from central_ai.task_file_targets import TaskFileTargets
@@ -102,6 +108,7 @@ def test_previous_receipt_cannot_authorize_new_invocation(monkeypatch,tmp_path):
                 "approved":False,"deployment_allowed":False})
         return receipts[0]
     def verifier(**kw):
+        record_fixture_resources(kw)
         executions.append(kw)
         return valid_result()
     params=dict(enabled="YES",database=database,task_id=task_id,handoffs="",proposals="",
@@ -173,6 +180,7 @@ def test_hmac_adapter_in_existing_pipeline(monkeypatch,tmp_path):
         {"candidate_path":"/ci/candidate.py","candidate_sha256":"a"*64})
     calls=[]
     def verifier(**kwargs):
+        record_fixture_resources(kwargs)
         calls.append(kwargs)
         return valid_result()
     result=pipeline.prepare_and_verify(enabled="YES",database=database,task_id=task_id,handoffs="",
@@ -200,10 +208,13 @@ def verification_fixture(monkeypatch, result, tmp_path):
         return {'verification_authorized': True, 'binding': dict(binding),
                 'reviewer_id': 'ci-reviewer', 'authorization_id': 'ci-only',
                 'approved': False, 'deployment_allowed': False}
+    def verifier(**kwargs):
+        record_fixture_resources(kwargs)
+        return result
     return dict(enabled='YES', database=database, task_id=task_id, handoffs='', proposals='',
                 candidates='', recommendation='', trusted_test_file='/ci/test.py',
                 trusted_test_sha256='b'*64, image='python@sha256:'+'c'*64,
-                authorization_check=authorize, verifier=lambda **kwargs: result)
+                authorization_check=authorize, verifier=verifier)
 
 
 def valid_result(**changes):
@@ -307,6 +318,7 @@ def test_authorization_and_running_intent_are_stored_before_dispatch(monkeypatch
         assert audit['binding']['image'] == kwargs['image']
         assert audit['reviewer_id'] == 'ci-reviewer'
         assert audit['authorization_id'] == 'ci-only'
+        record_fixture_resources(kwargs)
         return valid_result()
     params['verifier'] = inspect_before_execution
     prepare_and_verify(**params)
@@ -503,3 +515,89 @@ def test_non_analyzed_task_cannot_claim_verification(tmp_path):
     with pytest.raises(ValueError, match='VERIFICATION_TASK_NOT_READY'):
         store.begin_verification(task_id, 'a'*32)
     assert 'verification' not in store.get(task_id)
+
+
+def test_success_without_resource_intent_is_rejected(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = verification_fixture(monkeypatch, valid_result(), tmp_path)
+    params['verifier'] = lambda **kwargs: valid_result()
+    with pytest.raises(ValueError, match='INVALID_VERIFIER_RESULT'):
+        prepare_and_verify(**params)
+    assert TaskStorage(params['database']).get(params['task_id'])['verification']['phase'] == 'quarantined'
+
+
+@pytest.mark.parametrize('change', ['path', 'name', 'overwrite'])
+def test_resource_intent_is_validated_and_cannot_be_replaced(monkeypatch, tmp_path, change):
+    from central_ai.task_storage import TaskStorage
+    params = verification_fixture(monkeypatch, valid_result(), tmp_path)
+    def verifier(**kwargs):
+        resources = {'snapshot_directory':'/tmp/central-ai-input-ci-fixture',
+                     'container_name':'central-ai-verifier-'+'f'*32}
+        if change == 'path':
+            resources['snapshot_directory'] = '/unrelated/path'
+        elif change == 'name':
+            resources['container_name'] = 'unrelated-container'
+        else:
+            kwargs['record_resources'](dict(resources))
+        kwargs['record_resources'](resources)
+        pytest.fail('invalid/replaced resource intent accepted')
+    params['verifier'] = verifier
+    with pytest.raises(ValueError, match='INVALID_VERIFICATION_RESOURCES|VERIFICATION_AUDIT_CONFLICT'):
+        prepare_and_verify(**params)
+    assert TaskStorage(params['database']).get(params['task_id'])['verification']['phase'] == 'quarantined'
+
+
+def test_quarantine_result_cannot_replace_pre_dispatch_handles(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = verification_fixture(monkeypatch, dict(status='cleanup_unconfirmed', passed=False,
+        executed_candidate=True, snapshot_directory='/tmp/central-ai-input-different',
+        container_name='central-ai-verifier-'+'d'*32), tmp_path)
+    with pytest.raises(ValueError, match='INVALID_VERIFIER_RESULT'):
+        prepare_and_verify(**params)
+    audit = TaskStorage(params['database']).get(params['task_id'])['verification']
+    assert audit['phase'] == 'quarantined'
+    assert audit['resources']['snapshot_directory'] == '/tmp/central-ai-input-ci-fixture'
+
+
+def test_resource_intent_survives_abrupt_exit_before_docker(tmp_path):
+    import subprocess
+    import sys
+    from central_ai.task_storage import TaskStorage
+    database, task_id = analyzed_task(tmp_path)
+    script = '''import hashlib, os, sys
+from pathlib import Path
+from central_ai.task_storage import TaskStorage
+from central_ai.isolated_functional_verifier import run_functional_tests
+store=TaskStorage(sys.argv[1]); task_id=sys.argv[2]; nonce='a'*32
+store.begin_verification(task_id, nonce)
+store.authorize_verification(task_id, nonce,
+    {'schema':'verification-request-v1','nonce':nonce,'task_id':task_id,
+     'candidate_sha256':'b'*64,'test_sha256':'c'*64,'image':'python@sha256:'+'d'*64,'scope':'verify_only'},
+    'ci-reviewer','ci-only')
+root=Path(sys.argv[1]).parent
+candidate=root/'candidate.py'; candidate.write_text('def f(): return 1\\n')
+test=root/'test_candidate.py'; test.write_text('assert True\\n')
+def record(resources):
+    store.record_verification_resources(task_id, nonce, resources)
+    os._exit(9)
+run_functional_tests(enabled='YES', candidate=str(candidate),
+    expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(test),
+    expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(),
+    image='python@sha256:'+'d'*64, record_resources=record,
+    run=lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not dispatch')))
+'''
+    child = subprocess.run([sys.executable, '-c', script, database, task_id], timeout=15)
+    assert child.returncode == 9
+    store = TaskStorage(database)
+    audit = store.get(task_id)['verification']
+    from pathlib import Path
+    import shutil
+    root = Path(audit['resources']['snapshot_directory'])
+    try:
+        assert audit['phase'] == 'running'
+        assert root.is_dir() and (root/'candidate.py').is_file()
+        assert audit['resources']['container_name'].startswith('central-ai-verifier-')
+        with pytest.raises(ValueError, match='VERIFICATION_ALREADY_STARTED'):
+            store.begin_verification(task_id, 'b'*32)
+    finally:
+        shutil.rmtree(root)  # Test-owned orphan; no Docker command was dispatched.

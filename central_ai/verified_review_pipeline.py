@@ -65,16 +65,23 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
             raise ValueError("REVIEW_AUTHORIZATION_DENIED")
         storage.authorize_verification(task_id, nonce, binding, receipt["reviewer_id"], receipt["authorization_id"])
         stage = "execution"
+        recorded_resources = None
+        def record_resources(resources):
+            nonlocal recorded_resources
+            storage.record_verification_resources(task_id, nonce, resources)
+            recorded_resources = dict(resources)
         result = verifier(
             enabled="YES", candidate=prepared["candidate_path"],
             expected_sha256=prepared["candidate_sha256"],
             test_file=trusted_test_file, expected_test_sha256=trusted_test_sha256, image=image,
+            record_resources=record_resources,
         )
         stage = "result"
-        if not isinstance(result, dict) or type(result.get("passed")) is not bool:
+        if (recorded_resources is None or not isinstance(result, dict)
+                or type(result.get("passed")) is not bool):
             raise ValueError("INVALID_VERIFIER_RESULT")
         status = result.get("status")
-        if (status not in ("passed", "failed", "timeout", "cleanup_unconfirmed")
+        if (status not in ("passed", "failed", "timeout", "execution_error", "cleanup_unconfirmed")
                 or result["passed"] is not (status == "passed")
                 or result.get("executed_candidate") is not True
                 or result.get("approved", False) is not False
@@ -94,6 +101,8 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
                     or not re.fullmatch(r"central-ai-input-[A-Za-z0-9_-]{1,128}", Path(snapshot).name)
                     or not isinstance(container, str)
                     or not re.fullmatch(r"central-ai-verifier-[0-9a-f]{32}", container)):
+                raise ValueError("INVALID_VERIFIER_RESULT")
+            if {"snapshot_directory": snapshot, "container_name": container} != recorded_resources:
                 raise ValueError("INVALID_VERIFIER_RESULT")
             # Keep the operator's recovery handles; never delete resources from a report.
             quarantine = {"snapshot_directory": snapshot, "container_name": container}

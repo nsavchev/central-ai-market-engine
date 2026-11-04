@@ -174,6 +174,27 @@ class TaskStorage:
                          authorization_id=authorization_id, updated_at=datetime.now(timezone.utc).isoformat())
             self._write_review_task(conn, task_id, task)
 
+    def record_verification_resources(self, task_id, nonce, resources):
+        """Persist immutable recovery handles before the isolated Docker dispatch."""
+        if (not isinstance(resources, dict) or set(resources) != {'snapshot_directory','container_name'}
+                or not isinstance(resources.get('snapshot_directory'), str)
+                or len(resources['snapshot_directory']) > 4096
+                or any(ord(char) < 32 or ord(char) == 127 for char in resources['snapshot_directory'])
+                or not Path(resources['snapshot_directory']).is_absolute()
+                or not re.fullmatch(r'central-ai-input-[A-Za-z0-9_-]{1,128}', Path(resources['snapshot_directory']).name)
+                or not isinstance(resources.get('container_name'), str)
+                or not re.fullmatch(r'central-ai-verifier-[0-9a-f]{32}', resources['container_name'])):
+            raise ValueError('INVALID_VERIFICATION_RESOURCES')
+        with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            task = self._review_task(conn, task_id)
+            audit = task.get('verification', {})
+            if (audit.get('phase') != 'running' or audit.get('nonce') != nonce
+                    or 'resources' in audit):
+                raise ValueError('VERIFICATION_AUDIT_CONFLICT')
+            audit.update(resources=dict(resources), updated_at=datetime.now(timezone.utc).isoformat())
+            self._write_review_task(conn, task_id, task)
+
     def complete_verification(self, task_id, nonce, report):
         """Atomically store only the bounded pipeline report; never promote task status."""
         fields = {'task_id','candidate_sha256','test_sha256','reviewer_id','authorization_id',
@@ -184,7 +205,7 @@ class TaskStorage:
                 or report.get('approved') is not False or report.get('deployment_allowed') is not False
                 or type(report.get('tests_passed')) is not bool
                 or type(report.get('quarantine_required')) is not bool
-                or report.get('test_status') not in ('passed','failed','timeout','cleanup_unconfirmed')
+                or report.get('test_status') not in ('passed','failed','timeout','execution_error','cleanup_unconfirmed')
                 or report['tests_passed'] is not (report['test_status'] == 'passed')
                 or report['quarantine_required'] is not (report['test_status'] == 'cleanup_unconfirmed')):
             raise ValueError('INVALID_VERIFICATION_REPORT')
@@ -196,6 +217,8 @@ class TaskStorage:
             task = self._review_task(conn, task_id)
             audit = task.get('verification', {})
             if (audit.get('phase') != 'running' or audit.get('nonce') != nonce
+                    or 'resources' not in audit
+                    or (report['quarantine_required'] and report['quarantine_resources'] != audit['resources'])
                     or report['verification_binding'] != audit.get('binding')
                     or report['reviewer_id'] != audit.get('reviewer_id')
                     or report['authorization_id'] != audit.get('authorization_id')

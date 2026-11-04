@@ -52,3 +52,79 @@ jobs:
               assert bad["status"] == "failed", bad
               print("AI19_REAL_FUNCTIONAL_DOCKER_PASSED")
           PY
+      - name: Real bounded pipeline with synthetic authorization and durable outcome
+        run: |
+          python - <<'PY'
+          import hashlib
+          import hmac
+          import json
+          import secrets
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          from central_ai.persistent_bridge import PersistentTaskBridge
+          from central_ai.task_file_targets import TaskFileTargets
+          from central_ai.task_storage import TaskStorage
+          from central_ai.worker_batch import run_batch
+          from central_ai.verifier_gate import make_hmac_review_authorizer
+          from central_ai.verified_review_pipeline import prepare_and_verify
+          image = Path('/tmp/ai19-image.txt').read_text().strip()
+          # Ephemeral synthetic CI authority only; no production reviewer provisioning.
+          key = secrets.token_bytes(32)
+          def issue_receipt(binding):
+              receipt = dict(schema='review-hmac-sha256-v1', binding=dict(binding),
+                  reviewer_id='ci-synthetic-reviewer', authorization_id='ci-fixture-only',
+                  issued_at=1000, expires_at=1100, verification_authorized=True,
+                  approved=False, deployment_allowed=False)
+              payload = json.dumps(receipt, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+              return dict(receipt, mac=hmac.new(key, payload, 'sha256').hexdigest())
+          authorize = make_hmac_review_authorizer(reviewer_keys={'ci-synthetic-reviewer':key},
+              request_receipt=issue_receipt, clock=lambda:1050)
+          def containers():
+              return {name for name in subprocess.check_output(
+                  ['docker', 'container', 'ls', '--all', '--format', '{{.Names}}'], text=True).splitlines()
+                  if name.startswith('central-ai-verifier-')}
+          before = containers()
+          with tempfile.TemporaryDirectory() as directory:
+              root = Path(directory)
+              database = root/'tasks.sqlite'
+              source = root/'source'; source.mkdir()
+              original = source/'sample.py'; original.write_text('def f(): return 1\n')
+              original_bytes = original.read_bytes()
+              bridge = PersistentTaskBridge(database)
+              targets = TaskFileTargets(database); targets.initialize()
+              for expected, expression in [('passed', '== 2'), ('failed', '== 99')]:
+                  task_id = bridge.submit('Synthetic real Docker lifecycle '+expected)['task_id']
+                  targets.register(task_id, str(source), 'sample.py')
+                  assert run_batch(enabled='YES', database=str(database), agent='ci-lifecycle',
+                      max_tasks=1, idle_checks=1, sleep=lambda _:None)['processed'] == 1
+                  paths = []
+                  for name in ('handoffs', 'proposals', 'candidates'):
+                      path = root/(expected+'-'+name); path.mkdir(mode=0o700); paths.append(str(path))
+                  test = root/(expected+'_test.py')
+                  test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import f\nassert f() "+expression+"\n")
+                  params = dict(enabled='YES', database=str(database), task_id=task_id,
+                      handoffs=paths[0], proposals=paths[1], candidates=paths[2],
+                      recommendation='```python\ndef f(): return 2\n```', trusted_test_file=str(test),
+                      trusted_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(),
+                      image=image, authorization_check=authorize)
+                  report = prepare_and_verify(**params)
+                  audit = TaskStorage(database).get(task_id)['verification']
+                  assert report['test_status'] == expected
+                  assert report['tests_passed'] is (expected == 'passed')
+                  assert report['audit_recorded'] and audit['phase'] == 'completed'
+                  assert audit['outcome']['verification_binding'] == report['verification_binding']
+                  assert audit['resources']['container_name'].startswith('central-ai-verifier-')
+                  assert not Path(audit['resources']['snapshot_directory']).exists()
+                  assert report['approved'] is report['deployment_allowed'] is False
+                  assert bridge.status(task_id)['status'] == 'analyzed'
+                  assert original.read_bytes() == original_bytes
+                  try:
+                      prepare_and_verify(**params)
+                  except ValueError as error:
+                      assert str(error) == 'VERIFICATION_ALREADY_STARTED'
+                  else:
+                      raise AssertionError('replay accepted')
+                  assert containers() == before
+              print('SYNTHETIC_AUTH_REAL_DOCKER_DURABLE_PASS_FAIL_REPLAY_PASSED')
+          PY
