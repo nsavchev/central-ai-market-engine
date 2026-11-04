@@ -6,7 +6,7 @@ Minimal working foundation: IBKR historical daily bars -> PostgreSQL -> relative
 
 Start with the [living architecture, ownership, decisions and task register](docs/audits/PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). Its filename records its creation date; the document is updated in place. The [P0–P4 focus plan](docs/audits/PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) defines the order of work; [static module/function/import and PR metadata](docs/audits/project-architecture-inventory.json) describe the exact inspected source snapshot.
 
-Checkpoint 2026-11-04: PR #130 source `a2aee7b…` passed **33/33 workflows**; local aggregate **325 passed / 43 PostgreSQL-dependent skipped / 0 warnings**. P0-RECON classified 128 draft PRs (87 heads in ancestry, 41 outside) and restored missing IBKR error redaction and legacy paper input guards from #15/#16. The TestClient warning is fixed. Older conflicting alternatives remain on hold; FIN-QUALITY-01 remains open. P0-LEASE-01 is corrected on `cf13d4c…`: one durable three-attempt budget for direct/scheduled leases; **342 local passed / 43 PG skipped / 0 warnings**, **33/33 CI successful**. Next: reconcile the existing financial-quality gate before new developer-loop features. Task API stays opt-in; complete #90/VPS reconciliation and production migration remain separate open gates.
+Checkpoint 2026-11-04: FIN-QUALITY-01 source `af585fd…` connects existing source permissions and data-quality checks to history persistence and reports. New history imports require explicit `units="ones"`; legacy unknown-unit records are retained and reports fail closed until an explicit corrected reimport. Local aggregate: **373 passed / 44 PostgreSQL-dependent skipped / 0 warnings**; **33/33 CI successful**. Prior lease source `cf13d4c…` passed 33/33 CI. P0-RECON's dated snapshot maps 128 draft PRs (87 ancestry heads / 41 outside). Next: reconcile reviewer authorization, verifier outcome persistence and cleanup quarantine in existing Central AI owners. P0/#90 operational evidence and activation remain separate open gates.
 
 Contributors: follow [AGENTS.md](AGENTS.md), reuse the existing owner, and record every change and handoff in the living register. No second queue/AI manager or new dated master audit.
 
@@ -110,9 +110,15 @@ Adds `financial_snapshots` SQLAlchemy table with source, currency, fiscal period
 - GET `/fundamentals/history/DEMO?currency=USD&source=manual&years=10`, requires token.
 - Offline demo: `python -m app.history_cli data/demo_financial_history.json --database sqlite:///financial_history_demo.db --output history_report.json`
 
+History persistence now runs `validate_source` before the existing `check_snapshot` policy and before database access. Each new import must explicitly declare `"units":"ones"`: monetary totals are full currency units, share counts are actual shares, and prices/dividends are per-share values. Scaled or unknown units are rejected; there is no implicit scaling or FX conversion. Optional `accounting_standard`, timezone-aware `retrieved_at` and `total_liabilities` are preserved in JSON. Missing accounting/retrieval metadata remains a visible review warning under the existing quality policy; metadata assertions do not authenticate a filing.
+
+HTTP history import/report rejects blocked inputs with 422; authentication and source permissions remain required. A bad record rolls back the batch. Existing rows without units or with blocked quality are not rewritten/deleted: reports refuse them until the operator explicitly supplies corrected, confirmed metadata through the permissioned import. Reimport keeps the existing snapshot identity. There is no automatic backfill or database schema change. Calculation-only legacy inputs may still omit units; this does not grant import approval.
+
+CLI validates the whole batch before its existing demo schema initialization, and import/report share a transaction so a refused legacy report rolls back new rows. The CLI remains an offline prototype, not a production migration tool.
+
 Only manually provided data is supported. Investolens, Finviz and Investing.com are NOT scraped. The history calculations include CAGR (calendar-year span), ROIC/ROE/margin trends and basic debt-to-equity / cash-flow indicators. These are descriptive metrics, not financial health verdicts.
 
-**Deployment warning:** `create_all` creates new tables but is NOT a migration system. For a production VPS, take backups and introduce Alembic before changing existing schemas. Multiple fiscal periods per calendar year are rejected in reports; financial units, fiscal year-end, restatements, split-adjustments, point-in-time filings and FX are not harmonized. PostgreSQL integration is not exercised in automated SQLite tests.
+**Deployment warning:** `create_all` creates new tables but is NOT a migration system. For a production VPS, take backups and introduce Alembic before changing existing schemas. Multiple fiscal periods per calendar year are rejected in reports; financial units, fiscal year-end, restatements, split-adjustments, point-in-time filings and FX are not harmonized. The quality regression includes real PostgreSQL JSON/transaction checks in a uniquely named schema of the disposable CI database; this does not validate the production schema.
 
 ## v0.7: Investment Valuation Agent (explicit-input FCFF DCF)
 
@@ -149,8 +155,7 @@ Scenario probabilities are subjective, not backtested probabilities. Reverse DCF
 `app/data_quality.py` offers deterministic validation and source-to-source comparison.
 Run `python -m app.quality_cli data/demo_quality.json --output quality_report.json`.
 
-**Important:** The existing v0.6 import and valuation flows are **not yet gated** by these checks.
-The new validator is an independent preflight step; enforce it in ingestion pipelines before production use.
+**Current scope:** v0.6 history persistence and reporting now reuse this quality checker after source-permission validation. Standalone ratio evaluation and the explicit-input valuation/DCF flows are not a fully quality-gated automated ingestion pipeline.
 Requires explicit units, validates period/currency/balance equation, warns on old records and
 missing point-in-time metadata, compares only like-for-like figures. It does not fetch vendor
 data, reconcile restatements, normalize GAAP vs IFRS, or verify filing authenticity.
