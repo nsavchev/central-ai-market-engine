@@ -133,3 +133,122 @@ def test_existing_pipeline_low_level_verifier_and_journal_together(tmp_path, mon
         for root in handles:
             if root.exists():
                 shutil.rmtree(root)  # Only synthetic, test-owned retained snapshots.
+
+
+@pytest.mark.parametrize('backend', ['injected', 'docker'])
+@pytest.mark.parametrize('mode', ['timeout', 'quarantine', 'crash'])
+def test_process_recovery_preserves_admission_boundary(tmp_path, backend, mode):
+    """Same bounded lifecycle locally and in opt-in disposable Docker CI."""
+    import ast
+    import hashlib
+    import multiprocessing
+    import os
+    from pathlib import Path
+    import re
+    import shutil
+    import subprocess
+    from functools import partial
+    from types import SimpleNamespace
+    from central_ai.isolated_functional_verifier import run_functional_tests
+    from central_ai.task_storage import TaskStorage
+    image = os.environ.get('CENTRAL_AI_TEST_DOCKER_IMAGE') if backend == 'docker' else 'python@sha256:'+'a'*64
+    if not image:
+        pytest.skip('real Docker recovery requires explicit disposable CI image')
+    db = tmp_path/'tasks.sqlite'
+    source = tmp_path/'source'; source.mkdir()
+    original = source/'sample.py'; original.write_text('def f(): return 1\n')
+    original_bytes = original.read_bytes()
+    bridge = PersistentTaskBridge(db)
+    registry = TaskFileTargets(db); registry.initialize()
+    tasks = [bridge.submit('Synthetic process recovery fixture')['task_id'] for _ in range(2)]
+    for task_id in tasks:
+        registry.register(task_id, str(source), 'sample.py')
+    assert run_batch(enabled='YES', database=str(db), agent='ci-recovery', max_tasks=2,
+                     idle_checks=1, sleep=lambda _:None)['processed'] == 2
+    paths = []
+    for name in ('handoffs', 'proposals', 'candidates'):
+        path = tmp_path/name; path.mkdir(mode=0o700); paths.append(str(path))
+    test = tmp_path/'test_candidate.py'
+    test.write_text('import time\ntime.sleep(30)\n' if mode == 'timeout' else
+                    "import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import f\nassert f() == 2\n")
+    params = dict(enabled='YES', database=str(db), task_id=tasks[0], handoffs=paths[0],
+        proposals=paths[1], candidates=paths[2], recommendation='```python\ndef f(): return 2\n```',
+        trusted_test_file=str(test), trusted_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image)
+    def authorize(binding):
+        return dict(verification_authorized=True, binding=dict(binding), reviewer_id='ci-synthetic-recovery',
+                    authorization_id='ci-only', approved=False, deployment_allowed=False)
+    def verify_in_child():
+        def runner(args, **kwargs):
+            if args[1] == 'run':
+                audit = TaskStorage(db).get(tasks[0])['verification']
+                assert audit['resources']['container_name'] == args[3]
+                if backend == 'docker':
+                    result = subprocess.run(args, **kwargs)
+                elif mode == 'timeout':
+                    raise subprocess.TimeoutExpired('synthetic-docker', 5)
+                else:
+                    root = Path(audit['resources']['snapshot_directory'])
+                    record = ast.parse((root/'harness.py').read_text()).body[-1].value.args[1].value.decode()
+                    result = SimpleNamespace(returncode=0, stdout=record)
+                if mode == 'crash':
+                    os._exit(17)  # After real/synthetic container exit, before cleanup/outcome.
+                return result
+            if mode == 'quarantine':
+                # Explicit fault injection: unavailable observation, not a real daemon outage.
+                return SimpleNamespace(returncode=1, stdout='')
+            return subprocess.run(args, **kwargs) if backend == 'docker' else SimpleNamespace(returncode=0, stdout='')
+        report = prepare_and_verify(**params, authorization_check=authorize,
+                                   verifier=partial(run_functional_tests, timeout=5, run=runner))
+        (tmp_path/'report.json').write_text(json.dumps(report))
+    child = multiprocessing.get_context('fork').Process(target=verify_in_child)
+    child.start()
+    try:
+        child.join(timeout=45)
+        if child.is_alive():
+            child.terminate(); child.join(timeout=5)
+            pytest.fail('bounded recovery child exceeded timeout')
+        assert child.exitcode == (17 if mode == 'crash' else 0)
+        store = TaskStorage(db)  # Reopen after the verification process has exited.
+        task = store.get(tasks[0]); audit = task['verification']
+        assert audit['phase'] == {'timeout':'completed', 'quarantine':'quarantined', 'crash':'running'}[mode]
+        assert task['status'] == 'analyzed'
+        assert audit['approved'] is audit['deployment_allowed'] is False
+        assert audit['binding']['test_sha256'] == params['trusted_test_sha256']
+        root = Path(audit['resources']['snapshot_directory'])
+        assert root.exists() is (mode != 'timeout')
+        if mode == 'crash':
+            assert 'outcome' not in audit and not (tmp_path/'report.json').exists()
+        else:
+            outcome = audit['outcome']
+            assert outcome['test_status'] == ('timeout' if mode == 'timeout' else 'cleanup_unconfirmed')
+            assert outcome['tests_passed'] is outcome['completion_confirmed'] is False
+            assert outcome['approved'] is outcome['deployment_allowed'] is False
+        with pytest.raises(ValueError, match='VERIFICATION_ALREADY_STARTED'):
+            prepare_and_verify(**params, authorization_check=lambda _:pytest.fail('must not reauthorize'),
+                               verifier=lambda **_:pytest.fail('must not execute again'))
+        if mode == 'timeout':
+            store.begin_verification(tasks[1], 'b'*32)  # Confirmed cleanup does not block other tasks.
+        else:
+            with pytest.raises(ValueError, match='VERIFICATION_DATABASE_BLOCKED'):
+                store.begin_verification(tasks[1], 'b'*32)
+        assert original.read_bytes() == original_bytes
+    finally:
+        if child.is_alive():
+            child.terminate(); child.join(timeout=5)
+        audit = TaskStorage(db).get(tasks[0]).get('verification', {})
+        handles = audit.get('resources')
+        if handles:
+            name = handles['container_name']
+            assert re.fullmatch(r'central-ai-verifier-[0-9a-f]{32}', name)
+            if backend == 'docker':
+                query = ['docker','container','ls','--all','--filter','name=^/'+name+'$','--format','{{.Names}}']
+                check = subprocess.run(query, capture_output=True, text=True, timeout=10, check=True)
+                if check.stdout.strip():
+                    subprocess.run(['docker','rm','-f',name], capture_output=True, timeout=10, check=True)
+                assert subprocess.run(query, capture_output=True, text=True, timeout=10, check=True).stdout == ''
+            # Explicit fixture-owner reconciliation, only after independent absence.
+            root = Path(handles['snapshot_directory'])
+            if root.exists():
+                shutil.rmtree(root)
+            assert TaskStorage(db).get(tasks[0])['verification']['phase'] == audit['phase']
+            # Manual resource cleanup never clears a durable quarantine/running intent.
