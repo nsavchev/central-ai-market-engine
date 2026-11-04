@@ -47,3 +47,22 @@ P0/P1 precede new P2 features. DB inventory/restore work is prerequisite evidenc
 **Next: P0-REVIEW-01.** Review existing reviewer authorization → verifier → durable audit/cleanup boundaries. Produce exact ownership/caller/state mapping and minimal changes for authenticated tuple binding, atomic persisted outcome/restart and fail-closed quarantine on cleanup uncertainty, using existing storage/queue/pipeline. FIN-QUALITY-01 is corrected on source `af585fd9a33585782ac2854cc59552ea00e16f67` (**33/33 CI successful**). This does not provision reviewer authority, enable tasks or close #90. After source gates, P1 remains a bounded isolated developer-loop scenario; protected VPS/runtime/schema/ACL/reviewer/restore evidence precedes activation or rollout.
 
 For every change record TASK_ID, objective, existing owner/functions, files, PR/base/head, exact test SHA and result, GitHub/CI versus VPS evidence, blockers and one next action in the canonical register. The Git commit/diff preserves exact edits; the register explains why. Refresh the generated inventory on source-review checkpoints. No new dated master register, duplicated runtime module or percentage-based readiness claim.
+
+## Day plan — 2026-11-04 (Europe/Sofia)
+
+PLAN-DAY-01 is a target schedule, not evidence of completed work. Starting source: FIN-QUALITY-01 `af585fd9a33585782ac2854cc59552ea00e16f67` (373 local passed / 44 PostgreSQL-dependent skipped; 33/33 CI), documentation checkpoint `e4ed9610667ba28ce2e546697e6c85872fd5a3bf`. The canonical register owns actual progress. P0-REVIEW-01 remains the single active technical task.
+
+| Local time | Work package | Acceptance for the block |
+|---|---|---|
+| 10:00–11:00 | P0-REVIEW-01: existing authorization, verifier, storage and cleanup boundaries | Evidence-backed caller/state map, concrete gaps, minimal corrections in existing owners; no invented reviewer authority |
+| 11:00–12:00 | Durable verification result and restart behavior | Atomic stored outcome bound to exact task/candidate/tests/image/authorization; restart tests and approval/deployment flags remain false |
+| 12:00–13:00 | Cleanup uncertainty and quarantine | Unconfirmed cleanup blocks retry/continuation; inspect cancellation/failure paths and preserve one queue |
+| 13:00–14:00 | One bounded isolated Central AI scenario, if source gates permit | Existing task → proposal → authorized fixture verification → durable result; source unchanged except reviewed candidate; no production secrets/mounts |
+| 14:00–15:00 | Negative integration and recovery | Denied/stale/mismatched authorization, failure, replay, restart/cancel and retry exhaustion have measured outcomes; synthetic identity is labelled synthetic |
+| 15:00–16:00 | Exact-candidate CI and focused integration review | Relevant new regressions and required checks on exact SHA; no unrelated module growth or repeat of unchanged full PR inventory |
+| 16:00–17:00 | Existing Market Engine paper/data/API acceptance or catch-up | Existing relative strength/scenarios/history/paper regressions; no new data-source integration. This entire block becomes Central AI catch-up if required |
+| 17:00–18:00 | Reserve, evidence reconciliation and release handoff | Fix critical regressions, preserve one exact candidate/rollback description, update actual done/blocked/next states and produce one go/no-go summary |
+
+Catch-up rule: compare actual accepted outcomes against this schedule at each work checkpoint. Start the next dependency as soon as the previous one passes. If a core block slips by 45–60 minutes, consume the 16:00–17:00 optional acceptance block and then the final reserve; defer optional Market Engine work. Do not skip authorization, fail-closed behavior, required tests or #90 evidence to recover time. On a hard blocker, record the evidence and continue independent authorized work; do not repeat the same stalled action.
+
+The day target is a reviewed, tested Central AI candidate with one bounded isolated lifecycle and explicit remaining gates. The complete Central AI + Market Engine project is finished only after all declared acceptance criteria, authorized integrations, operational evidence, restore/rehearsal and separately approved rollout pass. A clock deadline or green source CI cannot mark those complete. An operator evidence/acceptance session is a separate follow-up when the operator is available; production merge, deployment, worker activation, database migration and real trades remain unauthorized by this plan.
