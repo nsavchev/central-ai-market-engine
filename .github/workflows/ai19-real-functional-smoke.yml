@@ -144,5 +144,35 @@ jobs:
                   else:
                       raise AssertionError('replay accepted')
                   assert containers() == before
+              # One fixed independent test across generated root and linked correction.
+              task_id = bridge.submit('Synthetic generated arithmetic correction')['task_id']
+              targets.register(task_id, str(source), 'sample.py')
+              frozen_test = root/'revision_test.py'
+              frozen_test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import f\nassert f() == 2\n")
+              test_digest = hashlib.sha256(frozen_test.read_bytes()).hexdigest()
+              root_id = task_id
+              for ordinal in (1, 2):
+                  assert run_batch(enabled='YES', database=str(database), agent='ci-generated-revision',
+                      max_tasks=1, idle_checks=1, sleep=lambda _:None)['processed'] == 1
+                  paths=[]
+                  for name in ('handoffs','proposals','candidates'):
+                      path=root/('revision-'+str(ordinal)+'-'+name);path.mkdir(mode=0o700);paths.append(str(path))
+                  def generate(request):
+                      assert request['binding']['root_task_id'] == root_id
+                      assert request['binding']['ordinal'] == ordinal
+                      return '```python\ndef f(): return '+str(ordinal)+'\n```'
+                  report=prepare_and_verify(enabled='YES', database=str(database),task_id=task_id,
+                      handoffs=paths[0],proposals=paths[1],candidates=paths[2],
+                      trusted_test_file=str(frozen_test),trusted_test_sha256=test_digest,image=image,
+                      authorization_check=authorize,generator=generate,generator_id='ci-synthetic-generator')
+                  audit=TaskStorage(database).get(task_id)
+                  assert audit['generation']['phase']=='completed'
+                  assert report['test_status']==('failed' if ordinal==1 else 'passed')
+                  assert report['approved'] is report['deployment_allowed'] is False
+                  assert original.read_bytes()==original_bytes and containers()==before
+                  if ordinal==1:
+                      task_id=bridge.submit_revision(task_id,report['verification_nonce'])['task_id']
+              assert len(TaskStorage(database).get(root_id)['revision_family']['members'])==2
+              print('SYNTHETIC_GENERATOR_REAL_DOCKER_FAILED_ROOT_LINKED_CORRECTION_PASSED')
               print('SYNTHETIC_AUTH_REAL_DOCKER_DURABLE_COMPLETION_AND_REPLAY_PASSED')
           PY

@@ -7,8 +7,9 @@ from central_ai.worker_batch import run_batch
 from central_ai.verified_review_pipeline import prepare_and_verify
 
 
+@pytest.mark.parametrize("generated", [True, False])
 @pytest.mark.parametrize("passed", [True, False])
-def test_full_process_preserves_source_and_refuses_deploy(tmp_path, passed):
+def test_full_process_preserves_source_and_refuses_deploy(tmp_path, passed, generated):
     db=tmp_path/"tasks.sqlite"
     source=tmp_path/"source"
     source.mkdir()
@@ -43,12 +44,13 @@ def test_full_process_preserves_source_and_refuses_deploy(tmp_path, passed):
         return {"verification_authorized":True,"binding":binding,
                 "reviewer_id":"ci-trusted-review-fixture","authorization_id":"ci-only",
                 "approved":False,"deployment_allowed":False}
+    recommendation="```python\ndef candidate():\n    return 3\n```"
+    extra = {'generator':lambda request:recommendation, 'generator_id':'ci-synthetic'} if generated else {'recommendation':recommendation}
     report=prepare_and_verify(
         enabled="YES",database=str(db),task_id=task["task_id"],
         handoffs=paths[0],proposals=paths[1],candidates=paths[2],
-        recommendation="```python\ndef candidate():\n    return 3\n```",
         trusted_test_file="/isolated/operator_test.py",trusted_test_sha256="b"*64,
-        image="python@sha256:"+"a"*64,authorization_check=authorize,verifier=verifier)
+        image="python@sha256:"+"a"*64,authorization_check=authorize,verifier=verifier,**extra)
     assert report["tests_passed"] is passed
     assert report["approved"] is False and report["deployment_allowed"] is False
     assert file.read_bytes()==untouched

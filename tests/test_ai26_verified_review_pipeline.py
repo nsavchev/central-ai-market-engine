@@ -627,3 +627,78 @@ def test_completion_uncertainty_is_durable_failure_without_deployment(monkeypatc
     assert report['tests_passed'] is report['completion_confirmed'] is False
     assert report['approved'] is report['deployment_allowed'] is False
     assert report['execution_policy'] == 'bounded-arithmetic-v1'
+
+
+def test_generator_intent_is_durable_before_callback_and_response_is_hashed(monkeypatch,tmp_path):
+    import hashlib
+    from central_ai.task_storage import TaskStorage
+    params=verification_fixture(monkeypatch,valid_result(),tmp_path)
+    params.pop('recommendation')
+    answer='```python\ndef f(): return 2\n```'
+    def generate(request):
+        saved=TaskStorage(params['database']).get(params['task_id'])
+        assert saved['generation']['phase']=='requested'
+        assert saved['generation']['binding']==request['binding']
+        assert saved['revision_family']['members']==[params['task_id']]
+        assert request['binding']['ordinal']==1
+        request['binding']['source_sha256']='tampered'
+        return answer
+    prepare_and_verify(**params,generator=generate,generator_id='ci-synthetic')
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['phase']=='completed'
+    assert saved['generation']['response_sha256']==hashlib.sha256(answer.encode()).hexdigest()
+    assert saved['generation']['binding']['source_sha256']!='tampered'
+    assert answer not in str(saved['generation'])
+    with pytest.raises(ValueError,match='VERIFICATION_ALREADY_STARTED'):
+        prepare_and_verify(**params,generator=lambda _:pytest.fail('replay'),generator_id='ci-synthetic')
+
+
+@pytest.mark.parametrize('response',[None,'','x'*12001,{'approved':True}])
+def test_invalid_generated_response_is_not_authority_or_retry(monkeypatch,tmp_path,response):
+    from central_ai.task_storage import TaskStorage
+    params=verification_fixture(monkeypatch,valid_result(),tmp_path); params.pop('recommendation')
+    params['authorization_check']=lambda _:pytest.fail('must not authorize invalid response')
+    with pytest.raises(ValueError,match='INVALID_GENERATED_RECOMMENDATION'):
+        prepare_and_verify(**params,generator=lambda _:response,generator_id='ci-synthetic')
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['phase']=='requested'
+    assert saved['verification']['phase']=='blocked'
+    with pytest.raises(ValueError,match='VERIFICATION_ALREADY_STARTED'):
+        prepare_and_verify(**params,generator=lambda _:pytest.fail('must not retry'),generator_id='ci-synthetic')
+
+
+def test_generator_exception_keeps_intent_without_raw_exception(monkeypatch,tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params=verification_fixture(monkeypatch,valid_result(),tmp_path);params.pop('recommendation')
+    def fail(_): raise RuntimeError('synthetic-sensitive-key')
+    with pytest.raises(RuntimeError):
+        prepare_and_verify(**params,generator=fail,generator_id='ci-synthetic')
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['verification']['error_stage']=='generation'
+    assert 'synthetic-sensitive-key' not in str(saved)
+    assert saved['generation']['phase']=='requested'
+
+
+def test_generator_cannot_replace_supplied_recommendation(monkeypatch,tmp_path):
+    params=verification_fixture(monkeypatch,valid_result(),tmp_path)
+    with pytest.raises(ValueError,match='INVALID_GENERATOR_CONFIGURATION'):
+        prepare_and_verify(**params,generator=lambda _:pytest.fail('must not call'),generator_id='ci-synthetic')
+
+
+def test_process_exit_inside_generator_preserves_one_shot_intent(monkeypatch,tmp_path):
+    import multiprocessing
+    import os
+    from central_ai.task_storage import TaskStorage
+    params=verification_fixture(monkeypatch,valid_result(),tmp_path);params.pop('recommendation')
+    def child():
+        def terminate(_): os._exit(23)
+        prepare_and_verify(**params,generator=terminate,generator_id='ci-synthetic')
+    process=multiprocessing.get_context('fork').Process(target=child)
+    process.start();process.join(timeout=15)
+    if process.is_alive(): process.terminate();process.join(timeout=5);pytest.fail('child hung')
+    assert process.exitcode==23
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['phase']=='requested'
+    assert saved['verification']['phase']=='preparing'
+    with pytest.raises(ValueError,match='VERIFICATION_ALREADY_STARTED'):
+        prepare_and_verify(**params,generator=lambda _:pytest.fail('replay'),generator_id='ci-synthetic')

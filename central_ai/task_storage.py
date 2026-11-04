@@ -1,6 +1,7 @@
 """Central AI Task Storage v0.2."""
 
 import json
+import hashlib
 import re
 import sqlite3
 from pathlib import Path
@@ -155,6 +156,65 @@ class TaskStorage:
                                     'approved':False, 'deployment_allowed':False}
             self._write_review_task(conn, task_id, task)
 
+    def begin_generation(self, task_id, nonce, provider_id, test_sha256, image):
+        """Reserve a one-shot synthetic/host generator call within verification intent."""
+        if (not isinstance(provider_id, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', provider_id)
+                or not isinstance(test_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', test_sha256)
+                or not isinstance(image, str) or not re.fullmatch(r'[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}', image)):
+            raise ValueError('INVALID_GENERATION_BINDING')
+        with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            task = self._review_task(conn, task_id)
+            audit = task.get('verification', {})
+            if audit.get('phase') != 'preparing' or audit.get('nonce') != nonce or 'generation' in task:
+                raise ValueError('GENERATION_ALREADY_STARTED')
+            digest = task.get('analysis', {}).get('source_sha256')
+            if not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+                raise ValueError('GENERATION_SOURCE_NOT_BOUND')
+            revision = task.get('revision')
+            root_id = revision['root_task_id'] if revision else task_id
+            root = self._review_task(conn, root_id)
+            family = root.get('revision_family')
+            if family is None and not revision:
+                family = {'schema':'revision-family-v1', 'members':[root_id],
+                          'source_sha256':digest, 'test_sha256':test_sha256}
+                root['revision_family'] = family
+            if (not isinstance(family, dict) or family.get('schema') != 'revision-family-v1'
+                    or not isinstance(family.get('members'), list) or not 1 <= len(family['members']) <= 3
+                    or family['members'][0] != root_id or family['members'][-1] != task_id
+                    or family.get('source_sha256') != digest or family.get('test_sha256') != test_sha256
+                    or (revision and (revision.get('ordinal') != len(family['members'])
+                        or revision.get('test_sha256') != test_sha256 or revision.get('source_sha256') != digest))):
+                raise ValueError('GENERATION_FAMILY_CONFLICT')
+            spec = task['task']['task']
+            binding = {'schema':'generation-request-v1', 'task_id':task_id, 'nonce':nonce,
+                'root_task_id':root_id, 'ordinal':len(family['members']), 'source_sha256':digest,
+                'spec_sha256':hashlib.sha256(spec.encode('utf-8')).hexdigest(),
+                'test_sha256':test_sha256, 'image':image, 'execution_policy':'bounded-arithmetic-v1',
+                'provider_id':provider_id}
+            task['generation'] = {'schema':'task-generation-v1', 'phase':'requested', 'binding':binding,
+                'approved':False, 'deployment_allowed':False}
+            if root_id == task_id:
+                task['revision_family'] = family
+            else:
+                self._write_review_task(conn, root_id, root)
+            self._write_review_task(conn, task_id, task)
+        return {'binding':dict(binding), 'task_description':spec}
+
+    def complete_generation(self, task_id, nonce, recommendation):
+        if not isinstance(recommendation, str) or not recommendation.strip() or len(recommendation) > 12000:
+            raise ValueError('INVALID_GENERATED_RECOMMENDATION')
+        with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            task = self._review_task(conn, task_id)
+            generation = task.get('generation', {})
+            audit = task.get('verification', {})
+            if (audit.get('phase') != 'preparing' or audit.get('nonce') != nonce
+                    or generation.get('phase') != 'requested' or generation.get('binding', {}).get('nonce') != nonce):
+                raise ValueError('GENERATION_AUDIT_CONFLICT')
+            generation.update(phase='completed', response_sha256=hashlib.sha256(recommendation.encode('utf-8')).hexdigest())
+            self._write_review_task(conn, task_id, task)
+
     def authorize_verification(self, task_id, nonce, binding, reviewer_id, authorization_id):
         """Persist a host-validated verify-only binding before dispatch, not approval."""
         fields = {'schema','nonce','task_id','candidate_sha256','test_sha256','image','scope'}
@@ -243,7 +303,7 @@ class TaskStorage:
 
     def fail_verification(self, task_id, nonce, stage, error_type):
         """Record a generic failure; any uncertainty after dispatch remains quarantined."""
-        if (stage not in ('preparation','authorization','execution','result','persistence')
+        if (stage not in ('generation','preparation','authorization','execution','result','persistence')
                 or not isinstance(error_type, str) or not re.fullmatch(r'[A-Za-z0-9_]{1,128}', error_type)):
             raise ValueError('INVALID_VERIFICATION_FAILURE')
         with self._connect() as conn:

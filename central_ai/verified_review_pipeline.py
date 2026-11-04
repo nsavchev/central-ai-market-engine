@@ -11,9 +11,9 @@ from central_ai.isolated_functional_verifier import run_functional_tests
 
 
 def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
-                       candidates, recommendation, trusted_test_file, image,
+                       candidates, recommendation=None, trusted_test_file, image,
                        trusted_test_sha256=None, authorization_check=None,
-                       verifier=run_functional_tests):
+                       verifier=run_functional_tests, generator=None, generator_id=None):
     if enabled != "YES":
         raise ValueError("PIPELINE_VERIFICATION_DISABLED")
     if not isinstance(trusted_test_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", trusted_test_sha256):
@@ -26,14 +26,24 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
         r"[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}", image
     ):
         raise ValueError("UNPINNED_IMAGE")
+    if generator is not None and (not callable(generator) or recommendation is not None
+            or not isinstance(generator_id, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', generator_id)):
+        raise ValueError("INVALID_GENERATOR_CONFIGURATION")
+    if generator is None and generator_id is not None:
+        raise ValueError("INVALID_GENERATOR_CONFIGURATION")
     db = Path(database)
     if not db.is_absolute() or not db.is_file() or db.is_symlink():
         raise ValueError("INVALID_TASK_DB")
     storage = TaskStorage(db)
     nonce = secrets.token_hex(16)
     storage.begin_verification(task_id, nonce)
-    stage = "preparation"
+    stage = "generation" if generator is not None else "preparation"
     try:
+        if generator is not None:
+            request = storage.begin_generation(task_id, nonce, generator_id, trusted_test_sha256, image)
+            recommendation = generator(request)
+            storage.complete_generation(task_id, nonce, recommendation)
+        stage = "preparation"
         prepared = prepare_review_pipeline(
             enabled="YES", database=database, task_id=task_id,
             handoffs=handoffs, proposals=proposals, candidates=candidates,
