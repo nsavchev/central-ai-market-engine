@@ -1,6 +1,6 @@
 # Central AI / Market Engine — архитектура, решения и напредък
 
-**Основен жив регистър. Обновен: 2026-11-04 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
+**Основен жив регистър. Обновен: 2026-11-04 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Cleanup checkpoint: ME-API-01, DUP-07, TEST-NUM-01 и TEST-ENV-01. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
 
 ## 1. Кой код и коя среда описваме
 
@@ -9,7 +9,7 @@
 | GitHub `main` | `d987387f45dbe25940502ea25542e7ad99673359` | Основният клон все още не съдържа целия стек |
 | Преглеждан изходен код | PR #129, `7fd9c850f73edea70988b017d8dda2a4b70f3fc3` | 293 commits напред спрямо посочения main; 187 променени файла. Това е снимката преди настоящата документационна промяна |
 | CI на Central AI образа | PR #128, `c38f12b9f7b1d6d61ab469c90c9ce2af8068ac1b` | 33/33 workflow изпълнения са успешни; build checkout `4a50c6da38f554fd10080d6c14eacfb31a830882` |
-| CI на baseline корекцията | PR #129, същият `7fd9c85…` | [Run 41725530297](https://github.com/nsavchev/central-ai-market-engine/actions/runs/41725530297), job `126385986276`: **7 passed**, 2026-11-04. Останалите 32 workflow изпълнения на този SHA още имат стария failure статус; няма твърдение за пълно зелено CI |
+| CI на baseline корекцията | PR #129, същият `7fd9c85…` | [Run 41725530297](https://github.com/nsavchev/central-ai-market-engine/actions/runs/41725530297), job `126385986276`: **7 passed**, 2026-11-04. Останалите 32 изпълнения на този стар SHA запазват failure статуса. Следващият documentation checkpoint `3555fa5cc3199230d12ae56461bce25b90f811a8`, със същия Python код, вече е 33/33 green; текущите поправки изискват собствено CI |
 | VPS доказателства | Извън публичния source snapshot | Подробните оперативни записи не се възпроизвеждат тук; изискват отделен защитен преглед |
 | Публичност | GitHub metadata: `visibility=public`, 2026-11-04 | Публично repository; не означава публично изложен VPS API |
 | Пълен архитектурен/VPS одит | [Issue #90](https://github.com/nsavchev/central-ai-market-engine/issues/90) е OPEN | Част от доказателствата са събрани; остава reconciliation преди нов модул/активация |
@@ -82,7 +82,7 @@ Source Compose описва opt-in tasks и отделни Central AI/Market API
 | #127 | #126 → `b53a115…` | Замразен обхват и P0–P4 | Draft, unmerged |
 | #128 | #127 → `c38f12b…` | P0 release/security и възпроизводим образ | Draft, unmerged; 33/33 CI; API-only образът е отделно прехвърлен |
 | #129 | #128 → `7fd9c85…` | READ ONLY baseline и VPS DDL fixture | Draft, unmerged; 7 baseline теста passed, останалите CI още не са повторени |
-| Настоящ documentation checkpoint | #129 → документационен commit | Актуален регистър, архитектура и статичен snapshot | Само документация; без промяна на изпълнявания код |
+| #130 — стабилизиране | #129 → `3555fa5…` → текущ cleanup candidate | Регистър, ME-API-01, DUP-07 и test coverage | Draft/unmerged; първият documentation commit е 33/33 CI green, текущият код чака собственото CI |
 
 Не merge-ваме стека наведнъж и не пренасяме source от `main` върху VPS с blind pull/compose build. Първо се проверяват ancestry, дифовете, точният candidate и #90.
 
@@ -96,8 +96,11 @@ Source Compose описва opt-in tasks и отделни Central AI/Market API
 - DUP-04: TaskBridge registry срещу TaskStorage — transient planning adapter срещу durable owner.
 - DUP-05: schema preflights — различни фази, съставяне на отчет вместо изтриване.
 - DUP-06: CI workflows — бъдеща консолидация само със запазени required checks/coverage.
-- DUP-07: unreachable code след `UNVERIFIED_REPORT_BLOCKED` — fail-closed path не се активира като „почистване“.
-- **ME-API-01 / HIGH, source-confirmed:** `app/main.py:9` импортира `engine.analyze`; `:186` го замества с `advanced_valuation.analyze`. `analysis` в `:76` извиква глобалното `analyze(a,b)`, а `valuation_advanced` в `:194` — `analyze(request)`. Това е конфликт на свързване на функции, не еднаква бизнес отговорност. Записан е за отделна alias корекция и изолиран regression test на двата HTTP пътя; не е извършвана поправка или VPS заявка в този checkpoint.
+- DUP-07: премахнати недостижимите parser/success branches и неизползваните imports/constants след `UNVERIFIED_REPORT_BLOCKED`. Същата функция и CLI остават безусловно блокирани; тестове проверяват отказ без четене и nonzero CLI exit дори за success-looking JSON.
+- **ME-API-01 / HIGH — поправен в cleanup candidate:** различни import aliases `analyze_market` и `analyze_valuation` в `app/main.py` запазват алгоритмите в техните owners. Новите реални ASGI HTTP regression проверки възпроизведоха два HTTP 500 преди промяната; след нея проверяват relative strength, advanced DCF, 422 за липсващи общи сесии, 409 при нееднозначен symbol и 401 без token.
+- **TEST-NUM-01 — поправено погрешно тестово очакване:** `NUMERIC(20,2)` допуска 18 integer + 2 fractional digits. Валидаторът `_fits` не е променян; тестът вече приема точните положителна/отрицателна граници и отхвърля реален overflow. Четири проверки срещу PostgreSQL CAST са добавени в съществуващия CI workflow.
+- **TEST-ENV-01 — явни локални prerequisites:** пет PostgreSQL тестови модула пропускат теста само при липсващ URL в локална среда. CI продължава да изисква test URL; останалите DB-name/host проверки са запазени.
+- **DUP review:** source scan на трите roots след поправката намери 0 conflicting top-level imports и 0 function-body tails след безусловни return/raise. Две групи с идентични top-level AST тела са verifier CLI wrappers с различни pinned owners/baselines; това не е основание да се изтрие trust boundary. Legacy persistence и task storage/lease слоевете също не са обявени за семантични дубликати.
 
 ## 7. Текущ работен регистър
 
@@ -106,20 +109,21 @@ Source Compose описва opt-in tasks и отделни Central AI/Market API
 | DOC-01 | Този регистър + focus plan | Обновен в настоящата промяна | Поддържа се при всяка следваща задача и handoff |
 | AUD-01 | Ownership/import инвентаризация | Статичен snapshot готов; runtime reconciliation PARTIAL | Ключовите callable bindings, compatibility callers и действителните deployed imports остават за проверка |
 | AUD-02 | PR зависимости/main drift | 127 PR-а инвентаризирани; review PARTIAL | Класификация на страничните линии и интеграционен diff, без bulk merge |
-| P0-CI | Проверки на точния source | #128 33/33; #129 baseline 7 passed | Повторно изпълнение на останалите 32 стари failure проверки на непроменения #129 SHA |
+| P0-CI | Проверки на точния source | #130 `3555fa5…`: 33/33 green; cleanup candidate pending | Пълно CI на новия source; старите #129 проверки не се представят като ретроактивно успешни |
 | SEC-01 | Secrets/publication | GitHub metadata потвърждава public | Публичността не доказва пълен security audit; подробни оперативни данни не се публикуват |
 | OPS-API | Central AI API-only | Отделен операторски evidence поток | Публичният source регистър не разширява разрешенията към worker/task активация |
 | DB-01 | Production schema | Evidence reconciliation PARTIAL | Пълни constraints/indexes/defaults/sequences/ownership/ACLs и всички writers |
 | DB-02 | Backup/restore | Отделен защитен операторски запис | Повторни реалистични rehearsal-и и roles/ACL recovery преди миграция |
 | DB-03 | Production baseline/migration | BLOCKED | DB-01/02, отделен reviewed production runbook, два restored-copy rehearsal-а и explicit authorization; не премахваме disposable guards |
 | AI-01 / AI-02 | Един developer loop | Компоненти и отделни CI проверки; PARTIAL | Независим test/authorization източник, постоянен post-test резултат, bounded repair/restart/cancel и безопасен runner |
-| ME-API-01 | `app/main.py` route binding | OPEN, source-confirmed | Отделен minimal alias fix + regression на analysis и advanced valuation; без нов модул |
+| ME-API-01 / DUP-07 | Route binding и blocked legacy CLI | Корекция и целеви regression тестове са изпълнени локално | Очаква се CI на точния cleanup candidate; без нов runtime модул |
+| TEST-NUM-01 / TEST-ENV-01 | Числови граници и test prerequisites | Unit correction и DB boundary cases добавени | Реалните PostgreSQL cases се проверяват в съществуващите CI jobs |
 | DATA-01 | SEC безопасен автоматичен импорт | PARTIAL | `validate_source`, permissions, Financials provenance и quality преди PostgreSQL write |
 | DATA-02 / MODEL-01 | Relative strength, macro, 3 сценария | PARTIAL | Проверени данни/fixtures, assumptions и два дневни отчета |
 | OPS-PAPER | Вътрешен paper simulator, после IBKR paper | Изолирано покритие; production integration BLOCKED | DB/runbook/consumer acceptance, без реални поръчки |
 | OPS-02 | Starlette/TestClient warning | DEFERRED | След release blockers; съществуващата уговорка е запазена |
 
-**Единствена следваща активна задача:** P0-CI — възстановяване на пълното CI доказателство за точния #129 source, после затваряне на оставащите P0/#90 reconciliation точки. P1 Central AI идва преди новите P2 Market Engine функции. DB inventory е prerequisite работа, не разрешение да прескочим към production миграция. ME-API-01 е записан release blocker за бъдещото Market API приемане.
+**Единствена следваща активна задача:** P0-CI — пълно CI на cleanup candidate с ME-API-01, DUP-07 и numeric/test поправките. След това остава reconciliation по P0/#90 преди нови функции или production действие. P1 Central AI остава преди новите P2 Market Engine функции; настоящият API дефект е стабилизиране на съществуваща функционалност.
 
 ## 8. Решения и история на checkpoint-ите
 
@@ -133,7 +137,9 @@ Source Compose описва opt-in tasks и отделни Central AI/Market API
 | 2026-11-04 | SEC-01 / PUBLIC | Операторът промени repo към public; GitHub metadata потвърди | Публичността на repository не е разрешение за production промени |
 | 2026-11-04 | P0-CI baseline retry | Run 41725530297, job 126385986276: 7 passed | Другите 32 проверки още предстоят |
 | 2026-11-04 | DOC-01 / AUD-01 | Преизползван AST scanner: 89 модула/275 дефиниции; обновени съществуващите основни документи, README и contributor инструкции; добавен един JSON snapshot | Без нов Python модул, queue, scheduler, verifier, CI workflow или VPS промяна |
-| 2026-11-04 | ME-API-01 | Намерен `analyze` import collision чрез source review | Записан дефект; не е смесван с документационния PR |
+| 2026-11-04 | ME-API-01 / DUP-07 | След изричната cleanup задача PR #130 е разширен с отделен code commit; два aliases и премахнати недостижими report branches | Целеви набор 25 passed; новите HTTP тестове възпроизведоха 2 failures преди поправката |
+| 2026-11-04 | TEST-NUM-01 / TEST-ENV-01 | Поправено погрешно numeric boundary очакване; локалните DB prerequisites са явни и CI остава задължителен | Aggregate local run: **295 passed, 43 skipped, 1 warning**; skipped PostgreSQL тестовете не са отчетени като passed |
+| 2026-11-04 | CI-COV-01 | Новите route/numeric regressions са включени в два съществуващи workflow-а | Без нов Python runtime модул или нов CI workflow; Starlette warning остава OPS-02 |
 
 Това е обобщение на проверимите checkpoint-и. То не твърди, че всяка стара промяна е била навреме описана отделно; точният пълен diff/история остава в Git и PR-ите.
 

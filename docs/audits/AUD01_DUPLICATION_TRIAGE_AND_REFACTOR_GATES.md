@@ -10,8 +10,8 @@ Updated 2026-11-04 for source `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`. The [l
 | DUP-04 | TaskBridge.registry and durable TaskStorage | TaskStorage via PersistentTaskBridge | Restart, duplicate-task and approval-flag consistency | Runtime durable storage authoritative; planning registry transient |
 | DUP-05 | Paper schema preflight modules | Phase-specific owners | Legacy/numeric/constraint/value coverage and consumer contracts | Compose results; retain specialized guards |
 | DUP-06 | Many CI workflows | Eventual domain grouping | Required-check parity, coverage, isolated DB permissions | Defer consolidation until release checks are green and reviewed |
-| DUP-07 | Code after unconditional rejection in v3/workflow_controller.py | Trusted verifier lifecycle | Invocation review and fail-closed tests | Dead-path candidate; do not enable as cleanup |
-| ME-API-01 | Two different analyze imports in app/main.py | engine.analyze for relative strength; advanced_valuation.analyze for DCF | Source conflict confirmed; route regression with isolated data for both contracts | Separate minimal alias correction; no new algorithm/module; not fixed by this documentation change |
+| DUP-07 | Code after unconditional rejection in v3/workflow_controller.py | Blocked legacy report CLI | Caller search found only its own CLI; rejection/no-read/nonzero-exit tests | Unreachable parser/output removed; unconditional rejection retained in cleanup candidate |
+| ME-API-01 | Two different analyze imports in app/main.py | engine.analyze for relative strength; advanced_valuation.analyze for DCF | Source conflict confirmed; route regression with isolated data for both contracts | Explicit market/valuation aliases implemented; HTTP regression tests reproduce the old 500 and pass after correction; CI pending |
 
 ## Controls
 
@@ -22,4 +22,4 @@ Updated 2026-11-04 for source `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`. The [l
 5. Record task ID, objective, existing owner/functions, changed files, PR/base/head, exact CI SHA/result, blockers and next action in the living register.
 6. No production migration, worker activation, live trading or automatic merge/deploy from an audit result.
 
-The next active task is **P0-CI**, as recorded in the canonical register: retry the 32 remaining previously blocked workflows at PR #129's unchanged source. Consolidation and ME-API-01 are tracked work, not permission to change unrelated runtime behavior in this checkpoint.
+The next active task is **P0-CI** for the cleanup candidate. The source-equivalent #130 documentation checkpoint passed all 33 workflows. Current code changes resolve ME-API-01 and remove DUP-07 unreachable tails, with local aggregate 295 passed / 43 skipped / 1 warning. Other same-name groups retain compatibility/trust decisions; no speculative deletion or production change is authorized.

@@ -6,7 +6,7 @@ Minimal working foundation: IBKR historical daily bars -> PostgreSQL -> relative
 
 Start with the [living architecture, ownership, decisions and task register](docs/audits/PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). Its filename records its creation date; the document is updated in place. The [P0–P4 focus plan](docs/audits/PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) defines the order of work; [static module/function/import and PR metadata](docs/audits/project-architecture-inventory.json) describe the exact inspected source snapshot.
 
-Checkpoint 2026-11-04: the repository is public. PR #129 baseline CI has **7 passed**; its other 32 previously blocked checks still need retry. Task API is opt-in in source. Source/CI does not prove production activation, a database migration or a complete autonomous developer loop. Detailed operational evidence is kept outside this public documentation change.
+Checkpoint 2026-11-04: the repository is public. PR #129 baseline CI has **7 passed**; the source-equivalent PR #130 documentation checkpoint passed **33/33 workflows**. The current cleanup candidate fixes market/valuation routing and removes unreachable legacy report code; local aggregate tests report **295 passed / 43 skipped**, with PostgreSQL cases awaiting CI. Task API is opt-in in source. Source/CI does not prove production activation, a database migration or a complete autonomous developer loop. Detailed operational evidence is kept outside this public documentation change.
 
 Contributors: follow [AGENTS.md](AGENTS.md), reuse the existing owner, and record every change and handoff in the living register. No second queue/AI manager or new dated master audit.
 

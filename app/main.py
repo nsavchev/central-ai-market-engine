@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .config import settings
 from .db import init_db,SessionLocal,Instrument,DailyBar,PaperAccount,PaperTrade
-from .engine import analyze
+from .engine import analyze as analyze_market
 try:
     from .ibkr import fetch_daily
 except ModuleNotFoundError as exc:
@@ -73,7 +73,7 @@ def analysis(symbol:str,benchmark:str='SPY'):
             rows=db.scalars(select(DailyBar).where(DailyBar.instrument_id==instruments[0].id).order_by(DailyBar.day)).all()
             return {r.day:r.close for r in rows}
         a,b=load(symbol),load(benchmark)
-    try: return {'symbol':symbol,'benchmark':benchmark,**analyze(a,b)}
+    try: return {'symbol':symbol,'benchmark':benchmark,**analyze_market(a,b)}
     except ValueError as e: raise HTTPException(422,str(e))
 
 class TradeRequest(BaseModel):
@@ -183,7 +183,7 @@ def valuation_evaluate(request: ValuationRequest):
     except (ValueError, OverflowError) as exc: raise HTTPException(422,str(exc))
 
 # Advanced probability-weighted DCF valuation
-from .advanced_valuation import AdvancedRequest, analyze
+from .advanced_valuation import AdvancedRequest, analyze as analyze_valuation
 
 @app.post(
     "/valuation/advanced",
@@ -191,7 +191,7 @@ from .advanced_valuation import AdvancedRequest, analyze
 )
 def valuation_advanced(request: AdvancedRequest):
     try:
-        return analyze(request)
+        return analyze_valuation(request)
     except (ValueError, OverflowError, ZeroDivisionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 

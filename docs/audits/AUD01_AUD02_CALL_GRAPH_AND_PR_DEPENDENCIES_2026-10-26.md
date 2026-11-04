@@ -23,8 +23,8 @@ The function names and import edges for all 89 inspected source modules are in [
 - v3 workflow/orchestrator state models are planning/legacy responsibilities; no fourth controller.
 - Trusted verifier generations have distinct pinned trust baselines. Do not automatically alias/delete them.
 - Phase-specific paper schema probes check different contracts; aggregate findings without dropping guards.
-- `developer_agent/v3/workflow_controller.py` rejects unverified reports unconditionally. Do not enable unreachable code as cleanup.
-- **ME-API-01:** `app/main.py` imports two functions as `analyze` (lines 9 and 186); the later valuation binding shadows the engine binding used at line 76. This source-confirmed conflict needs one separate alias fix and route regressions. No runtime code changed in this audit.
+- `developer_agent/v3/workflow_controller.py` still rejects unverified reports unconditionally; unreachable parser/output and unused imports were removed in the cleanup candidate. File-read and CLI rejection regressions preserve this boundary.
+- **ME-API-01:** corrected with `analyze_market` and `analyze_valuation` aliases. HTTP regression tests cover both algorithms, auth and domain errors. A source scan found no remaining conflicting top-level imports or unreachable top-level function tails in the three roots; this is not a dynamic call-graph proof.
 
 ## PR dependencies
 
