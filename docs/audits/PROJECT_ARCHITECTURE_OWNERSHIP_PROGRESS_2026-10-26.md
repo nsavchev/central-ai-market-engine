@@ -1,6 +1,6 @@
 # Central AI / Market Engine — архитектура, решения и напредък
 
-**Основен жив регистър. Обновен: 2026-11-04 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Текущ checkpoint: FIN-QUALITY-01; предходните P0-RECON, IBKR/legacy guards и OPS-02 са запазени в историята. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
+**Основен жив регистър. Обновен: 2026-11-04 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Текущ checkpoint: P0-REVIEW-01 / P0-AUDIT-01; предходните P0-RECON, IBKR/legacy guards и OPS-02 са запазени в историята. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
 
 ## 1. Кой код и коя среда описваме
 
@@ -9,7 +9,8 @@
 | GitHub `main` | `d987387f45dbe25940502ea25542e7ad99673359` | Основният клон все още не съдържа целия стек |
 | PR/source snapshot | PR #130, `a2aee7b81dc44e9ad0e566d215c38daa74dffee1` | Статичната PR/AST инвентаризация: 298 commits / 194 files спрямо main, 33/33 CI; остава датиран snapshot |
 | Lease code delta | PR #130, `cf13d4c18038875e0b4fc07f0bbeb0348edcd504` | P0-LEASE-01: shared durable retry budget; **33/33 CI successful** |
-| Текущ code delta | PR #130, `af585fd9a33585782ac2854cc59552ea00e16f67` | FIN-QUALITY-01: existing Financials/history/CLI owners; **33/33 CI successful** |
+| Financial quality delta | PR #130, `af585fd9a33585782ac2854cc59552ea00e16f67` | FIN-QUALITY-01: existing Financials/history/CLI owners; **33/33 CI successful** |
+| Текущ code delta | PR #130, `4d5c3417872fdf27aa0d7a4b62bc62a46e8495c8` | Verifier result contract + durable intent/binding/outcome/quarantine in existing TaskStorage; **33/33 CI successful** |
 | CI на Central AI образа | PR #128, `c38f12b9f7b1d6d61ab469c90c9ce2af8068ac1b` | 33/33 workflow изпълнения са успешни; build checkout `4a50c6da38f554fd10080d6c14eacfb31a830882` |
 | CI на baseline корекцията | PR #129, същият `7fd9c85…` | [Run 41725530297](https://github.com/nsavchev/central-ai-market-engine/actions/runs/41725530297), job `126385986276`: **7 passed**, 2026-11-04. Останалите 32 изпълнения на този стар SHA запазват failure статуса. Следващият documentation checkpoint `3555fa5cc3199230d12ae56461bce25b90f811a8`, със същия Python код, вече е 33/33 green; този исторически резултат не се променя от CI на следващите commits |
 | Cleanup CI | PR #130, `b67b288f56d310a8bfea8ad16667b641039a377f` | **33/33 успешни workflows**, проверени при възстановяването на работата на 2026-11-04; включват PostgreSQL numeric boundaries |
@@ -29,13 +30,13 @@
 | Автентикация, `/ask`, `/providers`, task HTTP интерфейс | `central_ai/app.py` | API кодът е наличен; task endpoints са opt-in. Provider adapters не доказват конфигурирани акаунти или успешни външни заявки |
 | Начално планиране на задача | `TaskBridge.submit` → `developer_agent/v3/orchestrator.py` | Planning adapter; паметта му не е постоянният регистър |
 | Атомарно подаване и записване на анализ | `PersistentTaskBridge.submit/complete_analysis` | Използва съществуващите storage, queue и workflow; не създаваме втори bridge |
-| Постоянни task записи | `TaskStorage` в `central_ai/task_storage.py` | Един собственик на записите |
+| Постоянни task записи и verification journal | `TaskStorage` в `central_ai/task_storage.py` | Един собственик на task payload и one-shot verification audit; няма нова table/queue/controller |
 | Lease, heartbeat ownership и ограничени опити | `TaskQueue` + `HeartbeatWorker` | Една queue; не добавяме втори retry engine |
 | Workflow преходи и възстановяване | `WorkflowController` v03 + `PersistentWorkflowV05` | v04 остава за съвместимост; старите модели не се изтриват без caller/recovery тестове |
 | Избор на следваща задача | `DeveloperWorkerCoordinator.run_once` + `TaskFileTargets` | Координация, не генератор на код |
 | Ограничен анализ на файл | `DeveloperTaskRunner.run_acquired_and_complete` → `ReadOnlyAnalyzer.analyze` | AST анализ без изпълнение на целевия Python файл; не е автономен repair loop |
 | Подготовка на предложение и candidate | `prepare_review_pipeline`, `review_handoff`, `proposal_adapter`, `isolated_candidate`, `verifier_gate` | Opt-in pipeline с външно подадена препоръка; няма втора queue |
-| Разрешена изолирана проверка | `prepare_and_verify` в `verified_review_pipeline.py` + `isolated_functional_verifier` | Отделни trusted tests и verify-only authorization; връща резултат, но не го записва като завършен постоянен repair lifecycle |
+| Разрешена изолирана проверка | `prepare_and_verify` в `verified_review_pipeline.py` + `isolated_functional_verifier` | Отделни trusted tests и verify-only authorization; вече записва one-shot intent/binding/outcome и DB-scoped quarantine; не е автономен repair lifecycle |
 | Стар trusted verifier | `developer_agent/v3/trusted_verifier*/` | Различни pinned trust baselines; не се сливат само заради сходни имена |
 | Обобщение за release | `stage2_release_gate.py`, `release_preflight.py`, `release_build_policy.py` | Проверка/доклад, не merge/deploy разрешение |
 | Market HTTP / данни | `app/main.py`, `app/db.py`, `app/ibkr.py`, `app/engine.py` | Изходният код е наличен; текущият VPS Market API не е обновяван с този стек |
@@ -62,7 +63,7 @@ flowchart TD
     RUN -->|"complete_analysis"| BR
 ```
 
-Отделният review път е `prepare_review_pipeline` (handoff → proposal → verifier gate → frozen candidate), след това изрично разрешено `prepare_and_verify`. Няма доказана автоматична връзка от HTTP заявка през provider-generated patch, независими тестове, постоянен запис на резултата и ограничени повторни поправки до финален human review. Това е оставащата P1 работа, а не основание за нов AI manager.
+Отделният review път е `prepare_review_pipeline` (handoff → proposal → verifier gate → frozen candidate), след това изрично разрешено `prepare_and_verify`. One-shot verification intent/binding/outcome вече се пазят в TaskStorage. Няма доказана автоматична връзка от HTTP заявка през provider-generated patch, независимо provisioned тестове/identity и ограничени повторни поправки до финален human review. Това е оставащата P1 работа, а не основание за нов AI manager.
 
 Market Engine използва своя FastAPI app и PostgreSQL. Вътрешните paper операции са отделени от Central AI task SQLite. Source registry е контрол на достъпа до източници, а не разрешение за scraping. Следва да се запазят тези граници.
 
@@ -119,7 +120,7 @@ Source Compose описва opt-in tasks и отделни Central AI/Market API
 | DB-01 | Production schema | Evidence reconciliation PARTIAL | Пълни constraints/indexes/defaults/sequences/ownership/ACLs и всички writers |
 | DB-02 | Backup/restore | Отделен защитен операторски запис | Повторни реалистични rehearsal-и и roles/ACL recovery преди миграция |
 | DB-03 | Production baseline/migration | BLOCKED | DB-01/02, отделен reviewed production runbook, два restored-copy rehearsal-а и explicit authorization; не премахваме disposable guards |
-| AI-01 / AI-02 | Един developer loop | Компоненти и отделни CI проверки; PARTIAL | Независим test/authorization източник, постоянен post-test резултат, bounded repair/restart/cancel и безопасен runner |
+| AI-01 / AI-02 | Един developer loop | Компоненти и отделни CI проверки; PARTIAL | Независим test/authorization източник, bounded repair lifecycle и безопасен runner; one-shot durable verification audit е добавен, но не е пълният repair loop |
 | ME-API-01 / DUP-07 | Route binding и blocked legacy CLI | DONE за source `b67b288…`: 33/33 CI | Без нов runtime модул; runtime deployment остава отделна проверка |
 | TEST-NUM-01 / TEST-ENV-01 | Числови граници и test prerequisites | DONE за source `b67b288…`: 33/33 CI, включително PostgreSQL | Локалните PostgreSQL skips не се отчитат като passed |
 | CI-COV-01 | Изпълнение на всички съществуващи test files | 12 липсващи файла добавени към 5 съществуващи workflow команди в `cfdce959…` | Няма нерефериран `tests/test_*.py` файл; **33/33 CI successful** |
@@ -129,11 +130,13 @@ Source Compose описва opt-in tasks и отделни Central AI/Market API
 | P0-IBKR-01 | `app.main.ingest` exception boundary | DONE в `a2aee7b…`: 33/33 CI | Пренесена липсващата защита от #15; generic 502 + correlation ID, без raw exception в response/log |
 | P0-LEGACY-01 | `TradeRequest.validate_paper_fill` | DONE в `a2aee7b…`: 33/33 CI | Пренесена политика от #16: finite inputs, максимум 1 000 000, цена/такса 2 decimals, количество 6; default-deny gate запазен |
 | FIN-QUALITY-01 | `Financials` → `validate_history_snapshot` → `check_snapshot` | Коригиран source `af585fd…`; **33/33 CI successful** | Explicit ones, permission-first import/read gate, legacy rejection without backfill, HTTP/CLI/PG regression evidence |
-| P0-REVIEW-01 | Existing `verified_review_pipeline` / `TaskStorage` / verifier cleanup | NEXT: reconcile durable audit and quarantine acceptance | Real reviewer provisioning, exact authenticated tuple, atomic persisted outcome/restart and no retry on cleanup uncertainty; без нов manager/queue |
+| P0-REVIEW-01 / P0-RESULT-01 | Existing authorization + verifier report contract | Source audit и contract correction в `4d5c341…`; **33/33 CI successful** | Exact pinned image/result/hash/status checks; HMAC host adapter остава отделна authority boundary; production identity unprovisioned |
+| P0-AUDIT-01 | Existing `TaskStorage` verification journal | Intent/binding/outcome/quarantine записани атомарно; **33/33 CI successful** | One-shot per analyzed task; interrupted/quarantined state блокира verification в същата DB; без schema/retry engine |
+| CLEANUP-PROOF-01 | Existing `isolated_functional_verifier` + journal resource intent | NEXT | Независимо доказателство за container absence след нормален/timeout/error изход и resources checkpoint преди dispatch; без automatic unquarantine |
 | P0-LEASE-01 | `TaskQueue.acquire` / direct runner compatibility | Коригиран source `cf13d4c…`; **33/33 CI successful** | Общ durable budget; 30 targeted / 342 local passed, 43 PG skipped. Без нов owner, schema или retry engine |
 | OPS-02 | Starlette/TestClient warning | DONE за `cfdce959…`; **33/33 CI successful** | `requirements-test.txt`: httpx2; тесен error warning policy в `pytest.ini`; runtime httpx и release lock са запазени |
 
-**Единствена следваща активна задача:** P0-REVIEW-01 — фокусиран преглед на съществуващите reviewer authorization → verifier → persistent audit/cleanup boundaries. Acceptance: точна owner/caller/state карта, fail-closed правила за authenticated input tuple, atomic persisted result/restart, cleanup uncertainty/quarantine и минимален delta в съществуващите owners; без втори manager/queue и без activation. FIN-QUALITY-01 source `af585fd9a33585782ac2854cc59552ea00e16f67`: DONE за точния source, **33/33 CI successful**. След source приемането P1 остава ограничен до разрешена изолирана работа; #90 VPS/runtime/schema/ACL/reviewer/restore evidence е OPEN и не се замества с CI.
+**Единствена следваща активна задача:** CLEANUP-PROOF-01 — съществуващият functional verifier да доказва отсъствието на container-а след normal/timeout/error изход и да записва resource handles преди dispatch чрез trusted journal boundary. Acceptance: daemon failure/rm failure/early process exit не се обявяват за потвърден cleanup; crash преди финален report оставя достатъчен resource intent; без auto-unquarantine, prune или нов manager. P0-REVIEW-01 / P0-AUDIT-01 source `4d5c3417872fdf27aa0d7a4b62bc62a46e8495c8`: 100 targeted / 408 aggregate local passed, 44 PG skipped, **33/33 CI successful**. P0/#90, production identity и hard runner isolation остават OPEN; one-shot audit не е завършен автономен repair loop.
 
 ## 8. Решения и история на checkpoint-ите
 
@@ -161,6 +164,8 @@ Source Compose описва opt-in tasks и отделни Central AI/Market API
 | 2026-11-04 | FIN-QUALITY-01 | Existing permission/quality owners connected to persistence and history read; source `af585fd9a33585782ac2854cc59552ea00e16f67`, PR #130, base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3` | 18 regressions failed / 14 passed before correction; 81 targeted passed / 1 PG skipped; 373 full local passed / 44 PG skipped / 0 warnings; **33/33 CI successful** |
 
 | 2026-11-04 | PLAN-DAY-01 | Hourly target plan appended to existing focus plan; baseline source `af585fd…`, documentation `e4ed961…`, PR #130 / base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3` | Planning only: P0-REVIEW-01 remains active; adaptive catch-up consumes optional acceptance/reserve, not safety gates. Actual work must carry exact SHA/tests/evidence and done/blocked status |
+
+| 2026-11-04 | P0-REVIEW-01 / P0-RESULT-01 / P0-AUDIT-01 | Existing pipeline rejects inconsistent results and floating images; existing TaskStorage persists one-shot intent, exact authorization binding, outcome and quarantine. Source `4d5c3417872fdf27aa0d7a4b62bc62a46e8495c8`, PR #130/base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3` | Contract pre-fix: 20 failed / 28 passed; journal pre-fix: 7 failed / 50 passed. Final: 100 targeted / 408 full local passed, 44 PG skipped, 0 warnings; **33/33 CI successful** |
 
 Това е обобщение на проверимите checkpoint-и. То не твърди, че всяка стара промяна е била навреме описана отделно; точният пълен diff/история остава в Git и PR-ите.
 
@@ -258,3 +263,34 @@ GitHub/CI за `af585fd…`: **33/33 CI successful**; [Stage 1 HTTP/history/real
 При всеки реален работен checkpoint се записват: local/UTC timestamp, active task, exact source/PR head, completed checks/evidence, blocker, accepted outcome, next action и revised remaining estimate. Ако средата/connector/тестовете липсват или предходен writer още работи, това се записва като блокер; няма измислено изпълнение, паралелен writer върху същия branch или force update. Дневният план не създава runtime scheduler/manager и не активира production процеси.
 
 PLAN-DAY-01 validation е документационна: relative links, непроменен dated JSON и diff whitespace; нов Python код или тестове не са добавяни. Git history съдържа точния последващ documentation SHA. P0-REVIEW-01 остава единствената активна техническа задача; самият график не затваря P0/P1/P2 или целия проект.
+
+## 15. P0-REVIEW-01 / P0-AUDIT-01 checkpoint — 2026-11-04 10:18 Europe/Sofia
+
+Source `4d5c3417872fdf27aa0d7a4b62bc62a46e8495c8`; runtime files са само `central_ai/verified_review_pipeline.py` и `central_ai/task_storage.py`, regressions са в existing `test_ai26_verified_review_pipeline.py` / `test_ai27_full_process.py`. Няма нов manager, queue, scheduler, module, database table/schema, verification retry engine или production activation. Existing AST tool потвърди 283 definitions / 74 local imports / 0 parse failures в текущия source; dated full PR/AST JSON остава snapshot `a2aee7b…`, а този delta е описан тук и в Git.
+
+### Ownership и trust boundary
+
+| Отговорност | Owner / проверено | Ограничение |
+|---|---|---|
+| Receipt authentication | Existing `make_hmac_review_authorizer`; exact tuple, nonce, TTL, configured shared key, false approval/deployment flags | Trusted host configuration/dependency; shared HMAC possession не е независима human/public-key signature. Real provider/keys не са provisioned |
+| Candidate/test integrity | Existing prepared candidate и frozen functional verifier read/hash checks | Доверие в host/runner; не hard sandbox срещу hostile host/kernel/candidate behavior |
+| Report consistency | `prepare_and_verify` now rejects floating image before preparation; passed/failed/timeout/cleanup status, strict bool/int, test hash echo и no authority escalation | Consistency checks не са криптографско доказателство, че всички semantic test assertions са изпълнени. Independent harness acceptance остава P1 условие |
+| Durable intent/binding/outcome | Existing TaskStorage task JSON, guarded BEGIN IMMEDIATE transactions | One-shot verification, не нов task workflow controller. Task status остава analyzed; queue/workflow не се повишават до approved/deploy |
+| Quarantine admission | Incomplete preparing/running или quarantined audit блокира new verification в същата database | Не е host-global quarantine за други DBs/direct low-level calls; trusted deployments трябва да използват този boundary |
+| Runtime cleanup | Existing low-level verifier returns resource handles on uncertainty; wrapper вече ги пази в bounded report и journal | Normal completion още приема cleanup по producer status; independent container-absence proof и pre-dispatch resource persistence са CLEANUP-PROOF-01 |
+
+### Реално поведение
+
+`begin_verification` атомарно резервира one-shot nonce за analyzed task със завършена queue и false flags; паралелни заявки за същата или различни задачи в една DB имат един winner. Предишен verification record не се изтрива/замества и нов nonce не отключва replay. Unknown schema/phase или невалидни authority flags в audit record се отказват; това не е защита срещу host/DB owner с произволен write достъп. Preparing/running след прекъснат процес остава blocking до отделен operator reconciliation; няма автоматично изтичане или unsafe reset.
+
+След проверен receipt exact task/candidate/test/image/nonce/verify_only binding и reviewer/authorization IDs се записват като running ПРЕДИ verifier dispatch. Само валиден source result може да се запише като completed; cleanup_unconfirmed, exception/cancel след възможен dispatch, invalid result или uncertainty при финалния audit write водят до quarantine/block, никога success. Ако и записът за грешка не е възможен, функцията връща грешка, а вече записаният intent остава blocking. Външни raw stdout/stderr, exception messages, MACs и ключове не се копират в journal. Локалните quarantine resource handles не се публикуват в GitHub evidence; няма auto-delete по тези handles.
+
+Преди dispatch отказан receipt/preparation записва generic blocked stage/type и не вика verifier. Съществуващият еднократен artifact path и single verification intent изискват отделен нов reviewed task/reconciliation за следващ candidate; това не добавя автоматични repair опити и не отменя three-attempt analysis lease budget. Source bytes и approved/deployment flags остават непроменени в интеграционните fixtures.
+
+### Проверки и граници
+
+Преди result correction **20 нови случая failed / 28 passed**. Преди journal implementation **7 failed / 50 passed**. След двете промени: **100 targeted passed**, **408 full local passed / 44 PostgreSQL-dependent skipped / 0 warnings**. Targeted suite включва authorization/HMAC, real preparation pipeline integration с injected CI verifier, frozen low-level verifier fixtures, existing retry tests, abrupt child-process `os._exit(7)` с reopen на running intent, конкуренция, replay, cancellation, audit write failures и secret-message exclusion. Реален Docker не е изпълняван в локалния unit suite; отделните existing Docker workflows се оценяват отделно и не се представят като full authenticated repair-loop proof.
+
+GitHub/CI за точния source: **33/33 CI successful**; [DUP-01 / authorization, durable journal and integration checks](https://github.com/nsavchev/central-ai-market-engine/actions/runs/41798327770). Следващият commit обновява само документацията. Следва independent cleanup/resource-intent proof, след него изолиран bounded lifecycle acceptance с реален verifier. Production reviewer provisioning, dedicated runner, current VPS/SQLite/schema/ACL/restore evidence, complete changed-file review и explicit rollout approval остават отделни #90 gates.
+
+Day-plan disposition: source review и durable-audit части са придвижени преди целевите 11–12 часа; това не отбелязва целия developer loop или проекта за готов. Checkpoint е reviewable; следващият writer трябва да прочете current head и този запис преди mutation. Отчетите следват реалните доказателства, а не часовите етикети.
