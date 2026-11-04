@@ -252,3 +252,74 @@ def test_process_recovery_preserves_admission_boundary(tmp_path, backend, mode):
                 shutil.rmtree(root)
             assert TaskStorage(db).get(tasks[0])['verification']['phase'] == audit['phase']
             # Manual resource cleanup never clears a durable quarantine/running intent.
+
+
+def revision_fixture(monkeypatch, tmp_path):
+    from test_ai26_verified_review_pipeline import verification_fixture, valid_result
+    params = verification_fixture(monkeypatch, valid_result(passed=False,status='failed',returncode=1), tmp_path)
+    report = prepare_and_verify(**params)
+    return params, report
+
+
+def test_revision_family_budget_survives_reopen_and_new_task_ids(monkeypatch, tmp_path):
+    params, report = revision_fixture(monkeypatch, tmp_path)
+    root = params['task_id']
+    for ordinal in (2,3):
+        child = PersistentTaskBridge(params['database']).submit_revision(params['task_id'],report['verification_nonce'])
+        assert child['revision']['ordinal'] == ordinal and child['revision']['root_task_id'] == root
+        assert run_batch(enabled='YES',database=params['database'],agent='revision-test',max_tasks=1,
+                         idle_checks=1,sleep=lambda _:None)['processed'] == 1
+        params['task_id'] = child['task_id']
+        report = prepare_and_verify(**params)
+    with pytest.raises(ValueError,match='REVISION_BUDGET_EXHAUSTED'):
+        PersistentTaskBridge(params['database']).submit_revision(params['task_id'],report['verification_nonce'])
+    family = PersistentTaskBridge(params['database']).status(root)['revision_family']
+    assert len(family['members']) == 3
+
+
+def test_revision_claim_race_has_one_winner(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    params, report = revision_fixture(monkeypatch, tmp_path)
+    def claim(_):
+        try:
+            return PersistentTaskBridge(params['database']).submit_revision(params['task_id'],report['verification_nonce'])
+        except ValueError as error:
+            assert str(error) == 'REVISION_FAMILY_CONFLICT'
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sum(x is not None for x in pool.map(claim,range(2))) == 1
+
+
+def test_revision_reservation_rolls_back_with_queue_failure(monkeypatch, tmp_path):
+    from central_ai.task_queue import TaskQueue
+    params, report = revision_fixture(monkeypatch, tmp_path)
+    def fail(*args,**kwargs): raise OSError('synthetic write failure')
+    with monkeypatch.context() as context:
+        context.setattr(TaskQueue,'enqueue',fail)
+        with pytest.raises(OSError):
+            PersistentTaskBridge(params['database']).submit_revision(params['task_id'],report['verification_nonce'])
+    bridge=PersistentTaskBridge(params['database'])
+    assert len(bridge.list_tasks()) == 1 and 'revision_family' not in bridge.status(params['task_id'])
+    assert bridge.submit_revision(params['task_id'],report['verification_nonce'])['revision']['ordinal'] == 2
+
+
+@pytest.mark.parametrize('change',['source','tests'])
+def test_revision_cannot_change_source_or_trusted_tests(monkeypatch,tmp_path,change):
+    params, report=revision_fixture(monkeypatch,tmp_path)
+    child=PersistentTaskBridge(params['database']).submit_revision(params['task_id'],report['verification_nonce'])
+    if change=='source': (tmp_path/'source'/'sample.py').write_text('def changed(): return 99\n')
+    run_batch(enabled='YES',database=params['database'],agent='revision-test',max_tasks=1,idle_checks=1,sleep=lambda _:None)
+    params['task_id']=child['task_id']
+    if change=='tests': params['trusted_test_sha256']='d'*64
+    with pytest.raises(ValueError,match='REVISION_SOURCE_CHANGED|REVISION_TESTS_CHANGED'):
+        prepare_and_verify(**params)
+
+
+@pytest.mark.parametrize('status',['passed','timeout','completion_unconfirmed'])
+def test_only_completed_semantic_failure_can_reserve_revision(monkeypatch,tmp_path,status):
+    from test_ai26_verified_review_pipeline import verification_fixture, valid_result
+    result=valid_result(status=status,passed=status=='passed',returncode=0)
+    params=verification_fixture(monkeypatch,result,tmp_path)
+    report=prepare_and_verify(**params)
+    with pytest.raises(ValueError,match='REVISION_PARENT_NOT_ELIGIBLE'):
+        PersistentTaskBridge(params['database']).submit_revision(params['task_id'],report['verification_nonce'])

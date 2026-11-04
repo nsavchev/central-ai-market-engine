@@ -131,6 +131,11 @@ class TaskStorage:
         with self._connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
             task = self._review_task(conn, task_id)
+            revision = task.get('revision')
+            if revision is not None and (not isinstance(revision, dict)
+                    or revision.get('schema') != 'revision-v1'
+                    or task.get('analysis', {}).get('source_sha256') != revision.get('source_sha256')):
+                raise ValueError('REVISION_SOURCE_CHANGED')
             if 'verification' in task:
                 raise ValueError('VERIFICATION_ALREADY_STARTED')
             for (encoded,) in conn.execute('SELECT payload FROM tasks'):
@@ -168,6 +173,9 @@ class TaskStorage:
             conn.execute('BEGIN IMMEDIATE')
             task = self._review_task(conn, task_id)
             audit = task.get('verification', {})
+            revision = task.get('revision')
+            if revision is not None and binding['test_sha256'] != revision.get('test_sha256'):
+                raise ValueError('REVISION_TESTS_CHANGED')
             if audit.get('phase') != 'preparing' or audit.get('nonce') != nonce:
                 raise ValueError('VERIFICATION_AUDIT_CONFLICT')
             audit.update(phase='running', binding=dict(binding), reviewer_id=reviewer_id,
