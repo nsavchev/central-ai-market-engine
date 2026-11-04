@@ -65,18 +65,52 @@ class TaskQueue:
         con.execute("\n            INSERT INTO task_queue_audit\n            (task_id,event,timestamp)\n            VALUES (?,'enqueued',?)\n        ", (task_id, utcnow().isoformat()))
 
     def acquire(self, task_id, agent, seconds=30):
+        """Acquire one of the same three durable attempts used by acquire_next.
+
+        A busy or exhausted task returns None without spending an attempt.
+        Heartbeats and completion remain valid during the final active lease.
+        """
         if not isinstance(agent, str) or not agent.strip():
             raise ValueError('INVALID_AGENT')
         if type(seconds) is not int or not 5 <= seconds <= 3600:
             raise ValueError('INVALID_LEASE')
         now = utcnow()
         token = secrets.token_urlsafe(32)
+        timestamp = now.isoformat()
         expiry = (now + timedelta(seconds=seconds)).isoformat()
         with self._connect() as con:
-            cursor = con.execute("\n                UPDATE task_queue\n                SET status='leased',\n                    owner=?,\n                    lease_token=?,\n                    lease_until=?,\n                    version=version+1\n                WHERE task_id=?\n                  AND approved=0\n                  AND deployment_allowed=0\n                  AND (\n                    (status='pending' AND owner IS NULL)\n                    OR\n                    (status='leased' AND lease_until <= ?)\n                  )\n            ", (agent, token, expiry, task_id, now.isoformat()))
+            # Guard, ownership change and budget reservation are one atomic
+            # UPDATE, including races with acquire_next's writer transaction.
+            cursor = con.execute("""
+                UPDATE task_queue
+                SET status='leased',
+                    owner=?,
+                    lease_token=?,
+                    lease_until=?,
+                    version=version+1,
+                    attempt_count=attempt_count+1,
+                    retry_exhausted=CASE
+                        WHEN attempt_count+1 >= 3 THEN 1
+                        ELSE 0
+                    END
+                WHERE task_id=?
+                  AND approved=0
+                  AND deployment_allowed=0
+                  AND retry_exhausted=0
+                  AND attempt_count < 3
+                  AND (
+                    (status='pending' AND owner IS NULL)
+                    OR
+                    (status='leased' AND lease_until <= ?)
+                  )
+            """, (agent, token, expiry, task_id, timestamp))
             if cursor.rowcount != 1:
                 return None
-            con.execute("\n                INSERT INTO task_queue_audit\n                (task_id,event,agent,timestamp)\n                VALUES (?,'acquired',?,?)\n            ", (task_id, agent, now.isoformat()))
+            con.execute("""
+                INSERT INTO task_queue_audit
+                (task_id,event,agent,timestamp)
+                VALUES (?,'acquired',?,?)
+            """, (task_id, agent, timestamp))
         return token
 
     def heartbeat(self, task_id, agent, token, seconds=30):
