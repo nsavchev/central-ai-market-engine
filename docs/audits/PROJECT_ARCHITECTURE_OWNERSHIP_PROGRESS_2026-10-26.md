@@ -1,6 +1,6 @@
 # Central AI / Market Engine — архитектура, решения и напредък
 
-**Основен жив регистър. Обновен: 2026-11-04 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Текущ checkpoint: P0-OPS-COLLECTOR-01 (§25); предходните checkpoints са запазени в историята. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
+**Основен жив регистър. Обновен: 2026-11-05 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Текущ checkpoint: DB-ACL-REHEARSAL-01 (§26); предходните checkpoints са запазени в историята. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
 
 ## 1. Кой код и коя среда описваме
 
@@ -521,3 +521,18 @@ Operator-provided screenshots establish: earlier pinned script checksum OK; lega
 Measured checks: two new cases failed before correction (**2 failed / 4 passed**), then **6/6 passed** in the existing synthetic embedded-collector suite. bash -n and git diff --check passed. No full application suite repeated for this narrow collector change. No complete shell/VPS execution occurred locally. Corrected script SHA256: `ee50ca0e157cef600072446b6305d3c3af235d50bddd8e5977bbd319e468416f`. Exact-source CI is evaluated separately after commit; prior 33/33 does not apply automatically to these changed bytes.
 
 **Next: P0-OPS-RECON-01 / OPS-E01**, rerun the checksum-verified corrected collector as a standalone temporary file on the operator VPS, then review its partial/full metadata against the frozen bounded candidate. Current VPS source provenance remains UNVERIFIED. Do not create a Git repository or change production merely to satisfy collection; source/image attribution needs independently reviewed evidence. OPS-E02–E07, P0/P1 closure, full autonomous model use and P3/P4 remain open. No deployment, restart, worker/timer activation, DB write/restore or paid provider request is performed by this task.
+
+
+## 26. DB-ACL-REHEARSAL-01 — 2026-11-05 (Europe/Sofia)
+
+Generic source/CI rehearsal under P0-OPS-RECON-01. Parent/source inspected `bd8b27ff17d9da75691bbace5f073405c347f19a`, PR #130/base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`. This public entry contains no new operational findings, image/host/schema inventory output, credentials or private evidence. Operational reconciliation stays separate.
+
+Existing owner: `tests/test_stage2_baseline_postgres.py` using its existing disposable guard/legacy fixture, and the existing baseline CI workflow. No runtime module, collector, queue, service, workflow, migration or production grant change. The [existing inventory runbook](stage2-production-inventory-runbook.md) now documents the source-derived restricted-login privilege proposal, limits, separate exact-image acceptance and API-only credential rollback prerequisites.
+
+The test uses an independently authenticated random LOGIN, not SET ROLE on a superuser session. It grants bounded SELECT/INSERT plus only required UPDATE, schema/sequence USAGE and DB CONNECT, without ownership/memberships/grant option/admin flags. Synthetic DML exercises all five legacy tables, serial defaults, FKs, updates, commit and a fresh backend readback. Negative cases require SQLSTATE 42501 for DELETE, TRUNCATE, unneeded UPDATE, persistent schema DDL, sequence ALTER/setval, role creation/self-promotion and SET ROLE to the provisioner. Random test role/grants/connections and fixture tables are cleaned up. Execution remains restricted to explicit disposable localhost DB `test`; it is not a runnable production setup.
+
+Local checks: **3 passed / 6 PostgreSQL-dependent skipped** in the existing baseline contract/column/backend files; syntax/collection and `git diff --check` passed. No local PostgreSQL server or Docker executable is available, so new authenticated-role behavior is **unverified until exact-source CI**, not counted as locally passed. The existing baseline CI job owns the real PostgreSQL 16 execution; its result is recorded separately after commit. No unchanged full suite or inventory is repeated.
+
+Limits: curated legacy-schema SQL shapes, not deployed-image HTTP behavior, migrated schema rights, all PUBLIC/function/temporary-schema privileges, RLS/tenant isolation, HBA/network policy, complete DB ACL audit or production rollout. No real-provider request, deployment/source overwrite, DB change or worker activation. Original source and safety/paper-mode boundaries remain.
+
+**Next:** confirm exact-source restricted-login CI, then compare privately collected deployed API file fingerprints and DB callers/startup behavior with the candidate before an exact-image isolated rehearsal. Production credentials/role changes require the separate concrete acceptance/cutover decision described in the runbook. P0/P1/#90/P3/P4 remain open; no completion percentage or automatic promotion.
