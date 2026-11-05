@@ -1,6 +1,6 @@
 # Central AI / Market Engine — архитектура, решения и напредък
 
-**Основен жив регистър. Обновен: 2026-11-05 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Текущ checkpoint: DB-ACL-REHEARSAL-01 (§26); предходните checkpoints са запазени в историята. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
+**Основен жив регистър. Обновен: 2026-11-05 (Europe/Sofia).** Датата в името е датата на създаване, а не последната актуализация. Текущ checkpoint: DB-IMAGE-ACCEPTANCE-01 (§27); предходните checkpoints са запазени в историята. Този документ е отправната точка за текущата работа; [планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда. Старите датирани одити са доказателства за своите снимки, а не текущ статус.
 
 ## 1. Кой код и коя среда описваме
 
@@ -536,3 +536,18 @@ Local checks: **3 passed / 6 PostgreSQL-dependent skipped** in the existing base
 Limits: curated legacy-schema SQL shapes, not deployed-image HTTP behavior, migrated schema rights, all PUBLIC/function/temporary-schema privileges, RLS/tenant isolation, HBA/network policy, complete DB ACL audit or production rollout. No real-provider request, deployment/source overwrite, DB change or worker activation. Original source and safety/paper-mode boundaries remain.
 
 **Next:** confirm exact-source restricted-login CI, then compare privately collected deployed API file fingerprints and DB callers/startup behavior with the candidate before an exact-image isolated rehearsal. Production credentials/role changes require the separate concrete acceptance/cutover decision described in the runbook. P0/P1/#90/P3/P4 remain open; no completion percentage or automatic promotion.
+
+
+## 27. DB-IMAGE-ACCEPTANCE-01 — 2026-11-05 (Europe/Sofia)
+
+Parent inspected `d5c5701491645c40c8d07141356727c681811850`, PR #130/base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`. Previous restricted-login source had 33/33 CI success, including baseline run 41977737635/job 127080435982 with 9 passed. This new task adds a generic operator acceptance utility and synthetic CI evidence only; no actual operator image IDs, manifests, environment, inventory, credentials or private findings are added to public documentation.
+
+Ownership/requirement: existing baseline test/CI and inventory runbook retain role/schema acceptance. The missing capability is executing a separately supplied immutable legacy API image against a new isolated cluster, including its real startup and HTTP consumers. `scripts/market_role_image_rehearsal.py` is a standalone test utility for that gap, not another runtime manager/queue/controller/verifier. Runtime API modules, Compose, source permissions, migrations and deployed resources are unchanged.
+
+The utility accepts image IDs (no tags/pull/build), a reviewed source manifest and checksum-verified fixture; refuses implicit API volumes and unreviewed baked environment keys; uses only a new internal network, labelled random test containers, bounded RAM DB storage and fresh credentials. The API clone has no admin credentials, production mounts or host ports, runs nonroot/read-only with dropped capabilities and resource limits. Manifest/.env checks precede application import. Real lifespan must perform no DDL, then health/auth, synthetic paper fill, manual history insert/update, legacy ORM writes/readback and privilege-denial cases run. No external provider request is made. Cleanup verifies exact ownership/container absence/empty network; uncertainty blocks success. Hard kills/daemon failure require operator reconciliation, not broad prune or automatic production action.
+
+Changed files: utility, `tests/test_market_role_image_rehearsal.py`, existing baseline workflow, existing inventory runbook and this register. Workflow reuses its existing PostgreSQL fixture/job and builds a historical public-source API fixture with the pinned Python base solely for real Docker orchestration acceptance. This does not reproduce an operator's dependency/image build or grant production acceptance. No extra workflow/service is added to the product.
+
+Local checks: **13 passed / 6 PostgreSQL-dependent skipped** in guard/cleanup and existing baseline tests; 10 standalone guard/cleanup cases pass. Workflow YAML, embedded build/API-check Python, utility syntax and `git diff --check` passed. Local Docker/PostgreSQL executables are unavailable, so actual container behavior remains **pending exact-source CI and a separate operator image run**. Required real acceptance/cleanup evidence is not replaced by the fault-injected tests.
+
+**Next:** accept exact-source baseline Docker job, then execute the checksum-verified standalone utility with separately reviewed local images, source manifest and fixture in an explicitly isolated operator session. Only passed acceptance with confirmed cleanup advances this scoped gate. Restored-copy/release/source/ACL/PUBLIC/RLS/network/full-diff evidence, #90 and separate API credential cutover authorization remain open. No role/grant/source replacement, production deployment, worker activation, migration, paid call or live trade is authorized by this generic fixture proof.

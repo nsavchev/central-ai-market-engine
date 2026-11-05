@@ -87,3 +87,55 @@ Compose and migrations are unchanged; application bootstrap is not invoked.
 
 No production role/grant SQL or runnable deployment command is provided by this
 rehearsal. Operational findings stay outside public source documentation.
+
+
+## Disposable exact-image driver (DB-IMAGE-ACCEPTANCE-01)
+
+`scripts/market_role_image_rehearsal.py` is an operator-run acceptance utility,
+not an application manager or a deployment command. It takes explicit local
+immutable API/PostgreSQL image IDs, a reviewed Python-source manifest checksum,
+and a checksum-verified existing schema fixture. It does not inspect deployed
+containers, copy their environment or use their database/network/volumes.
+No image pull or build is performed by the utility.
+
+It creates one internal network and two randomly named, labelled test containers.
+The PostgreSQL 16 cluster uses a bounded RAM filesystem and fresh disposable
+admin/runtime credentials. The API receives only runtime credentials and a
+synthetic API token, runs nonroot with a read-only root, dropped capabilities,
+no host ports/mounts, and CPU/memory/PID bounds. Implicit API volumes and unreviewed
+baked environment keys are refused. Environment files are private temporary
+files. Images are trusted operator-selected application images, not arbitrary
+model-generated code; this is not a hardened hostile-code sandbox.
+
+Before application import, the API clone must match the supplied source manifest
+and contain no .env files at the checked application locations. A mismatch stops
+acceptance; never copy a changed production file into the test image to force a
+match. Tests then exercise the independent login, actual lifespan without DDL,
+health/auth, synthetic paper fill, permission-aware manual history insert/update,
+legacy ORM bar/instrument writes and privilege denials. They issue no broker,
+SEC or other external-provider request. The scenario is deliberately a legacy
+Float-schema compatibility test; it does not promote a Numeric migration or
+claim complete API/strategy/security acceptance.
+
+Cleanup operates only on reserved names carrying this run's exact label, proves
+container absence and removes an empty owned network. Wrong ownership, a retained
+container, connected network or Docker uncertainty blocks success. No broad prune,
+production restart, role demotion, schema update or credential cutover exists.
+Normal failure/timeouts trigger cleanup. SIGKILL/host/daemon failure can prevent
+cleanup; review labelled test resources before rerunning. Credentials are only
+for the new disposable cluster. A restored-copy rehearsal and separate rollout
+review are still required before production changes.
+
+The existing baseline workflow owns unit guard/cleanup fault injection and a real
+Docker integration. CI builds a historical public-source fixture using the pinned
+Python base from release/Dockerfile.release, then passes its local image ID and
+the existing PostgreSQL 16 image ID. This CI fixture has resolved test dependencies,
+not a production lock/build attestation or evidence about any operator image.
+An operator run must use the actual separately reviewed image and manifest.
+
+Standalone operator preparation: download the utility and existing schema fixture
+from one immutable reviewed commit into a private temporary directory and verify
+both file SHA256 values before running. Pass image IDs, not tags; do not supply a
+production connection URL, credentials or volume. Success requires both
+isolated_api_acceptance=passed and cleanup_confirmed=true. Keep actual operational
+identifiers/results in protected evidence, not public source documentation.
