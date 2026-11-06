@@ -1385,3 +1385,96 @@ def test_admitted_connectivity_composed_child_and_host_replay(monkeypatch,tmp_pa
     with pytest.raises(FileExistsError):check.main()
     assert len(calls)==1
     assert 'synthetic-child-secret' not in capsys.readouterr().out
+
+
+def e2e_generator_fixture(monkeypatch, answer, calls):
+    import httpx,json
+    from central_ai.app import make_openai_generator
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-e2e-secret')
+    def factory(database):
+        def handler(request):
+            payload=json.loads(request.content)
+            calls.append(payload)
+            assert payload['model']=='gpt-4.1-mini' and payload['max_tokens']==128
+            assert '3, 4' not in payload['messages'][0]['content']
+            return httpx.Response(200,stream=httpx.ByteStream(json.dumps(
+                dict(choices=[dict(message=dict(content=answer))])).encode()))
+        return make_openai_generator(enabled='YES',database=database,transport=httpx.MockTransport(handler))
+    return factory
+
+
+def test_operator_e2e_real_task_and_analyzer_mock_provider_and_verifier(monkeypatch,tmp_path):
+    from scripts.openai_admitted_acceptance import run_e2e_case
+    calls=[]
+    factory=e2e_generator_fixture(monkeypatch,'```python\ndef f(a, b):\n    return a * b\n```',calls)
+    def verifier(**kwargs):
+        record_fixture_resources(kwargs)
+        return valid_result(test_sha256=kwargs['expected_test_sha256'])
+    result=run_e2e_case(tmp_path,'python@sha256:'+'a'*64,generator_factory=factory,verifier=verifier)
+    assert result['acceptance']=='passed',result
+    assert result['provider_mode']==result['verifier_mode']=='mock'
+    assert result['analysis_completed'] and result['generation_completed'] and result['verification_journal_completed']
+    assert result['source_unchanged'] and result['trusted_tests_unchanged'] and result['snapshot_removed']
+    assert result['approved'] is result['deployment_allowed'] is result['worker_activated'] is False
+    assert len(calls)==1
+    replay=run_e2e_case(tmp_path,'python@sha256:'+'a'*64,generator_factory=factory,verifier=verifier)
+    assert replay['acceptance']=='failed_or_uncertain' and len(calls)==1
+
+
+@pytest.mark.parametrize('answer', ['bad format','```python\nimport os\ndef f(a,b): return 2\n```'])
+def test_operator_e2e_invalid_generated_code_never_executes_or_retries(monkeypatch,tmp_path,answer):
+    from scripts.openai_admitted_acceptance import run_e2e_case
+    calls=[]
+    factory=e2e_generator_fixture(monkeypatch,answer,calls)
+    def verifier(**kwargs):
+        from central_ai.isolated_functional_verifier import _validate_bounded_candidate
+        from pathlib import Path
+        _validate_bounded_candidate(Path(kwargs['candidate']).read_bytes())
+        pytest.fail('forbidden candidate reached execution')
+    result=run_e2e_case(tmp_path,'python@sha256:'+'a'*64,generator_factory=factory,verifier=verifier)
+    assert result['acceptance']=='failed_or_uncertain'
+    assert len(calls)==1
+
+
+def test_operator_e2e_independent_test_failure_is_not_success(monkeypatch,tmp_path):
+    from scripts.openai_admitted_acceptance import run_e2e_case
+    calls=[]
+    factory=e2e_generator_fixture(monkeypatch,'```python\ndef f(a,b): return a + b\n```',calls)
+    def verifier(**kwargs):
+        record_fixture_resources(kwargs)
+        return valid_result(passed=False,status='failed',returncode=1,completion_confirmed=False,
+                            test_sha256=kwargs['expected_test_sha256'])
+    result=run_e2e_case(tmp_path,'python@sha256:'+'a'*64,generator_factory=factory,verifier=verifier)
+    assert result['acceptance']=='candidate_failed' and result['test_status']=='failed'
+    assert result['verification_journal_completed'] and len(calls)==1
+
+
+def test_operator_e2e_pinned_bundle_contains_local_import_closure():
+    import ast
+    from pathlib import Path
+    from scripts.openai_admitted_acceptance import E2E_FILES
+    root=Path(__file__).resolve().parents[1]
+    for name,(path,digest) in E2E_FILES.items():
+        if not path.endswith('.py'):continue
+        for node in ast.walk(ast.parse((root/path).read_text())):
+            if isinstance(node,ast.ImportFrom) and node.module and node.module.split('.')[0] in ('central_ai','developer_agent'):
+                assert node.module in E2E_FILES,(name,node.module)
+
+
+def test_operator_e2e_bundle_hashes_match_reviewed_source():
+    import hashlib
+    from pathlib import Path
+    from scripts.openai_admitted_acceptance import E2E_FILES
+    root=Path(__file__).resolve().parents[1]
+    for path,digest in E2E_FILES.values():
+        assert hashlib.sha256((root/path).read_bytes()).hexdigest()==digest,path
+
+
+def test_operator_e2e_unavailable_key_never_dispatches_or_leaks(monkeypatch,tmp_path):
+    import subprocess,json
+    from types import SimpleNamespace
+    from scripts.openai_admitted_acceptance import run_e2e_case
+    monkeypatch.setattr(subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=1,stdout='private-key-data',stderr='private-error'))
+    result=run_e2e_case(tmp_path,'python@sha256:'+'a'*64,key_container='ci-only')
+    assert result['acceptance']=='failed_or_uncertain'
+    assert 'private' not in json.dumps(result)

@@ -201,4 +201,22 @@ jobs:
               assert len(TaskStorage(database).get(root_id)['revision_family']['members'])==2
               print('MOCK_OPENAI_ADAPTER_REAL_DOCKER_FAILED_ROOT_LINKED_CORRECTION_PASSED')
               print('SYNTHETIC_AUTH_REAL_DOCKER_DURABLE_COMPLETION_AND_REPLAY_PASSED')
+              from scripts.openai_admitted_acceptance import run_e2e_case
+              e2e_case=root/'operator-e2e'; e2e_case.mkdir(mode=0o700)
+              def e2e_factory(database):
+                  def response(request):
+                      payload=json.loads(request.content)
+                      assert payload['model']=='gpt-4.1-mini' and payload['max_tokens']==128
+                      answer='```python\ndef f(a, b):\n    return a * b\n```'
+                      return httpx.Response(200,stream=httpx.ByteStream(json.dumps(
+                          dict(choices=[dict(message=dict(content=answer))])).encode()))
+                  return make_openai_generator(enabled='YES',database=database,transport=httpx.MockTransport(response))
+              accepted=run_e2e_case(e2e_case,image,generator_factory=e2e_factory)
+              assert accepted['acceptance']=='passed',accepted
+              assert accepted['provider_mode']=='mock' and accepted['verifier_mode']=='docker'
+              assert accepted['source_unchanged'] and accepted['trusted_tests_unchanged'] and accepted['snapshot_removed']
+              assert accepted['generation_completed'] and accepted['verification_journal_completed']
+              assert not accepted['worker_activated'] and not accepted['approved'] and not accepted['deployment_allowed']
+              assert containers()==before
+              print('MOCK_OPENAI_OPERATOR_E2E_REAL_DOCKER_PASSED')
           PY
