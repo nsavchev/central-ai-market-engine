@@ -139,3 +139,36 @@ both file SHA256 values before running. Pass image IDs, not tags; do not supply 
 production connection URL, credentials or volume. Success requires both
 isolated_api_acceptance=passed and cleanup_confirmed=true. Keep actual operational
 identifiers/results in protected evidence, not public source documentation.
+
+
+## Prepare-only credential review files (DB-ENV-PREPARE-01)
+
+After the exact-image restricted-login rehearsal, use
+`scripts/market_role_cutover_prepare.py --api-container <reviewed-container>
+--base-compose <absolute-single-base-file> --output-parent <private-directory>`.
+The output parent must belong to the current operator and have no group/other
+permissions. The selected service must be the Compose api service with that
+single base file and working directory. This scoped utility expects the reviewed
+loopback-only HTTP binding; it refuses unexpected configuration.
+
+The utility reads Docker metadata and runs Compose config only. It writes a new
+0700 directory with four 0600 files: runtime.compose.yml, rollback.compose.yml,
+role.sql and review.json. It preserves the existing API image by ID and all
+reviewed app settings while removing the shared env_file and admin password from
+the proposed runtime API environment. It validates other services remain unchanged
+and that rollback restores the prior API environment. Dollar escaping is tested
+with real Compose; no admin credential is printed.
+
+The SQL is a review artifact, never automatically executed. It creates only a
+fresh independent login with the tested five-table/sequence grants and rejects
+unexpected effective schema/table privileges transactionally. It does not change
+owners, demote an existing role, revoke global PUBLIC grants or add future-object
+grants. This is not a full function/PUBLIC privilege audit.
+
+Keep all four files private, including rollback and role.sql. Before any approved
+application, recheck source-file hashes, image/container identities and schema/ACL
+assumptions; review the exact SQL and prepare health/auth/new-role/negative checks.
+Only an API-only recreation is in the proposed scope. Protected rollback must use
+the same pinned image; it is not a DB restore. No executable apply/rollback helper
+is included and bundle creation grants no production authorization.
+

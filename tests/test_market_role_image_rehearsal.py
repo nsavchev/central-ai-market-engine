@@ -1,7 +1,10 @@
 """Guard/cleanup fault injection; real image acceptance runs in baseline CI."""
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 import pytest
 
@@ -111,3 +114,81 @@ def test_image_with_unreviewed_environment_refused_without_copying_values():
         run.execute()
     assert "private-fixture" not in str(error.value)
     assert run.attempted is False
+
+
+def test_compose_api_only_environment_replacement_and_rollback(tmp_path):
+    """Exercise real Compose merging; config never starts containers."""
+    binary = os.environ.get("COMPOSE_TEST_BINARY")
+    if binary:
+        command = [binary]
+    elif shutil.which("docker"):
+        command = ["docker", "compose"]
+    else:
+        pytest.skip("Compose executable required for merge acceptance")
+    (tmp_path / ".env").write_text(
+        "POSTGRES_PASSWORD=synthetic-admin-only\nAPI_TOKEN=synthetic-old-token\n"
+    )
+    base = tmp_path / "compose.yml"
+    base.write_text(
+        "services:\n"
+        "  db:\n    image: postgres:16-alpine\n"
+        "    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n"
+        "  api:\n    image: synthetic-api:local\n    env_file: .env\n"
+        "    environment:\n"
+        "      DATABASE_URL: postgresql://owner:${POSTGRES_PASSWORD}@db/test\n"
+        "    ports: ['127.0.0.1:8000:8000']\n"
+        "    restart: unless-stopped\n"
+    )
+    # Prevent the runner's own app credentials influencing this synthetic model.
+    process_env = {
+        k: v for k, v in os.environ.items()
+        if not k.startswith("COMPOSE_")
+        and k not in {"POSTGRES_PASSWORD", "API_TOKEN", "DATABASE_URL"}
+    }
+
+    def config(*overrides):
+        args = command + ["--project-directory", str(tmp_path), "-p", "merge-test",
+                          "-f", str(base)]
+        for override in overrides:
+            args += ["-f", str(override)]
+        result = subprocess.run(
+            args + ["config", "--format", "json"], env=process_env,
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        model = json.loads(result.stdout)
+        # Compose config escapes dollars for reusable output (config.go).
+        for service in model["services"].values():
+            service["environment"] = {
+                k: v.replace("$$", "$") if isinstance(v, str) else v
+                for k, v in service.get("environment", {}).items()
+            }
+        return model
+
+    def write_override(path, environment):
+        path.write_text(
+            "services:\n  api:\n    env_file: !reset []\n"
+            "    environment: !override " + json.dumps({
+                k: v.replace("$", "$$") for k, v in environment.items()
+            }) + "\n"
+        )
+
+    before = config()
+    runtime_env = {
+        "DATABASE_URL": "postgresql://runtime:synthetic-new@db/test",
+        "API_TOKEN": "literal$TOKEN${OTHER}$$tail",
+        "SEC_USER_AGENT": "Synthetic contact@example.invalid",
+    }
+    override = tmp_path / "runtime.yml"
+    write_override(override, runtime_env)
+    after = config(override)
+    assert after["services"]["api"]["environment"] == runtime_env
+    assert "POSTGRES_PASSWORD" not in after["services"]["api"]["environment"]
+    assert after["services"]["db"] == before["services"]["db"]
+    old_api = dict(before["services"]["api"])
+    new_api = dict(after["services"]["api"])
+    old_api.pop("environment"); new_api.pop("environment")
+    assert new_api == old_api
+
+    rollback = tmp_path / "rollback.yml"
+    write_override(rollback, before["services"]["api"]["environment"])
+    assert config(override, rollback) == before

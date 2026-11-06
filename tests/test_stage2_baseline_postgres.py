@@ -200,3 +200,31 @@ def test_runtime_login_cannot_delete_or_change_schema_roles_or_sequences(runtime
             with runtime_engine.begin() as con:
                 con.exec_driver_sql(statement)
         assert error.value.orig.sqlstate == "42501", statement
+
+
+def test_prepare_only_generated_role_sql_on_disposable_schema(engine):
+    from uuid import uuid4
+    from scripts.market_role_cutover_prepare import role_sql
+    role = "market_runtime_" + uuid4().hex[:12]
+    sql = role_sql(role, uuid4().hex + uuid4().hex, "test")
+    created = False
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as con:
+            try:
+                con.exec_driver_sql(sql)
+                created = True
+            except Exception:
+                con.exec_driver_sql("ROLLBACK")
+                raise
+            assert con.scalar(text("SELECT NOT rolsuper AND NOT rolcreatedb AND NOT "
+                "rolcreaterole AND NOT rolreplication AND NOT rolbypassrls AND NOT rolinherit "
+                "FROM pg_roles WHERE rolname=:role"), {"role": role})
+            assert con.scalar(text("SELECT has_table_privilege(:role,'public.paper_accounts','UPDATE')"),
+                              {"role": role})
+            assert not con.scalar(text("SELECT has_table_privilege(:role,'public.paper_trades','UPDATE')"),
+                                  {"role": role})
+    finally:
+        if created:
+            with engine.begin() as con:
+                con.exec_driver_sql(f'DROP OWNED BY "{role}"')
+                con.exec_driver_sql(f'DROP ROLE "{role}"')
