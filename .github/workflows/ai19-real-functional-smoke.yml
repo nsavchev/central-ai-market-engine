@@ -288,4 +288,23 @@ jobs:
               assert key_file.read_bytes()==key_before and source_file.read_bytes()==original_source
               assert containers()==before
               print('PRIVATE_RUNTIME_POLICY_PERSISTENT_KEY_USD_REAL_DOCKER_RESTART_PASSED')
+              from scripts.openai_admitted_acceptance import prepare_runtime_files
+              prep_state=root/'prepared-only-state';prep_state.mkdir(mode=0o700)
+              prep_authority=root/'prepared-only-authority';prep_authority.mkdir(mode=0o700)
+              prep_key=prep_authority/'reviewer.key'
+              provision_reviewer_key(enabled='YES',path=prep_key)
+              retained_key=prep_key.read_bytes()
+              def forbid_provider(**kwargs):
+                  raise AssertionError('validation must not construct a provider')
+              provider_module.make_openai_generator=forbid_provider
+              try:
+                  dry=prepare_runtime_files(state_directory=prep_state,authority_directory=prep_authority,
+                      verifier_image=image,budget_limit_microusd=1000000)
+              finally:
+                  provider_module.make_openai_generator=original_factory
+              assert dry['runtime_config_prepared'] and dry['runtime_config_validated']
+              assert dry['reviewer_key_loaded'] and prep_key.read_bytes()==retained_key
+              assert not dry['execution_authorized'] and not dry['generation_started'] and not dry['worker_started']
+              assert dry['planned_tasks']==1 and containers()==before
+              print('DISABLED_RUNTIME_PROFILE_PREPARED_AND_VALIDATED_NO_DISPATCH_PASSED')
           PY

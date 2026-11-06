@@ -28,6 +28,9 @@ E2E_FILES = {'central_ai.app': ['central_ai/app.py', 'a2ce6a9d4c5d2ea3adae79d24c
 WORKER_SOURCE = '4b4f57f03e5c2c9a27e8cf97f56f9beea5041169'
 WORKER_FILES = {'central_ai.app': ('central_ai/app.py', 'a2ce6a9d4c5d2ea3adae79d24c66d81b3d41e0b6decee7650e9077eef281b9b1'), 'central_ai.developer_task_runner': ('central_ai/developer_task_runner.py', 'db320eaa5277de984173b90593940065b6901f647723e624f0a0a47fec9fac62'), 'central_ai.developer_worker_coordinator': ('central_ai/developer_worker_coordinator.py', '613c22ed338fd861391af1e565badd1b1e6c07496a901796863888da9b4fbb27'), 'central_ai.heartbeat_worker': ('central_ai/heartbeat_worker.py', '180102d35923a32c8f79c30faaa62c4ba01e356488d8b42b49de7fa970fe89b9'), 'central_ai.isolated_candidate': ('central_ai/isolated_candidate.py', '777e0a603a7ad26ea7ce587642be6cfb4fb227461de6c8137ee8195b07d45492'), 'central_ai.isolated_functional_verifier': ('central_ai/isolated_functional_verifier.py', '9abe73d86b46f2b998cf69ba37002868c377455d4fcb968d51e61ce94a70af25'), 'central_ai.persistent_bridge': ('central_ai/persistent_bridge.py', 'a1852f8c5b776d84e94281129c2c744a02b67ac57a2cea45708e90d5a54f03aa'), 'central_ai.persistent_workflow_v05': ('central_ai/persistent_workflow_v05.py', '2e967494a0343c74ea8b72b5eb1e993821d6bb00f628a100d80cddb64e8b656f'), 'central_ai.proposal_adapter': ('central_ai/proposal_adapter.py', '0925b669f31cee6d2c95c89a898c0602b034f226a5a7e6f43b6da34e52cd6a2f'), 'central_ai.read_only_analyzer': ('central_ai/read_only_analyzer.py', '5e0f4bfe7711f1a85f0e163c102642f7985c06f4fc1aeabd431375df100bc54b'), 'central_ai.review_handoff': ('central_ai/review_handoff.py', '7eee37a60d5e312db9ff5c001b1530a0e027e9ea85052b637ad095987f2d27e2'), 'central_ai.review_pipeline': ('central_ai/review_pipeline.py', 'ef1782a601b24875cd8ae3073012342226bd94a5a95e646962a20d7826e96f42'), 'central_ai.task_bridge': ('central_ai/task_bridge.py', '10543c92597c0fcbd4d5ec569d49d4ca02e8d6eb68250646e9bbcdffebb429ea'), 'central_ai.task_file_targets': ('central_ai/task_file_targets.py', '8e31b34677bab0b5dd09567d4b8252036aa6f7f92debf976d9979d9c1f4b4ffc'), 'central_ai.task_queue': ('central_ai/task_queue.py', 'd804b27c95923ab57534c979f2dba203ba7c1a23ac48dbf1ee055cbf223ec9d3'), 'central_ai.task_storage': ('central_ai/task_storage.py', 'cacbf20954230baed7784732cdf53534ef3a8d600f820730ff49c9933798f73e'), 'central_ai.verified_review_pipeline': ('central_ai/verified_review_pipeline.py', '312322213eba2c4e456da62ff19d45fbb4a65c52bba6d9d9eeda156d4116f3f3'), 'central_ai.verifier_gate': ('central_ai/verifier_gate.py', '0a8f3680e455e574c47a3138ba61e74488f560ff42bc8edefcc6582a451b7abd'), 'central_ai.worker_batch': ('central_ai/worker_batch.py', 'f47de4c8fce08756202254c924df4e8b1834fc7d39cf56d0c546c1f29cc5e8bf'), 'central_ai.worker_scheduler': ('central_ai/worker_scheduler.py', '7d5de5293ec7e9f42698aec094a58f7a726fd4e011ae7506384811e6955d1034'), 'central_ai.worker_supervised': ('central_ai/worker_supervised.py', '59851ba6ea6c4d130fbbc17af780532f404611e2b546ad7defec948d03a70309'), 'central_ai.workflow_controller_v03': ('central_ai/workflow_controller_v03.py', '18ceb29345cf6a2b2adf4786aa98f1c8ea6350932b9c8e214160dcb678126e60'), 'developer_agent.v3.orchestrator': ('developer_agent/v3/orchestrator.py', '58b957ec403da132c23844b2ce90fba69b6e96129f71a6eeacaed58248639028'), 'developer_agent.v3.workflow': ('developer_agent/v3/workflow.py', '60c62b87cbe05a860fe4fc6c5278961dd6c7c178e625372ce70a93e4c4e48d11'), 'central_ai.__init__': ('central_ai/__init__.py', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'), 'runtime_lock': ('release/requirements-linux-amd64.lock', '78321ff8b94e1ced26eeb48b980f911b2f819c136b2c66ca1712c759e588289e')}
 
+PREPARE_SOURCE = '81bfc1f8d419dea196a4d2c4b1420a9efc818cd4'
+PREPARE_FILES = {'central_ai.app': ('central_ai/app.py', 'a2ce6a9d4c5d2ea3adae79d24c66d81b3d41e0b6decee7650e9077eef281b9b1'), 'central_ai.developer_task_runner': ('central_ai/developer_task_runner.py', 'db320eaa5277de984173b90593940065b6901f647723e624f0a0a47fec9fac62'), 'central_ai.developer_worker_coordinator': ('central_ai/developer_worker_coordinator.py', '0b35a1bd9bc9819bd88a8a0304e445ca281dd0abdb0bc79b3371439c2d75ab84'), 'central_ai.heartbeat_worker': ('central_ai/heartbeat_worker.py', '180102d35923a32c8f79c30faaa62c4ba01e356488d8b42b49de7fa970fe89b9'), 'central_ai.isolated_candidate': ('central_ai/isolated_candidate.py', '777e0a603a7ad26ea7ce587642be6cfb4fb227461de6c8137ee8195b07d45492'), 'central_ai.isolated_functional_verifier': ('central_ai/isolated_functional_verifier.py', '9abe73d86b46f2b998cf69ba37002868c377455d4fcb968d51e61ce94a70af25'), 'central_ai.persistent_bridge': ('central_ai/persistent_bridge.py', 'a1852f8c5b776d84e94281129c2c744a02b67ac57a2cea45708e90d5a54f03aa'), 'central_ai.persistent_workflow_v05': ('central_ai/persistent_workflow_v05.py', '2e967494a0343c74ea8b72b5eb1e993821d6bb00f628a100d80cddb64e8b656f'), 'central_ai.proposal_adapter': ('central_ai/proposal_adapter.py', '0925b669f31cee6d2c95c89a898c0602b034f226a5a7e6f43b6da34e52cd6a2f'), 'central_ai.read_only_analyzer': ('central_ai/read_only_analyzer.py', '5e0f4bfe7711f1a85f0e163c102642f7985c06f4fc1aeabd431375df100bc54b'), 'central_ai.review_handoff': ('central_ai/review_handoff.py', '7eee37a60d5e312db9ff5c001b1530a0e027e9ea85052b637ad095987f2d27e2'), 'central_ai.review_pipeline': ('central_ai/review_pipeline.py', 'ef1782a601b24875cd8ae3073012342226bd94a5a95e646962a20d7826e96f42'), 'central_ai.task_bridge': ('central_ai/task_bridge.py', '10543c92597c0fcbd4d5ec569d49d4ca02e8d6eb68250646e9bbcdffebb429ea'), 'central_ai.task_file_targets': ('central_ai/task_file_targets.py', '8e31b34677bab0b5dd09567d4b8252036aa6f7f92debf976d9979d9c1f4b4ffc'), 'central_ai.task_queue': ('central_ai/task_queue.py', 'd804b27c95923ab57534c979f2dba203ba7c1a23ac48dbf1ee055cbf223ec9d3'), 'central_ai.task_storage': ('central_ai/task_storage.py', '5595e77d76c0d4dcde8065ef4b58b1ff076f41cb8cad606c092e0c8a1b908d6a'), 'central_ai.verified_review_pipeline': ('central_ai/verified_review_pipeline.py', 'dcb63d3f47120f5aae62389663eb741995edcce80afe93815db52e46cfc5176f'), 'central_ai.verifier_gate': ('central_ai/verifier_gate.py', '8671bb50feffd926f8c5a06f351e6d75a6af69e5b82d18cbe8ffe060f117d545'), 'central_ai.worker_batch': ('central_ai/worker_batch.py', 'f47de4c8fce08756202254c924df4e8b1834fc7d39cf56d0c546c1f29cc5e8bf'), 'central_ai.worker_scheduler': ('central_ai/worker_scheduler.py', '7d5de5293ec7e9f42698aec094a58f7a726fd4e011ae7506384811e6955d1034'), 'central_ai.worker_supervised': ('central_ai/worker_supervised.py', '11ab22b7222708f71a2e732c74980b214aaf8290874fc556ed3d78cb3b42f130'), 'central_ai.workflow_controller_v03': ('central_ai/workflow_controller_v03.py', '18ceb29345cf6a2b2adf4786aa98f1c8ea6350932b9c8e214160dcb678126e60'), 'developer_agent.v3.orchestrator': ('developer_agent/v3/orchestrator.py', '58b957ec403da132c23844b2ce90fba69b6e96129f71a6eeacaed58248639028'), 'developer_agent.v3.workflow': ('developer_agent/v3/workflow.py', '60c62b87cbe05a860fe4fc6c5278961dd6c7c178e625372ce70a93e4c4e48d11'), 'central_ai.__init__': ('central_ai/__init__.py', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'), 'runtime_lock': ('release/requirements-linux-amd64.lock', '78321ff8b94e1ced26eeb48b980f911b2f819c136b2c66ca1712c759e588289e')}
+
 def probe(directory, transport=None):
     import hashlib, json, secrets, sqlite3
     from datetime import datetime, timezone, timedelta
@@ -134,12 +137,23 @@ def claim_once(case):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--container', required=True)
+    parser.add_argument('--container')
     parser.add_argument('--case-directory', required=True)
     parser.add_argument('--send-once', action='store_true')
     parser.add_argument('--end-to-end', action='store_true')
     parser.add_argument('--worker-check', action='store_true')
+    parser.add_argument('--prepare-runtime', action='store_true')
+    parser.add_argument('--authority-directory')
+    parser.add_argument('--runtime-python')
+    parser.add_argument('--verifier-image')
+    parser.add_argument('--budget-usd', type=int)
     args = parser.parse_args()
+    if args.prepare_runtime:
+        if args.send_once or args.end_to_end or args.worker_check:
+            raise ValueError('RUNTIME_PREPARATION_MODE_AMBIGUOUS')
+        return prepare_runtime_main(args)
+    if not args.container:
+        raise ValueError('ACCEPTANCE_CONTAINER_REQUIRED')
     if not args.send_once:
         raise ValueError('EXPLICIT_SINGLE_REQUEST_REQUIRED')
     if args.worker_check and not args.end_to_end:
@@ -364,13 +378,122 @@ def end_to_end_main(args):
     return 0 if report.get('acceptance')=='passed' else 1
 
 
+
+def prepare_runtime_files(*, state_directory, authority_directory, verifier_image,
+                          budget_limit_microusd, reserved_microusd=10000):
+    """Prepare one disabled isolated pilot; never analyze, generate or verify."""
+    import hashlib,json,os,re,sqlite3
+    from pathlib import Path
+    from central_ai.persistent_bridge import PersistentTaskBridge
+    from central_ai.task_file_targets import TaskFileTargets
+    from central_ai.verifier_gate import read_private_host_file
+    import central_ai.verified_review_pipeline as pipeline
+    state,authority=Path(state_directory),Path(authority_directory)
+    if (not state.is_absolute() or state.resolve()!=state or not state.is_dir()
+            or state.stat().st_uid!=os.geteuid() or state.stat().st_mode & 0o077
+            or not authority.is_absolute() or authority.resolve()!=authority
+            or authority.is_relative_to(state) or state.is_relative_to(authority)
+            or not re.fullmatch(r'python@sha256:[0-9a-f]{64}',verifier_image)
+            or type(budget_limit_microusd) is not int or type(reserved_microusd) is not int
+            or not 1<=reserved_microusd<=budget_limit_microusd<=10**12):
+        raise ValueError('RUNTIME_PREPARATION_INVALID')
+    key_path=authority/'reviewer.key'
+    key=read_private_host_file(key_path,max_bytes=128)
+    if not 32<=len(key)<=128:raise ValueError('RUNTIME_REVIEWER_KEY_INVALID')
+    del key
+    database=state/'tasks.sqlite';config_path=authority/'runtime.json'
+    if database.exists() or database.is_symlink() or config_path.exists() or config_path.is_symlink():
+        raise ValueError('RUNTIME_PREPARATION_ALREADY_EXISTS')
+    source=state/'source';source.mkdir(mode=0o700)
+    source_file=source/'sample.py';source_file.write_bytes(b'def f(a, b):\n    return a + b\n');source_file.chmod(0o600)
+    test=state/'trusted_test.py'
+    test.write_bytes(b"import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import f\nassert f(3,4)==12\nassert f(-2,5)==-10\nassert f(0,99)==0\nassert f(-3,-4)==12\n");test.chmod(0o600)
+    description='Operational isolated pilot: implement def f(a, b) returning a * b, one python fenced block only.'
+    bridge=PersistentTaskBridge(database)
+    task_id=bridge.submit(description)['task_id']
+    targets=TaskFileTargets(database);targets.initialize()
+    targets.register(task_id,str(source),'sample.py')
+    grant=dict(source_file=str(source_file),source_sha256=hashlib.sha256(source_file.read_bytes()).hexdigest(),
+        spec_sha256=hashlib.sha256(description.encode()).hexdigest(),trusted_test_file=str(test),
+        trusted_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(),image=verifier_image)
+    for name in ('handoffs','proposals','candidates'):
+        path=state/name;path.mkdir(mode=0o700);grant[name]=str(path)
+    core=['app.py','task_storage.py','verified_review_pipeline.py','verifier_gate.py',
+          'developer_worker_coordinator.py','worker_batch.py','worker_scheduler.py','worker_supervised.py']
+    config=dict(schema='worker-review-runtime-v1',scope='isolated_only',execution_policy='bounded-arithmetic-v1',
+        execution_authorized=False,approved=False,deployment_allowed=False,database=str(database),
+        policy_id='central-ai-isolated-pilot-v1',model='gpt-4.1-mini',max_output_tokens=128,
+        budget=dict(currency='USD',limit_microusd=budget_limit_microusd,reserved_microusd=reserved_microusd,call_limit=1),
+        authority=dict(generation_id='central-ai-operator-generation',reviewer_id='central-ai-operator-reviewer',reviewer_key_file=str(key_path)),
+        runtime_sha256={name:hashlib.sha256((Path(pipeline.__file__).parent/name).read_bytes()).hexdigest() for name in core},
+        jobs={task_id:grant})
+    fd=os.open(config_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'w') as out:
+        json.dump(config,out,sort_keys=True,indent=2);out.write('\n');out.flush();os.fsync(out.fileno())
+    fd=os.open(authority,os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+    validation=pipeline.load_worker_review_config(enabled='YES',config_path=config_path,database=str(database),validation_only=True)
+    with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True) as conn:
+        conn.execute('PRAGMA query_only=ON')
+        rows=conn.execute('SELECT status,payload FROM tasks').fetchall()
+        if (len(rows)!=1 or rows[0][0]!='planned' or 'generation' in json.loads(rows[0][1])
+                or conn.execute('SELECT status FROM task_queue').fetchall()!=[('pending',)]):
+            raise ValueError('RUNTIME_PREPARATION_STATE_CHANGED')
+    return dict(runtime_config_prepared=True,runtime_config_validated=validation['config_validated'],
+        reviewer_key_loaded=validation['reviewer_key_loaded'],execution_authorized=False,
+        planned_tasks=1,generation_started=False,worker_started=False,timer_modified=False,
+        ledger_currency='USD',legacy_journals_modified=False,provider_key_verified=False)
+
+
+def prepare_runtime_main(args):
+    """Stage pinned code using an existing private venv; no pip/Docker/model call."""
+    from concurrent.futures import ThreadPoolExecutor
+    if (not args.authority_directory or not args.runtime_python or not args.verifier_image
+            or args.budget_usd is None or not 1<=args.budget_usd<=1000000):
+        raise ValueError('RUNTIME_PREPARATION_ARGUMENTS_REQUIRED')
+    if not PREPARE_FILES or len(PREPARE_SOURCE)!=40:
+        raise ValueError('RUNTIME_PREPARATION_SOURCE_NOT_PINNED')
+    state=Path(args.case_directory);authority=Path(args.authority_directory);python=Path(args.runtime_python)
+    if (not state.is_absolute() or state.resolve()!=state or not authority.is_absolute()
+            or authority.resolve()!=authority or not python.is_absolute() or not python.is_file()
+            or state.is_relative_to(authority) or authority.is_relative_to(state)):
+        raise ValueError('RUNTIME_PREPARATION_PATH_INVALID')
+    if (authority/'runtime.json').exists() or not (authority/'reviewer.key').is_file():
+        raise ValueError('RUNTIME_PREPARATION_AUTHORITY_NOT_READY')
+    state.mkdir(mode=0o700)  # Exclusive: never reset/reuse an existing state directory.
+    package=state/'package';package.mkdir(mode=0o700)
+    def download(item):
+        path,expected=item
+        with urlopen('https://raw.githubusercontent.com/nsavchev/central-ai-market-engine/'+PREPARE_SOURCE+'/'+path,timeout=30) as response:
+            data=response.read(256*1024+1)
+        if len(data)>256*1024 or hashlib.sha256(data).hexdigest()!=expected:
+            raise ValueError('RUNTIME_PREPARATION_SOURCE_MISMATCH')
+        return path,data
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for path,data in pool.map(download,PREPARE_FILES.values()):
+            target=package/path;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+    program='import sys,json\nsys.path.insert(0,'+repr(str(package))+')\n'+inspect.getsource(prepare_runtime_files)
+    program+='\nreport=prepare_runtime_files(state_directory='+repr(str(state))+',authority_directory='+repr(str(authority))
+    program+=',verifier_image='+repr(args.verifier_image)+',budget_limit_microusd='+str(args.budget_usd*1000000)+')\nprint(json.dumps(report,sort_keys=True))\n'
+    result=subprocess.run([str(python),'-B','-c',program],text=True,capture_output=True,timeout=60)
+    if result.returncode or len(result.stdout)>8192:
+        raise RuntimeError('RUNTIME_PREPARATION_VALIDATION_FAILED')
+    report=json.loads(result.stdout)
+    if report.get('runtime_config_validated') is not True or report.get('execution_authorized') is not False:
+        raise ValueError('RUNTIME_PREPARATION_REPORT_INVALID')
+    (state/'preparation-report.json').write_text(json.dumps(report,sort_keys=True)+'\n')
+    print(json.dumps(report,sort_keys=True))
+    return 0
+
+
 if __name__ == '__main__':
     try:
         sys.exit(main())
     except Exception as error:
         report=dict(acceptance='not_started_or_uncertain',error_type=type(error).__name__,retry_allowed=False)
         code=str(error)
-        if code.startswith('E2E_') and all(char in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789' for char in code):
+        if code.startswith(('E2E_','RUNTIME_')) and all(char in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789' for char in code):
             report['error_code']=code
         print(json.dumps(report))
         sys.exit(1)

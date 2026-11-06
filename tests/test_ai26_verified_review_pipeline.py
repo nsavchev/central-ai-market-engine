@@ -1953,3 +1953,113 @@ def test_runtime_policy_authority_cannot_share_artifact_directory(monkeypatch,tm
     save()
     with pytest.raises(ValueError,match='AUTHORITY_INSIDE_ARTIFACTS'):
         load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+
+
+def test_disabled_runtime_validation_has_no_provider_handler_or_database_write(monkeypatch,tmp_path):
+    import hashlib
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    config['execution_authorized']=False;save()
+    before=hashlib.sha256(__import__('pathlib').Path(params['database']).read_bytes()).hexdigest()
+    key_before=key.read_bytes()
+    monkeypatch.delenv('OPENAI_API_KEY',raising=False)
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('must not construct provider'))
+    monkeypatch.setattr(pipeline,'make_worker_review_handler',lambda **kw:pytest.fail('must not return callable handler'))
+    report=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'],validation_only=True)
+    assert report==dict(config_validated=True,validation_only=True,execution_authorized=False,
+        reviewer_key_loaded=True,task_grants=1,generation_started=False,worker_started=False,
+        provider_key_verified=False,database_modified=False)
+    assert not callable(report) and key.read_bytes()==key_before
+    assert hashlib.sha256(__import__('pathlib').Path(params['database']).read_bytes()).hexdigest()==before
+    with pytest.raises(ValueError):pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+
+
+@pytest.mark.parametrize('change',[{'image':'python:latest'},{'candidates':'relative'}, {'trusted_test_sha256':'a'*64}])
+def test_validation_only_keeps_live_grant_checks(monkeypatch,tmp_path,change):
+    from central_ai.verified_review_pipeline import load_worker_review_config
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    config['execution_authorized']=False
+    config['jobs'][params['task_id']].update(change);save()
+    with pytest.raises(ValueError):load_worker_review_config(enabled='YES',config_path=path,database=params['database'],validation_only=True)
+
+
+def test_runtime_preparation_reuses_key_creates_disabled_planned_state_without_dispatch(monkeypatch,tmp_path):
+    import json,sqlite3
+    from scripts.openai_admitted_acceptance import prepare_runtime_files
+    from central_ai.verifier_gate import provision_reviewer_key
+    import central_ai.app as provider
+    import central_ai.worker_batch as batch
+    authority=tmp_path/'authority';authority.mkdir(mode=0o700)
+    key=authority/'reviewer.key';provision_reviewer_key(enabled='YES',path=key)
+    original=key.read_bytes()
+    state=tmp_path/'state';state.mkdir(mode=0o700)
+    monkeypatch.delenv('OPENAI_API_KEY',raising=False)
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('no provider construction'))
+    monkeypatch.setattr(batch,'run_batch',lambda **kw:pytest.fail('no analysis/worker'))
+    report=prepare_runtime_files(state_directory=state,authority_directory=authority,
+        verifier_image='python@sha256:'+'a'*64,budget_limit_microusd=1000000)
+    assert report['runtime_config_prepared'] and report['runtime_config_validated'] and report['reviewer_key_loaded']
+    assert report['execution_authorized'] is report['generation_started'] is report['worker_started'] is False
+    assert report['planned_tasks']==1 and key.read_bytes()==original
+    profile=json.loads((authority/'runtime.json').read_text())
+    assert profile['execution_authorized'] is False and profile['budget']['currency']=='USD'
+    with sqlite3.connect(state/'tasks.sqlite') as conn:
+        rows=conn.execute('SELECT status,payload FROM tasks').fetchall()
+        assert len(rows)==1 and rows[0][0]=='planned' and 'generation' not in json.loads(rows[0][1])
+        assert conn.execute('SELECT status,attempt_count FROM task_queue').fetchall()==[('pending',0)]
+    before=(state/'tasks.sqlite').read_bytes()
+    with pytest.raises(ValueError,match='ALREADY_EXISTS'):
+        prepare_runtime_files(state_directory=state,authority_directory=authority,
+            verifier_image='python@sha256:'+'a'*64,budget_limit_microusd=1000000)
+    assert (state/'tasks.sqlite').read_bytes()==before and key.read_bytes()==original
+
+
+def test_runtime_preparation_missing_key_creates_no_task_or_policy(tmp_path):
+    from scripts.openai_admitted_acceptance import prepare_runtime_files
+    authority=tmp_path/'authority';authority.mkdir(mode=0o700)
+    state=tmp_path/'state';state.mkdir(mode=0o700)
+    with pytest.raises(FileNotFoundError):prepare_runtime_files(state_directory=state,authority_directory=authority,
+        verifier_image='python@sha256:'+'a'*64,budget_limit_microusd=1000000)
+    assert not (state/'tasks.sqlite').exists() and not (authority/'runtime.json').exists()
+
+
+def test_runtime_preparation_cli_cannot_combine_paid_modes(monkeypatch,tmp_path):
+    import sys
+    from scripts import openai_admitted_acceptance as check
+    monkeypatch.setattr(sys,'argv',['check','--case-directory',str(tmp_path/'state'),'--prepare-runtime','--send-once'])
+    with pytest.raises(ValueError,match='MODE_AMBIGUOUS'):check.main()
+    assert not (tmp_path/'state').exists()
+
+
+def test_runtime_preparation_pinned_bootstrap_uses_real_child_without_dispatch(monkeypatch,tmp_path,capsys):
+    import io,json,sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    from central_ai.verifier_gate import provision_reviewer_key
+    from scripts import openai_admitted_acceptance as check
+    authority=tmp_path/'authority';authority.mkdir(mode=0o700)
+    key=authority/'reviewer.key';provision_reviewer_key(enabled='YES',path=key)
+    key_before=key.read_bytes()
+    root=Path(__file__).resolve().parents[1]
+    urls=[]
+    def download(url,**kwargs):
+        assert '/'+check.PREPARE_SOURCE+'/' in url
+        for path,digest in check.PREPARE_FILES.values():
+            if url.endswith('/'+path):
+                urls.append(path)
+                return io.BytesIO((root/path).read_bytes())
+        pytest.fail('unexpected download')
+    monkeypatch.setattr(check,'urlopen',download)
+    monkeypatch.delenv('OPENAI_API_KEY',raising=False)
+    state=tmp_path/'state'
+    args=SimpleNamespace(authority_directory=str(authority),runtime_python=sys.executable,
+        verifier_image='python@sha256:'+'a'*64,budget_usd=1,case_directory=str(state))
+    assert check.prepare_runtime_main(args)==0
+    result=json.loads((state/'preparation-report.json').read_text())
+    assert result['runtime_config_validated'] and result['execution_authorized'] is False
+    assert result['generation_started'] is result['worker_started'] is False
+    assert len(urls)==len(check.PREPARE_FILES)
+    assert key.read_bytes()==key_before
+    assert 'reviewer.key' not in capsys.readouterr().out
+    with pytest.raises(ValueError,match='AUTHORITY_NOT_READY'):check.prepare_runtime_main(args)
