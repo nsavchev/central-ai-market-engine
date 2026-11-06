@@ -231,4 +231,61 @@ jobs:
               assert not worker_result['persistent_worker_enabled_by_check'] and not worker_result['approved'] and not worker_result['deployment_allowed']
               assert containers()==before
               print('EXPLICIT_WORKER_REVIEW_THREE_CYCLES_ONE_GENERATION_REAL_DOCKER_PASSED')
+              from central_ai.verified_review_pipeline import load_worker_review_config
+              from central_ai.verifier_gate import provision_reviewer_key
+              from central_ai.worker_supervised import run_supervised
+              from central_ai.worker_scheduler import scheduled_cycles
+              import central_ai.app as provider_module
+              state=root/'configured-state';state.mkdir(mode=0o700)
+              authority=root/'configured-authority';authority.mkdir(mode=0o700)
+              key_file=authority/'reviewer.key'
+              assert provision_reviewer_key(enabled='YES',path=key_file)['reviewer_key_created']
+              key_before=key_file.read_bytes()
+              configured_db=state/'tasks.sqlite'
+              source_dir=state/'source';source_dir.mkdir()
+              source_file=source_dir/'sample.py';source_file.write_text('def f(a,b): return a+b\n')
+              original_source=source_file.read_bytes()
+              description='Implement def f(a,b) to return a*b as one fenced python block.'
+              bridge_configured=PersistentTaskBridge(configured_db)
+              configured_id=bridge_configured.submit(description)['task_id']
+              targets_configured=TaskFileTargets(configured_db);targets_configured.initialize()
+              targets_configured.register(configured_id,str(source_dir),'sample.py')
+              test_file=state/'trusted_test.py';test_file.write_bytes((e2e_case/'trusted_test.py').read_bytes())
+              grant=dict(source_file=str(source_file),source_sha256=hashlib.sha256(original_source).hexdigest(),
+                  spec_sha256=hashlib.sha256(description.encode()).hexdigest(),trusted_test_file=str(test_file),
+                  trusted_test_sha256=hashlib.sha256(test_file.read_bytes()).hexdigest(),image=image)
+              for name in ('handoffs','proposals','candidates'):
+                  path=state/name;path.mkdir(mode=0o700);grant[name]=str(path)
+              core=['app.py','task_storage.py','verified_review_pipeline.py','verifier_gate.py',
+                    'developer_worker_coordinator.py','worker_batch.py','worker_scheduler.py','worker_supervised.py']
+              policy=dict(schema='worker-review-runtime-v1',scope='isolated_only',execution_policy='bounded-arithmetic-v1',
+                  execution_authorized=True,approved=False,deployment_allowed=False,database=str(configured_db),
+                  policy_id='ci-file-policy',model='gpt-4.1-mini',max_output_tokens=128,
+                  budget=dict(currency='USD',limit_microusd=10000,reserved_microusd=1000,call_limit=1),
+                  authority=dict(generation_id='ci-file-generation',reviewer_id='ci-file-reviewer',reviewer_key_file=str(key_file)),
+                  runtime_sha256={name:hashlib.sha256((Path('central_ai')/name).read_bytes()).hexdigest() for name in core},
+                  jobs={configured_id:grant})
+              policy_file=authority/'runtime.json';policy_file.write_text(json.dumps(policy));policy_file.chmod(0o600)
+              original_factory=provider_module.make_openai_generator
+              provider_module.make_openai_generator=lambda **kw:e2e_factory(kw['database'])
+              try:
+                  for restart in (0,1):
+                      configured=load_worker_review_config(enabled='YES',config_path=policy_file,database=str(configured_db))
+                      def batch(**kwargs):return run_batch(**kwargs,idle_checks=1,sleep=lambda _:None)
+                      def schedule(**kwargs):return scheduled_cycles(**kwargs,batch=batch,sleep=lambda _:None)
+                      result=run_supervised(enabled='YES',database=str(configured_db),agent='ci-file-configured',
+                          lock_path=str(state/'worker.lock'),status_path=str(state/'status.json'),cycles=2,interval=1,
+                          max_tasks=1,scheduler=schedule,review_handler=configured)
+                      assert result['processed']==(1 if restart==0 else 0)
+              finally:
+                  provider_module.make_openai_generator=original_factory
+              accepted_configured=TaskStorage(configured_db).get(configured_id)
+              assert accepted_configured['generation']['admission']['receipt']['schema']=='generation-admission-usd-v2'
+              assert accepted_configured['verification']['phase']=='completed'
+              assert accepted_configured['verification']['outcome']['reviewer_id']=='ci-file-reviewer'
+              assert accepted_configured['verification']['outcome']['tests_passed']
+              assert not accepted_configured['approved'] and not accepted_configured['deployment_allowed']
+              assert key_file.read_bytes()==key_before and source_file.read_bytes()==original_source
+              assert containers()==before
+              print('PRIVATE_RUNTIME_POLICY_PERSISTENT_KEY_USD_REAL_DOCKER_RESTART_PASSED')
           PY

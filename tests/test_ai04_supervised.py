@@ -25,3 +25,44 @@ def test_status_on_failure(tmp_path):
     state=json.loads(status.read_text())
     assert state["state"]=="failed" and state["error_type"]=="RuntimeError"
     assert "private-detail" not in status.read_text()
+
+
+@pytest.mark.parametrize('flag',['','NO'])
+def test_cli_default_review_disabled_preserves_analysis_only(monkeypatch,flag):
+    import central_ai.worker_supervised as service
+    monkeypatch.setenv('CENTRAL_WORKER_REVIEW_ENABLED',flag)
+    monkeypatch.delenv('CENTRAL_WORKER_REVIEW_CONFIG',raising=False)
+    seen=[]
+    monkeypatch.setattr(service,'run_supervised',lambda **kw:seen.append(kw) or {'status':'complete'})
+    service.main()
+    assert 'review_handler' not in seen[0]
+
+
+@pytest.mark.parametrize('service_enabled,flag,location',[('','YES','/private/policy.json'),
+    ('YES','NO','/private/policy.json'),('YES','YES',''),('YES','invalid','')])
+def test_cli_misconfigured_review_never_loads_key_or_runs(monkeypatch,service_enabled,flag,location):
+    import central_ai.worker_supervised as service
+    import central_ai.verified_review_pipeline as pipeline
+    monkeypatch.setenv('CENTRAL_SUPERVISED_SERVICE_ENABLED',service_enabled)
+    monkeypatch.setenv('CENTRAL_WORKER_REVIEW_ENABLED',flag)
+    monkeypatch.setenv('CENTRAL_WORKER_REVIEW_CONFIG',location)
+    monkeypatch.setattr(pipeline,'load_worker_review_config',lambda **kw:pytest.fail('must not read policy/key'))
+    monkeypatch.setattr(service,'run_supervised',lambda **kw:pytest.fail('must not run'))
+    with pytest.raises(ValueError):service.main()
+
+
+def test_cli_explicit_review_passes_only_host_loaded_handler(monkeypatch):
+    import central_ai.worker_supervised as service
+    import central_ai.verified_review_pipeline as pipeline
+    monkeypatch.setenv('CENTRAL_SUPERVISED_SERVICE_ENABLED','YES')
+    monkeypatch.setenv('CENTRAL_WORKER_REVIEW_ENABLED','YES')
+    monkeypatch.setenv('CENTRAL_WORKER_REVIEW_CONFIG','/private/policy.json')
+    monkeypatch.setenv('CENTRAL_TASK_DB','/private/state/tasks.sqlite')
+    sentinel=object();seen=[]
+    def load(**kwargs):
+        assert kwargs==dict(enabled='YES',config_path='/private/policy.json',database='/private/state/tasks.sqlite')
+        return sentinel
+    monkeypatch.setattr(pipeline,'load_worker_review_config',load)
+    monkeypatch.setattr(service,'run_supervised',lambda **kw:seen.append(kw) or {'status':'complete'})
+    service.main()
+    assert seen[0]['review_handler'] is sentinel

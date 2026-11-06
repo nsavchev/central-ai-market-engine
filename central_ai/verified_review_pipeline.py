@@ -223,3 +223,125 @@ def make_worker_review_handler(*, enabled, database, jobs, generator, generator_
     review.accepts = lambda task_id: task_id in captured
     review.next_task_id = next_task_id
     return review
+
+
+def load_worker_review_config(*, enabled, config_path, database):
+    """Strict trusted-host runtime policy; review-only profiles are rejected.
+
+    Credentials and policy must be provisioned outside task/artifact storage.
+    This loader neither creates a ledger/key/task nor activates a service.
+    """
+    import hashlib,hmac,json,os,sqlite3,time
+    from datetime import timedelta
+    from uuid import UUID
+    from central_ai.verifier_gate import read_private_host_file,make_hmac_review_authorizer
+    from central_ai.isolated_functional_verifier import _read_input
+    from central_ai.app import make_openai_generator
+    if enabled!='YES':
+        raise ValueError('WORKER_REVIEW_CONFIG_DISABLED')
+    db=Path(database)
+    if not db.is_absolute() or db.is_symlink() or not db.is_file() or db.resolve()!=db:
+        raise ValueError('TASK_DB_UNAVAILABLE')
+    def reject():raise ValueError('WORKER_REVIEW_CONFIG_INVALID')
+    def pairs(items):
+        result={}
+        for key,value in items:
+            if key in result:reject()
+            result[key]=value
+        return result
+    def constant(value):reject()
+    config=json.loads(read_private_host_file(config_path,max_bytes=256*1024),
+                      object_pairs_hook=pairs,parse_constant=constant)
+    fields={'schema','scope','execution_policy','execution_authorized','approved','deployment_allowed','database','policy_id',
+            'model','max_output_tokens','budget','authority','runtime_sha256','jobs'}
+    if (not isinstance(config,dict) or set(config)!=fields
+            or config['schema']!='worker-review-runtime-v1' or config['scope']!='isolated_only'
+            or config['execution_policy']!='bounded-arithmetic-v1' or config['execution_authorized'] is not True
+            or config['approved'] is not False or config['deployment_allowed'] is not False
+            or config['database']!=str(db) or config['model']!='gpt-4.1-mini'
+            or type(config['max_output_tokens']) is not int or not 1<=config['max_output_tokens']<=128
+            or not isinstance(config['policy_id'],str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,64}',config['policy_id'])):
+        reject()
+    budget=config['budget'];authority=config['authority']
+    if (not isinstance(budget,dict) or set(budget)!={'currency','limit_microusd','reserved_microusd','call_limit'}
+            or budget['currency']!='USD'
+            or any(type(budget[k]) is not int for k in ('limit_microusd','reserved_microusd','call_limit'))
+            or not 1<=budget['reserved_microusd']<=budget['limit_microusd']<=10**12
+            or budget['call_limit']!=1
+            or not isinstance(authority,dict) or set(authority)!={'generation_id','reviewer_id','reviewer_key_file'}
+            or not isinstance(authority.get('reviewer_key_file'),str)
+            or any(not isinstance(authority[k],str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,64}',authority[k])
+                   for k in ('generation_id','reviewer_id'))):
+        reject()
+    core={'app.py','task_storage.py','verified_review_pipeline.py','verifier_gate.py',
+          'developer_worker_coordinator.py','worker_batch.py','worker_scheduler.py','worker_supervised.py'}
+    hashes=config['runtime_sha256']
+    if not isinstance(hashes,dict) or set(hashes)!=core:reject()
+    for name,digest in hashes.items():
+        if (not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest)
+                or hashlib.sha256((Path(__file__).parent/name).read_bytes()).hexdigest()!=digest):
+            raise ValueError('WORKER_REVIEW_RUNTIME_CHANGED')
+    key_path=Path(authority['reviewer_key_file'])
+    if key_path.is_relative_to(db.parent) or Path(config_path).is_relative_to(db.parent):
+        raise ValueError('WORKER_REVIEW_AUTHORITY_INSIDE_STATE')
+    key=read_private_host_file(key_path,max_bytes=128)
+    if not 32<=len(key)<=128:reject()
+    grants=config['jobs']
+    if not isinstance(grants,dict) or not 1<=len(grants)<=100:reject()
+    job_fields={'handoffs','proposals','candidates','trusted_test_file','trusted_test_sha256','image'}
+    jobs={}
+    # Read-only inspection cannot create/backfill tasks, targets or budgets.
+    with sqlite3.connect(db.as_uri()+'?mode=ro',uri=True,timeout=10) as conn:
+        conn.execute('PRAGMA query_only=ON');conn.execute('BEGIN')
+        for task_id,grant in grants.items():
+            if (not isinstance(task_id,str) or str(UUID(task_id))!=task_id or not isinstance(grant,dict)
+                    or set(grant)!=job_fields|{'source_file','source_sha256','spec_sha256'}
+                    or any(not isinstance(v,str) or not v for v in grant.values())):reject()
+            row=conn.execute('SELECT payload FROM tasks WHERE task_id=?',(task_id,)).fetchone()
+            target=conn.execute('SELECT workspace,filename,approved,deployment_allowed FROM task_file_targets WHERE task_id=?',(task_id,)).fetchone()
+            if row is None or target is None or target[2:]!=(0,0):reject()
+            task=json.loads(row[0])
+            source=Path(grant['source_file'])
+            if (not source.is_absolute() or source.resolve()!=source
+                    or source!=(Path(target[0])/target[1])
+                    or hashlib.sha256(_read_input(source)).hexdigest()!=grant['source_sha256']
+                    or hashlib.sha256(task['task']['task'].encode()).hexdigest()!=grant['spec_sha256']
+                    or task.get('approved') is not False or task.get('deployment_allowed') is not False
+                    or task['task'].get('approved') is not False or task['task'].get('deployment_allowed') is not False
+                    or hashlib.sha256(_read_input(Path(grant['trusted_test_file']))).hexdigest()!=grant['trusted_test_sha256']):
+                raise ValueError('WORKER_REVIEW_GRANT_CHANGED')
+            for area in [Path(grant[field]) for field in ('handoffs','proposals','candidates')]+[source.parent]:
+                if key_path.is_relative_to(area) or Path(config_path).is_relative_to(area):
+                    raise ValueError('WORKER_REVIEW_AUTHORITY_INSIDE_ARTIFACTS')
+            jobs[task_id]={field:grant[field] for field in job_fields}
+    def admit(binding):
+        grant=grants.get(binding.get('task_id'))
+        if (grant is None or binding.get('source_sha256')!=grant['source_sha256']
+                or binding.get('spec_sha256')!=grant['spec_sha256'] or binding.get('test_sha256')!=grant['trusted_test_sha256']
+                or binding.get('image')!=grant['image'] or binding.get('provider_id')!='openai-bounded-v1'
+                or binding.get('root_task_id')!=binding.get('task_id')
+                or type(binding.get('ordinal')) is not int or binding.get('ordinal')!=1):
+            raise ValueError('WORKER_REVIEW_GENERATION_DENIED')
+        now=datetime.now(timezone.utc)
+        return dict(schema='generation-admission-usd-v2',generation_authorized=True,binding=dict(binding),
+            scope='generate_only',disclosure='task_description_only',
+            authorization_id=authority['generation_id']+':'+binding['nonce'],budget_period=now.strftime('%Y-%m'),
+            budget_limit_microusd=budget['limit_microusd'],reserved_microusd=budget['reserved_microusd'],
+            budget_call_limit=budget['call_limit'],model=config['model'],max_output_tokens=config['max_output_tokens'],
+            expires_at=(now+timedelta(seconds=60)).isoformat(),approved=False,deployment_allowed=False)
+    def issue(binding):
+        grant=grants.get(binding.get('task_id'))
+        if grant is None or binding.get('test_sha256')!=grant['trusted_test_sha256'] or binding.get('image')!=grant['image']:
+            raise ValueError('WORKER_REVIEW_VERIFICATION_DENIED')
+        now=int(time.time())
+        receipt=dict(schema='review-hmac-sha256-v1',binding=dict(binding),reviewer_id=authority['reviewer_id'],
+            authorization_id=config['policy_id']+':'+binding['nonce'],issued_at=now,expires_at=now+60,
+            verification_authorized=True,approved=False,deployment_allowed=False)
+        payload=json.dumps(receipt,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+        return dict(receipt,mac=hmac.new(key,payload,'sha256').hexdigest())
+    authorize=make_hmac_review_authorizer(reviewer_keys={authority['reviewer_id']:key},request_receipt=issue)
+    if not os.getenv('OPENAI_API_KEY'):
+        raise ValueError('WORKER_REVIEW_PROVIDER_NOT_CONFIGURED')
+    generator=make_openai_generator(enabled='YES',database=str(db))
+    return make_worker_review_handler(enabled='YES',database=str(db),jobs=jobs,generator=generator,
+        generator_id=generator.generator_id,generation_authorization_check=admit,authorization_check=authorize)

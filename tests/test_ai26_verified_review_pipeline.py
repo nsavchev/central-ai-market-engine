@@ -1812,3 +1812,144 @@ def test_usd_profile_uses_existing_openai_adapter_and_worker(monkeypatch,tmp_pat
     saved=TaskStorage(params['database']).get(params['task_id'])
     assert saved['generation']['admission']['receipt']['schema']=='generation-admission-usd-v2'
     assert saved['verification']['phase']=='completed'
+
+
+def runtime_policy_fixture(monkeypatch,tmp_path):
+    import json,hashlib
+    from pathlib import Path
+    from central_ai.task_storage import TaskStorage
+    from central_ai.verifier_gate import provision_reviewer_key
+    state=tmp_path/'state'
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,state)
+    authority=tmp_path/'authority';authority.mkdir(mode=0o700)
+    key=authority/'reviewer.key'
+    provision_reviewer_key(enabled='YES',path=key)
+    test=state/'trusted_test.py';test.write_text('from candidate import f\nassert f()==2\n');test.chmod(0o600)
+    task=TaskStorage(params['database']).get(params['task_id'])
+    job=dict(jobs[params['task_id']],source_file=str(state/'source/sample.py'),
+        source_sha256=task['analysis']['source_sha256'],
+        spec_sha256=hashlib.sha256(task['task']['task'].encode()).hexdigest(),
+        trusted_test_file=str(test),trusted_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest())
+    core=['app.py','task_storage.py','verified_review_pipeline.py','verifier_gate.py',
+          'developer_worker_coordinator.py','worker_batch.py','worker_scheduler.py','worker_supervised.py']
+    root=Path(__file__).resolve().parents[1]/'central_ai'
+    config=dict(schema='worker-review-runtime-v1',scope='isolated_only',execution_policy='bounded-arithmetic-v1',
+        execution_authorized=True,approved=False,deployment_allowed=False,database=params['database'],
+        policy_id='ci-persistent-policy',model='gpt-4.1-mini',max_output_tokens=128,
+        budget=dict(currency='USD',limit_microusd=10000,reserved_microusd=1000,call_limit=1),
+        authority=dict(generation_id='ci-host-generation',reviewer_id='ci-persistent-reviewer',reviewer_key_file=str(key)),
+        runtime_sha256={name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in core},
+        jobs={params['task_id']:job})
+    path=authority/'runtime.json'
+    def save():path.write_text(json.dumps(config));path.chmod(0o600)
+    save()
+    return params,config,path,key,save
+
+
+def test_runtime_policy_persistent_key_usd_and_worker_restarts(monkeypatch,tmp_path):
+    import httpx,json
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    from central_ai.worker_batch import run_batch
+    from central_ai.task_storage import TaskStorage
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    original_key=key.read_bytes();calls=[]
+    real_generator=provider.make_openai_generator
+    def handle(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200,stream=httpx.ByteStream(json.dumps(dict(
+            choices=[dict(message=dict(content='```python\ndef f(): return 2\n```'))])).encode()))
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-only')
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:real_generator(**kw,transport=httpx.MockTransport(handle)))
+    real_handler=pipeline.make_worker_review_handler
+    def verify(**kw):
+        record_fixture_resources(kw)
+        return valid_result(test_sha256=kw['expected_test_sha256'])
+    monkeypatch.setattr(pipeline,'make_worker_review_handler',lambda **kw:real_handler(**kw,verifier=verify))
+    for i in range(2):
+        handler=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+        result=run_batch(enabled='YES',database=params['database'],agent='ci-configured',max_tasks=1,idle_checks=1,review_handler=handler)
+        assert result['processed']==(1 if i==0 else 0)
+    assert len(calls)==1 and key.read_bytes()==original_key
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['verification']['phase']=='completed'
+    assert saved['verification']['outcome']['reviewer_id']=='ci-persistent-reviewer'
+    assert saved['generation']['admission']['receipt']['schema']=='generation-admission-usd-v2'
+    assert saved['generation']['admission']['receipt']['authorization_id'].startswith('ci-host-generation:')
+    assert saved['approved'] is saved['deployment_allowed'] is False
+    assert original_key.hex() not in json.dumps(saved)
+
+
+@pytest.mark.parametrize('bad',['review_profile','not_authorized','promotion','database','currency','calls',
+                                'model','tokens','runtime','source','spec','test','state_key','public_config'])
+def test_runtime_policy_invalid_host_grants_never_build_provider(monkeypatch,tmp_path,bad):
+    import central_ai.app as provider
+    from central_ai.verified_review_pipeline import load_worker_review_config
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('must not build provider'))
+    grant=config['jobs'][params['task_id']]
+    if bad=='review_profile':config['schema']='worker-rollout-review-v1'
+    if bad=='not_authorized':config['execution_authorized']=False
+    if bad=='promotion':config['approved']=True
+    if bad=='database':config['database']=str(tmp_path/'different.sqlite')
+    if bad=='currency':config['budget']['currency']='EUR'
+    if bad=='calls':config['budget']['call_limit']=2
+    if bad=='model':config['model']='unreviewed-model'
+    if bad=='tokens':config['max_output_tokens']=True
+    if bad=='runtime':config['runtime_sha256']['task_storage.py']='a'*64
+    if bad=='source':grant['source_sha256']='a'*64
+    if bad=='spec':grant['spec_sha256']='a'*64
+    if bad=='test':grant['trusted_test_sha256']='a'*64
+    if bad=='state_key':config['authority']['reviewer_key_file']=str(tmp_path/'state/reviewer.key')
+    save()
+    if bad=='public_config':path.chmod(0o644)
+    with pytest.raises(ValueError):load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+    assert not (tmp_path/'different.sqlite').exists()
+
+
+def test_runtime_policy_duplicate_keys_rejected(monkeypatch,tmp_path):
+    from central_ai.verified_review_pipeline import load_worker_review_config
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    path.write_text('{"schema":"worker-rollout-review-v1","schema":"worker-review-runtime-v1"}')
+    with pytest.raises(ValueError):load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+
+
+@pytest.mark.parametrize('bad',['symlink','hardlink','public_key','public_parent','oversize'])
+def test_persistent_reviewer_key_protection(tmp_path,bad):
+    from central_ai.verifier_gate import provision_reviewer_key,read_private_host_file
+    authority=tmp_path/'authority';authority.mkdir(mode=0o700)
+    key=authority/'reviewer.key'
+    report=provision_reviewer_key(enabled='YES',path=key)
+    assert report==dict(reviewer_key_created=True,key_bytes_disclosed=False)
+    original=key.read_bytes()
+    assert len(original)==32
+    with pytest.raises(FileExistsError):provision_reviewer_key(enabled='YES',path=key)
+    assert key.read_bytes()==original
+    if bad=='symlink':
+        alias=authority/'alias';alias.symlink_to(key);key=alias
+    if bad=='hardlink':
+        import os
+        os.link(key,authority/'alias')
+    if bad=='public_key':key.chmod(0o644)
+    if bad=='public_parent':authority.chmod(0o755)
+    if bad=='oversize':key.write_bytes(b'x'*129)
+    with pytest.raises(ValueError):read_private_host_file(key,max_bytes=128)
+
+
+def test_runtime_policy_missing_provider_key_does_not_reserve(monkeypatch,tmp_path):
+    from central_ai.verified_review_pipeline import load_worker_review_config
+    from central_ai.task_storage import TaskStorage
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    monkeypatch.delenv('OPENAI_API_KEY',raising=False)
+    with pytest.raises(ValueError,match='PROVIDER_NOT_CONFIGURED'):
+        load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+    assert 'generation' not in TaskStorage(params['database']).get(params['task_id'])
+
+
+def test_runtime_policy_authority_cannot_share_artifact_directory(monkeypatch,tmp_path):
+    from central_ai.verified_review_pipeline import load_worker_review_config
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    config['jobs'][params['task_id']]['candidates']=str(key.parent)
+    save()
+    with pytest.raises(ValueError,match='AUTHORITY_INSIDE_ARTIFACTS'):
+        load_worker_review_config(enabled='YES',config_path=path,database=params['database'])

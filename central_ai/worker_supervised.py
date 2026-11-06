@@ -43,6 +43,19 @@ def run_supervised(*, enabled, database, agent, lock_path, status_path,
 
 
 def main():
+    review_enabled=os.getenv('CENTRAL_WORKER_REVIEW_ENABLED','')
+    config_path=os.getenv('CENTRAL_WORKER_REVIEW_CONFIG','')
+    options={}
+    if review_enabled not in ('','NO','YES'):
+        raise ValueError('WORKER_REVIEW_CONFIG_DISABLED')
+    if review_enabled=='YES' or config_path:
+        if os.getenv('CENTRAL_SUPERVISED_SERVICE_ENABLED','')!='YES':
+            raise ValueError('SERVICE_DISABLED')
+        if review_enabled!='YES' or not config_path:
+            raise ValueError('WORKER_REVIEW_CONFIG_DISABLED')
+        from central_ai.verified_review_pipeline import load_worker_review_config
+        options['review_handler']=load_worker_review_config(enabled='YES',config_path=config_path,
+            database=os.getenv('CENTRAL_TASK_DB',''))
     result = run_supervised(
         enabled=os.getenv("CENTRAL_SUPERVISED_SERVICE_ENABLED", ""),
         database=os.getenv("CENTRAL_TASK_DB", ""),
@@ -52,9 +65,14 @@ def main():
         cycles=int(os.getenv("CENTRAL_SCHEDULER_CYCLES", "3")),
         interval=int(os.getenv("CENTRAL_SCHEDULER_INTERVAL", "5")),
         max_tasks=int(os.getenv("CENTRAL_WORKER_MAX_TASKS", "10")),
+        **options,
     )
     print("SUPERVISED_RESULT", result)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        print("SUPERVISED_FAILED", {"error_type":type(error).__name__})
+        sys.exit(1)
