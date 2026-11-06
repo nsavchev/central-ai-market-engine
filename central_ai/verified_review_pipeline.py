@@ -225,7 +225,7 @@ def make_worker_review_handler(*, enabled, database, jobs, generator, generator_
     return review
 
 
-def load_worker_review_config(*, enabled, config_path, database):
+def load_worker_review_config(*, enabled, config_path, database, validation_only=False):
     """Strict trusted-host runtime policy; review-only profiles are rejected.
 
     Credentials and policy must be provisioned outside task/artifact storage.
@@ -237,7 +237,7 @@ def load_worker_review_config(*, enabled, config_path, database):
     from central_ai.verifier_gate import read_private_host_file,make_hmac_review_authorizer
     from central_ai.isolated_functional_verifier import _read_input
     from central_ai.app import make_openai_generator
-    if enabled!='YES':
+    if enabled!='YES' or type(validation_only) is not bool:
         raise ValueError('WORKER_REVIEW_CONFIG_DISABLED')
     db=Path(database)
     if not db.is_absolute() or db.is_symlink() or not db.is_file() or db.resolve()!=db:
@@ -256,7 +256,9 @@ def load_worker_review_config(*, enabled, config_path, database):
             'model','max_output_tokens','budget','authority','runtime_sha256','jobs'}
     if (not isinstance(config,dict) or set(config)!=fields
             or config['schema']!='worker-review-runtime-v1' or config['scope']!='isolated_only'
-            or config['execution_policy']!='bounded-arithmetic-v1' or config['execution_authorized'] is not True
+            or config['execution_policy']!='bounded-arithmetic-v1'
+            or type(config['execution_authorized']) is not bool
+            or (not validation_only and config['execution_authorized'] is not True)
             or config['approved'] is not False or config['deployment_allowed'] is not False
             or config['database']!=str(db) or config['model']!='gpt-4.1-mini'
             or type(config['max_output_tokens']) is not int or not 1<=config['max_output_tokens']<=128
@@ -297,6 +299,12 @@ def load_worker_review_config(*, enabled, config_path, database):
             if (not isinstance(task_id,str) or str(UUID(task_id))!=task_id or not isinstance(grant,dict)
                     or set(grant)!=job_fields|{'source_file','source_sha256','spec_sha256'}
                     or any(not isinstance(v,str) or not v for v in grant.values())):reject()
+            if (not re.fullmatch(r'[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}',grant['image'])
+                    or any(not Path(grant[field]).is_absolute() or Path(grant[field]).resolve()!=Path(grant[field])
+                           for field in ('source_file','trusted_test_file','handoffs','proposals','candidates'))
+                    or any(not Path(grant[field]).is_dir() or Path(grant[field]).stat().st_mode & 0o022
+                           for field in ('handoffs','proposals','candidates'))):
+                reject()
             row=conn.execute('SELECT payload FROM tasks WHERE task_id=?',(task_id,)).fetchone()
             target=conn.execute('SELECT workspace,filename,approved,deployment_allowed FROM task_file_targets WHERE task_id=?',(task_id,)).fetchone()
             if row is None or target is None or target[2:]!=(0,0):reject()
@@ -314,6 +322,11 @@ def load_worker_review_config(*, enabled, config_path, database):
                 if key_path.is_relative_to(area) or Path(config_path).is_relative_to(area):
                     raise ValueError('WORKER_REVIEW_AUTHORITY_INSIDE_ARTIFACTS')
             jobs[task_id]={field:grant[field] for field in job_fields}
+    if validation_only:
+        return dict(config_validated=True,validation_only=True,
+            execution_authorized=config['execution_authorized'],reviewer_key_loaded=True,
+            task_grants=len(jobs),generation_started=False,worker_started=False,
+            provider_key_verified=False,database_modified=False)
     def admit(binding):
         grant=grants.get(binding.get('task_id'))
         if (grant is None or binding.get('source_sha256')!=grant['source_sha256']
