@@ -1665,3 +1665,70 @@ def test_worker_review_factory_rejects_incomplete_host_configuration(monkeypatch
     if bad=='paths':jobs[params['task_id']]['candidates']='relative-path'
     with pytest.raises(ValueError):make_worker_review_handler(**options)
     assert not calls
+
+
+def test_operator_worker_case_three_cycles_one_generation(monkeypatch,tmp_path):
+    from scripts.openai_admitted_acceptance import run_e2e_case
+    calls=[]
+    factory=e2e_generator_fixture(monkeypatch,'```python\ndef f(a, b): return a*b\n```',calls)
+    def verifier(**kwargs):
+        record_fixture_resources(kwargs)
+        return valid_result(test_sha256=kwargs['expected_test_sha256'])
+    result=run_e2e_case(tmp_path,'python@sha256:'+'a'*64,generator_factory=factory,verifier=verifier,worker_cycles=3)
+    assert result['acceptance']=='passed',result
+    assert result['scope']=='isolated_worker_generation_and_verification'
+    assert result['worker_cycles_completed']==3 and result['worker_processed']==1
+    assert result['generator_invocations']==len(calls)==1 and result['post_completion_idle_cycles']==2
+    assert result['source_unchanged'] and result['trusted_tests_unchanged'] and result['snapshot_removed']
+    assert result['persistent_worker_enabled_by_check'] is result['worker_activated'] is False
+    assert run_e2e_case(tmp_path,'python@sha256:'+'a'*64,generator_factory=factory,verifier=verifier,worker_cycles=3)['acceptance']=='failed_or_uncertain'
+    assert len(calls)==1
+
+
+def test_operator_worker_case_failed_test_is_not_repeated(monkeypatch,tmp_path):
+    from scripts.openai_admitted_acceptance import run_e2e_case
+    calls=[]
+    factory=e2e_generator_fixture(monkeypatch,'```python\ndef f(a, b): return a+b\n```',calls)
+    def verifier(**kwargs):
+        record_fixture_resources(kwargs)
+        return valid_result(passed=False,status='failed',returncode=1,completion_confirmed=False,
+                            test_sha256=kwargs['expected_test_sha256'])
+    result=run_e2e_case(tmp_path,'python@sha256:'+'a'*64,generator_factory=factory,verifier=verifier,worker_cycles=3)
+    assert result['acceptance']=='candidate_failed' and result['test_status']=='failed'
+    assert result['worker_cycles_completed']==3 and result['generator_invocations']==1 and len(calls)==1
+    assert result['approved'] is result['deployment_allowed'] is False
+
+
+@pytest.mark.parametrize('cycles',[True,1,4,-1])
+def test_operator_worker_case_rejects_unreviewed_cycle_limits(tmp_path,cycles):
+    from scripts.openai_admitted_acceptance import run_e2e_case
+    result=run_e2e_case(tmp_path,'python@sha256:'+'a'*64,worker_cycles=cycles)
+    assert result['acceptance']=='failed_or_uncertain'
+    assert not (tmp_path/'e2e.sqlite').exists()
+
+
+def test_operator_worker_cli_requires_explicit_end_to_end(monkeypatch,tmp_path):
+    import sys
+    from scripts import openai_admitted_acceptance as check
+    monkeypatch.setattr(sys,'argv',['check','--container','ci','--case-directory',str(tmp_path/'case'),
+                                   '--send-once','--worker-check'])
+    with pytest.raises(ValueError,match='REQUIRES_END_TO_END'):check.main()
+    assert not (tmp_path/'case').exists()
+
+
+def test_operator_worker_setup_selects_separately_pinned_bundle(monkeypatch,tmp_path):
+    import hashlib,io
+    from types import SimpleNamespace
+    from scripts import openai_admitted_acceptance as check
+    content=b'public synthetic bundle fixture'
+    monkeypatch.setattr(check,'WORKER_FILES',{'fixture':('fixture.py',hashlib.sha256(content).hexdigest())})
+    urls=[]
+    def download(url,**kwargs):
+        urls.append(url)
+        return io.BytesIO(content)
+    monkeypatch.setattr(check,'urlopen',download)
+    monkeypatch.setattr(check.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=1,stdout='',stderr='private-setup-text'))
+    with pytest.raises(RuntimeError,match='DEPENDENCY_SETUP_FAILED'):
+        check.end_to_end_main(SimpleNamespace(case_directory=str(tmp_path/'case'),container='ci',worker_check=True))
+    assert len(urls)==1 and '/'+check.WORKER_SOURCE+'/' in urls[0]
+    assert (tmp_path/'case/attempt.started').is_file()
