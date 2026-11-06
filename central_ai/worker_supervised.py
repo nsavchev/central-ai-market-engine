@@ -53,8 +53,8 @@ def main():
             raise ValueError('SERVICE_DISABLED')
         if review_enabled!='YES' or not config_path:
             raise ValueError('WORKER_REVIEW_CONFIG_DISABLED')
-        from central_ai.verified_review_pipeline import load_worker_review_config
-        options['review_handler']=load_worker_review_config(enabled='YES',config_path=config_path,
+        from central_ai.developer_worker_coordinator import DeveloperWorkerCoordinator
+        options['review_handler']=DeveloperWorkerCoordinator.configured_review_handler(enabled='YES',config_path=config_path,
             database=os.getenv('CENTRAL_TASK_DB',''))
     result = run_supervised(
         enabled=os.getenv("CENTRAL_SUPERVISED_SERVICE_ENABLED", ""),

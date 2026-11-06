@@ -5,6 +5,12 @@ from central_ai.developer_task_runner import DeveloperTaskRunner
 
 class DeveloperWorkerCoordinator:
 
+    @staticmethod
+    def configured_review_handler(*, enabled, config_path, database):
+        """Trusted dependency setup stays at the coordinator/pipeline boundary."""
+        from central_ai.verified_review_pipeline import load_worker_review_config
+        return load_worker_review_config(enabled=enabled, config_path=config_path, database=database)
+
     def __init__(self, db_path, agent, *, review_handler=None):
         if not isinstance(agent, str) or not agent.strip():
             raise ValueError('INVALID_AGENT')
