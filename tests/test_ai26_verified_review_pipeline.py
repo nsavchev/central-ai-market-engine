@@ -1292,3 +1292,96 @@ def test_openai_adapter_missing_dispatch_cannot_accept_response(monkeypatch, tmp
     with pytest.raises(ValueError,match='OPENAI_DISPATCH_CONFLICT'):
         storage.complete_generation(params['task_id'],request['binding']['nonce'],
                                     'synthetic response',request['admission']['admission_sha256'])
+
+
+def test_admitted_connectivity_probe_exact_payload_usage_and_no_execution(monkeypatch,tmp_path):
+    import httpx, json
+    from scripts.openai_admitted_acceptance import probe
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-secret-no-real-provider')
+    requests=[]
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200,stream=httpx.ByteStream(json.dumps(dict(
+            choices=[dict(message=dict(content='OK'))],
+            usage=dict(prompt_tokens=5,completion_tokens=1,total_tokens=6))).encode()))
+    report=probe(tmp_path,httpx.MockTransport(handle))
+    assert report['acceptance']=='passed' and report['attempts']==1
+    assert report['usage']==dict(prompt_tokens=5,completion_tokens=1,total_tokens=6)
+    assert requests==[dict(model='gpt-4.1-mini',max_tokens=16,
+                           messages=[dict(role='user',content='Return exactly OK.')])]
+    assert report['production_tasks_modified'] is report['worker_activated'] is report['generated_code_executed'] is False
+    assert 'synthetic-secret' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('kind',['missing_key','upstream','unexpected_answer'])
+def test_admitted_connectivity_probe_failure_never_retries_or_exposes_body(monkeypatch,tmp_path,kind):
+    import httpx,json
+    from scripts.openai_admitted_acceptance import probe
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-private')
+    if kind=='missing_key': monkeypatch.delenv('OPENAI_API_KEY')
+    requests=[]
+    def handle(request):
+        requests.append(1)
+        return httpx.Response(429 if kind=='upstream' else 200,stream=httpx.ByteStream(json.dumps(
+            dict(choices=[dict(message=dict(content='private upstream text'))])).encode()))
+    report=probe(tmp_path,httpx.MockTransport(handle))
+    assert report['acceptance']=='failed'
+    assert len(requests)==(0 if kind=='missing_key' else 1)
+    assert 'private' not in json.dumps(report)
+
+
+def test_admitted_connectivity_host_claim_is_durable_and_replay_blocked(tmp_path):
+    from scripts.openai_admitted_acceptance import claim_once
+    case=tmp_path/'case'
+    assert claim_once(case)==case
+    assert (case/'attempt.started').is_file()
+    with pytest.raises(FileExistsError): claim_once(case)
+    public=tmp_path/'public'
+    public.mkdir(mode=0o755)
+    with pytest.raises(ValueError,match='NOT_PRIVATE'): claim_once(public)
+    link=tmp_path/'link'
+    link.symlink_to(case,target_is_directory=True)
+    with pytest.raises(ValueError,match='INVALID_ACCEPTANCE_DIRECTORY'): claim_once(link)
+
+
+def test_admitted_connectivity_source_mismatch_prevents_claim_and_docker(monkeypatch,tmp_path):
+    import sys,io
+    from scripts import openai_admitted_acceptance as check
+    monkeypatch.setattr(sys,'argv',['check','--container','fixture','--case-directory',str(tmp_path/'case'),'--send-once'])
+    monkeypatch.setattr(check,'urlopen',lambda *a,**kw:io.BytesIO(b'changed remote source'))
+    monkeypatch.setattr(check.subprocess,'run',lambda *a,**kw:pytest.fail('must not dispatch'))
+    with pytest.raises(ValueError,match='PINNED_SOURCE_MISMATCH'):check.main()
+    assert not (tmp_path/'case').exists()
+
+
+def test_admitted_connectivity_composed_child_and_host_replay(monkeypatch,tmp_path,capsys):
+    import io,json,sys
+    from pathlib import Path
+    from scripts import openai_admitted_acceptance as check
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-child-secret')
+    case=tmp_path/'case'
+    monkeypatch.setattr(sys,'argv',['check','--container','ci-fixture','--case-directory',str(case),'--send-once'])
+    root=Path(__file__).resolve().parents[1]
+    def source(url,**kwargs):
+        for path,digest in check.FILES.values():
+            if url.endswith('/'+path):return io.BytesIO((root/path).read_bytes())
+        pytest.fail('unexpected source URL')
+    monkeypatch.setattr(check,'urlopen',source)
+    original_run=check.subprocess.run
+    calls=[]
+    def child(args,**kwargs):
+        assert args==['docker','exec','-i','ci-fixture','python','-']
+        assert (case/'attempt.started').is_file()
+        program=kwargs['input']
+        assert 'synthetic-child-secret' not in program
+        mock="httpx.MockTransport(lambda request:httpx.Response(200,stream=httpx.ByteStream(b'{\"choices\":[{\"message\":{\"content\":\"OK\"}}]}')))"
+        program=program.replace(' report=probe(directory)', ' import httpx\n report=probe(directory,'+mock+')')
+        kwargs['input']=program
+        calls.append(1)
+        return original_run([sys.executable,'-'],**kwargs)
+    monkeypatch.setattr(check.subprocess,'run',child)
+    assert check.main()==0
+    assert json.loads((case/'report.json').read_text())['acceptance']=='passed'
+    with pytest.raises(FileExistsError):check.main()
+    assert len(calls)==1
+    assert 'synthetic-child-secret' not in capsys.readouterr().out
