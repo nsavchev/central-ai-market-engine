@@ -69,6 +69,7 @@ jobs:
           PY
       - name: Real bounded pipeline with synthetic authorization and durable outcome
         run: |
+          python -m pip install -r requirements.txt
           python - <<'PY'
           import hashlib
           import hmac
