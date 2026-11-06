@@ -5,7 +5,7 @@ import hashlib
 import re
 import sqlite3
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 class TaskStorage:
@@ -209,7 +209,7 @@ class TaskStorage:
                 'test_sha256':test_sha256, 'image':image, 'execution_policy':'bounded-arithmetic-v1',
                 'provider_id':provider_id}
             task['generation'] = {'schema':'task-generation-v1', 'phase':'requested', 'binding':binding,
-                'approved':False, 'deployment_allowed':False}
+                'admission_required':True, 'approved':False, 'deployment_allowed':False}
             if root_id == task_id:
                 task['revision_family'] = family
             else:
@@ -217,9 +217,112 @@ class TaskStorage:
             self._write_review_task(conn, task_id, task)
         return {'binding':dict(binding), 'task_description':spec}
 
-    def complete_generation(self, task_id, nonce, recommendation):
+    @staticmethod
+    def _generation_admission(receipt, binding, reserved_at):
+        """Validate host approval metadata, not a provider invoice or signature."""
+        fields = {'schema','generation_authorized','binding','scope','disclosure',
+                  'authorization_id','budget_period','budget_limit_microuros',
+                  'budget_call_limit','reserved_microuros','model','max_output_tokens',
+                  'expires_at','approved','deployment_allowed'}
+        if (not isinstance(receipt, dict) or set(receipt) != fields
+                or receipt.get('schema') != 'generation-admission-v1'
+                or receipt.get('generation_authorized') is not True
+                or receipt.get('binding') != binding or receipt.get('scope') != 'generate_only'
+                or receipt.get('disclosure') != 'task_description_only'
+                or receipt.get('approved') is not False or receipt.get('deployment_allowed') is not False
+                or not isinstance(receipt.get('authorization_id'), str)
+                or not re.fullmatch(r'[A-Za-z0-9_.:@/-]{1,128}', receipt['authorization_id'])
+                or not isinstance(receipt.get('model'), str)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}', receipt['model'])
+                or any(type(receipt.get(key)) is not int for key in (
+                    'budget_limit_microuros','budget_call_limit','reserved_microuros','max_output_tokens'))
+                or not 1 <= receipt['reserved_microuros'] <= receipt['budget_limit_microuros'] <= 10**12
+                or not 1 <= receipt['budget_call_limit'] <= 100000
+                or not 1 <= receipt['max_output_tokens'] <= 1500
+                or receipt.get('budget_period') != reserved_at.strftime('%Y-%m')
+                or not isinstance(receipt.get('expires_at'), str)):
+            raise ValueError('INVALID_GENERATION_ADMISSION')
+        try:
+            expires = datetime.fromisoformat(receipt['expires_at'])
+            if (expires.utcoffset() != timedelta(0)
+                    or not reserved_at < expires <= reserved_at + timedelta(minutes=5)):
+                raise ValueError('INVALID_GENERATION_ADMISSION')
+        except (ValueError, TypeError, OverflowError):
+            raise ValueError('INVALID_GENERATION_ADMISSION') from None
+
+    def authorize_generation(self, task_id, nonce, receipt):
+        """Atomically reserve a host-declared ceiling before the callback.
+
+        Budgets are per database and UTC month. Committed reservations are never
+        refunded here, including failed, interrupted and uncertain dispatches.
+        """
+        with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            task = self._review_task(conn, task_id)
+            generation, audit = task.get('generation', {}), task.get('verification', {})
+            binding = generation.get('binding', {})
+            if (audit.get('phase') != 'preparing' or audit.get('nonce') != nonce
+                    or generation.get('phase') != 'requested' or binding.get('nonce') != nonce
+                    or generation.get('admission_required') is not True or 'admission' in generation
+                    or task.get('analysis', {}).get('source_sha256') != binding.get('source_sha256')
+                    or hashlib.sha256(task['task']['task'].encode('utf-8')).hexdigest() != binding.get('spec_sha256')):
+                raise ValueError('GENERATION_ADMISSION_CONFLICT')
+            now = datetime.now(timezone.utc)
+            self._generation_admission(receipt, binding, now)
+            total = calls = 0
+            for other_id, encoded in conn.execute('SELECT task_id,payload FROM tasks'):
+                other = json.loads(encoded)
+                previous = other.get('generation')
+                if previous is None or other_id == task_id:
+                    continue
+                if not isinstance(previous, dict) or previous.get('admission_required') is not True:
+                    raise ValueError('UNACCOUNTED_GENERATION_HISTORY')
+                entry = previous.get('admission')
+                if entry is None:
+                    previous_audit = other.get('verification', {})
+                    if (previous_audit.get('phase') == 'blocked'
+                            and previous_audit.get('error_stage') == 'generation_authorization'):
+                        continue  # Proven rejection before any dispatch admission.
+                    raise ValueError('UNACCOUNTED_GENERATION_HISTORY')
+                if not isinstance(entry, dict) or set(entry) != {'receipt','reserved_at'}:
+                    raise ValueError('INVALID_GENERATION_BUDGET_HISTORY')
+                if hashlib.sha256(json.dumps(entry, sort_keys=True, separators=(',', ':')).encode()).hexdigest() != previous.get('admission_sha256'):
+                    raise ValueError('INVALID_GENERATION_BUDGET_HISTORY')
+                try:
+                    at = datetime.fromisoformat(entry['reserved_at'])
+                    if at.utcoffset() != timedelta(0):
+                        raise ValueError('INVALID_GENERATION_BUDGET_HISTORY')
+                    self._generation_admission(entry['receipt'], previous.get('binding'), at)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    raise ValueError('INVALID_GENERATION_BUDGET_HISTORY') from None
+                prior = entry['receipt']
+                if prior['authorization_id'] == receipt['authorization_id']:
+                    raise ValueError('GENERATION_AUTHORIZATION_REPLAY')
+                if prior['budget_period'] == receipt['budget_period']:
+                    if (prior['budget_limit_microuros'] != receipt['budget_limit_microuros']
+                            or prior['budget_call_limit'] != receipt['budget_call_limit']):
+                        raise ValueError('GENERATION_BUDGET_POLICY_CONFLICT')
+                    total += prior['reserved_microuros']
+                    calls += 1
+            if total + receipt['reserved_microuros'] > receipt['budget_limit_microuros']:
+                raise ValueError('GENERATION_BUDGET_EXHAUSTED')
+            if calls + 1 > receipt['budget_call_limit']:
+                raise ValueError('GENERATION_CALL_BUDGET_EXHAUSTED')
+            generation['admission'] = {'receipt':json.loads(json.dumps(receipt)), 'reserved_at':now.isoformat()}
+            generation['admission_sha256'] = hashlib.sha256(json.dumps(
+                generation['admission'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            self._write_review_task(conn, task_id, task)
+        # Only the approved execution profile is given to the trusted adapter.
+        profile = {key:receipt[key] for key in (
+            'model','max_output_tokens','expires_at','disclosure','scope','approved','deployment_allowed')}
+        profile['admission_sha256'] = generation['admission_sha256']
+        return profile
+
+    def complete_generation(self, task_id, nonce, recommendation, admission_sha256):
         if not isinstance(recommendation, str) or not recommendation.strip() or len(recommendation) > 12000:
             raise ValueError('INVALID_GENERATED_RECOMMENDATION')
+        if not isinstance(admission_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', admission_sha256):
+            raise ValueError('INVALID_GENERATION_ADMISSION_HASH')
         with self._connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
             task = self._review_task(conn, task_id)
@@ -227,6 +330,10 @@ class TaskStorage:
             audit = task.get('verification', {})
             if (audit.get('phase') != 'preparing' or audit.get('nonce') != nonce
                     or generation.get('phase') != 'requested' or generation.get('binding', {}).get('nonce') != nonce
+                    or generation.get('admission_required') is not True or not isinstance(generation.get('admission'), dict)
+                    or generation.get('admission_sha256') != admission_sha256
+                    or hashlib.sha256(json.dumps(generation.get('admission'), sort_keys=True,
+                        separators=(',', ':')).encode()).hexdigest() != admission_sha256
                     or task.get('analysis', {}).get('source_sha256') != generation['binding'].get('source_sha256')
                     or hashlib.sha256(task['task']['task'].encode('utf-8')).hexdigest() != generation['binding'].get('spec_sha256')):
                 raise ValueError('GENERATION_AUDIT_CONFLICT')
@@ -321,7 +428,7 @@ class TaskStorage:
 
     def fail_verification(self, task_id, nonce, stage, error_type):
         """Record a generic failure; any uncertainty after dispatch remains quarantined."""
-        if (stage not in ('generation','preparation','authorization','execution','result','persistence')
+        if (stage not in ('generation_authorization','generation','preparation','authorization','execution','result','persistence')
                 or not isinstance(error_type, str) or not re.fullmatch(r'[A-Za-z0-9_]{1,128}', error_type)):
             raise ValueError('INVALID_VERIFICATION_FAILURE')
         with self._connect() as conn:

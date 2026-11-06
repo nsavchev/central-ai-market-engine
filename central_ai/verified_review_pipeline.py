@@ -4,6 +4,7 @@ No automatic retries or deployment. Tests are operator-supplied and kept separat
 """
 import re
 import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 from central_ai.task_storage import TaskStorage
 from central_ai.review_pipeline import prepare_review_pipeline
@@ -13,7 +14,8 @@ from central_ai.isolated_functional_verifier import run_functional_tests
 def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
                        candidates, recommendation=None, trusted_test_file, image,
                        trusted_test_sha256=None, authorization_check=None,
-                       verifier=run_functional_tests, generator=None, generator_id=None):
+                       verifier=run_functional_tests, generator=None, generator_id=None,
+                       generation_authorization_check=None):
     if enabled != "YES":
         raise ValueError("PIPELINE_VERIFICATION_DISABLED")
     if not isinstance(trusted_test_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", trusted_test_sha256):
@@ -31,6 +33,8 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
         raise ValueError("INVALID_GENERATOR_CONFIGURATION")
     if generator is None and generator_id is not None:
         raise ValueError("INVALID_GENERATOR_CONFIGURATION")
+    if generator is not None and not callable(generation_authorization_check):
+        raise ValueError("GENERATION_AUTHORIZATION_REQUIRED")
     db = Path(database)
     if not db.is_absolute() or not db.is_file() or db.is_symlink():
         raise ValueError("INVALID_TASK_DB")
@@ -41,8 +45,16 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
     try:
         if generator is not None:
             request = storage.begin_generation(task_id, nonce, generator_id, trusted_test_sha256, image)
+            stage = "generation_authorization"
+            receipt = generation_authorization_check(dict(request['binding']))
+            request['admission'] = storage.authorize_generation(task_id, nonce, receipt)
+            admission_sha256 = request['admission']['admission_sha256']
+            # Expiry is a dispatch deadline; it is not an upstream cancellation guarantee.
+            if datetime.now(timezone.utc) >= datetime.fromisoformat(request['admission']['expires_at']):
+                raise ValueError('GENERATION_ADMISSION_EXPIRED')
+            stage = "generation"
             recommendation = generator(request)
-            storage.complete_generation(task_id, nonce, recommendation)
+            storage.complete_generation(task_id, nonce, recommendation, admission_sha256)
         stage = "preparation"
         prepared = prepare_review_pipeline(
             enabled="YES", database=database, task_id=task_id,

@@ -83,6 +83,16 @@ jobs:
           from central_ai.worker_batch import run_batch
           from central_ai.verifier_gate import make_hmac_review_authorizer
           from central_ai.verified_review_pipeline import prepare_and_verify
+          from datetime import datetime, timezone, timedelta
+          def authorize_generation(binding):
+              # Synthetic allowance, not real provider prices or production authority.
+              now = datetime.now(timezone.utc)
+              return dict(schema='generation-admission-v1', generation_authorized=True,
+                  binding=dict(binding), scope='generate_only', disclosure='task_description_only',
+                  authorization_id='ci-'+binding['nonce'], budget_period=now.strftime('%Y-%m'),
+                  budget_limit_microuros=1000000, budget_call_limit=100, reserved_microuros=1000,
+                  model='ci-fixture-model', max_output_tokens=100,
+                  expires_at=(now+timedelta(minutes=1)).isoformat(), approved=False, deployment_allowed=False)
           image = Path('/tmp/ai19-image.txt').read_text().strip()
           # Ephemeral synthetic CI authority only; no production reviewer provisioning.
           key = secrets.token_bytes(32)
@@ -160,11 +170,15 @@ jobs:
                   def generate(request):
                       assert request['binding']['root_task_id'] == root_id
                       assert request['binding']['ordinal'] == ordinal
+                      persisted = TaskStorage(database).get(task_id)['generation']
+                      assert persisted['admission']['receipt']['generation_authorized'] is True
+                      assert persisted['admission_sha256'] == request['admission']['admission_sha256']
                       return '```python\ndef f(): return '+str(ordinal)+'\n```'
                   report=prepare_and_verify(enabled='YES', database=str(database),task_id=task_id,
                       handoffs=paths[0],proposals=paths[1],candidates=paths[2],
                       trusted_test_file=str(frozen_test),trusted_test_sha256=test_digest,image=image,
-                      authorization_check=authorize,generator=generate,generator_id='ci-synthetic-generator')
+                      authorization_check=authorize,generator=generate,generator_id='ci-synthetic-generator',
+                      generation_authorization_check=authorize_generation)
                   audit=TaskStorage(database).get(task_id)
                   assert audit['generation']['phase']=='completed'
                   assert report['test_status']==('failed' if ordinal==1 else 'passed')

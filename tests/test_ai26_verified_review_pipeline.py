@@ -2,6 +2,18 @@ import pytest
 from central_ai.verified_review_pipeline import prepare_and_verify
 
 
+def generation_admission_fixture(binding):
+    """Synthetic host decision only; not a production authority or real price."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    return dict(schema='generation-admission-v1', generation_authorized=True,
+        binding=dict(binding), scope='generate_only', disclosure='task_description_only',
+        authorization_id='ci-'+binding['nonce'], budget_period=now.strftime('%Y-%m'),
+        budget_limit_microuros=1000000, budget_call_limit=100, reserved_microuros=1000,
+        model='ci-fixture-model', max_output_tokens=100,
+        expires_at=(now+timedelta(minutes=1)).isoformat(), approved=False, deployment_allowed=False)
+
+
 def record_fixture_resources(kwargs):
     """Synthetic host-verifier contract, not a claim that Docker was invoked."""
     kwargs['record_resources']({'snapshot_directory':'/tmp/central-ai-input-ci-fixture',
@@ -214,7 +226,8 @@ def verification_fixture(monkeypatch, result, tmp_path):
     return dict(enabled='YES', database=database, task_id=task_id, handoffs='', proposals='',
                 candidates='', recommendation='', trusted_test_file='/ci/test.py',
                 trusted_test_sha256='b'*64, image='python@sha256:'+'c'*64,
-                authorization_check=authorize, verifier=verifier)
+                authorization_check=authorize, verifier=verifier,
+                generation_authorization_check=generation_admission_fixture)
 
 
 def valid_result(**changes):
@@ -699,6 +712,8 @@ def test_process_exit_inside_generator_preserves_one_shot_intent(monkeypatch,tmp
     assert process.exitcode==23
     saved=TaskStorage(params['database']).get(params['task_id'])
     assert saved['generation']['phase']=='requested'
+    assert saved['generation']['admission']['receipt']['reserved_microuros'] == 1000
+    assert saved['generation']['admission_sha256']
     assert saved['verification']['phase']=='preparing'
     with pytest.raises(ValueError,match='VERIFICATION_ALREADY_STARTED'):
         prepare_and_verify(**params,generator=lambda _:pytest.fail('replay'),generator_id='ci-synthetic')
@@ -768,3 +783,334 @@ def test_context_change_during_callback_rejects_response_commit(monkeypatch,tmp_
         prepare_and_verify(**params,generator=generate,generator_id='ci-synthetic')
     audit=TaskStorage(params['database']).get(params['task_id'])
     assert audit['generation']['phase']=='requested' and audit['verification']['phase']=='blocked'
+
+
+def generation_params(monkeypatch, tmp_path):
+    params = verification_fixture(monkeypatch, valid_result(), tmp_path)
+    params.pop('recommendation')
+    params.update(generator=lambda _: '```python\ndef f(): return 2\n```', generator_id='ci-synthetic')
+    return params
+
+
+def add_analyzed_generation_task(params):
+    from pathlib import Path
+    from central_ai.persistent_bridge import PersistentTaskBridge
+    from central_ai.task_file_targets import TaskFileTargets
+    from central_ai.worker_batch import run_batch
+    task = PersistentTaskBridge(params['database']).submit('Synthetic budget continuation')
+    targets = TaskFileTargets(params['database'])
+    targets.initialize()
+    targets.register(task['task_id'], str(Path(params['database']).parent/'source'), 'sample.py')
+    assert run_batch(enabled='YES', database=params['database'], agent='ci-budget',
+                     max_tasks=1, idle_checks=1, sleep=lambda _:None)['processed'] == 1
+    return dict(params, task_id=task['task_id'])
+
+
+def budget_authorizer(*, cap=1000000, reserve=1000, calls=100, authorization_id=None):
+    def authorize(binding):
+        receipt = generation_admission_fixture(binding)
+        receipt.update(budget_limit_microuros=cap, reserved_microuros=reserve, budget_call_limit=calls)
+        if authorization_id is not None:
+            receipt['authorization_id'] = authorization_id
+        return receipt
+    return authorize
+
+
+def test_generator_requires_separate_admission_before_journal_or_dispatch(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    params.pop('generation_authorization_check')
+    params['generator'] = lambda _:pytest.fail('must not dispatch')
+    with pytest.raises(ValueError, match='GENERATION_AUTHORIZATION_REQUIRED'):
+        prepare_and_verify(**params)
+    assert 'verification' not in TaskStorage(params['database']).get(params['task_id'])
+
+
+@pytest.mark.parametrize('change', [
+    {'generation_authorized':False}, {'scope':'deploy'}, {'disclosure':'workspace_contents'},
+    {'approved':True}, {'deployment_allowed':True}, {'budget_limit_microuros':True},
+    {'reserved_microuros':0}, {'reserved_microuros':1000001}, {'budget_call_limit':0},
+    {'budget_period':'2000-01'}, {'max_output_tokens':1501}, {'model':''},
+    {'expires_at':'2000-01-01T00:00:00+00:00'}, {'expires_at':'2099-01-01T00:00:00+00:00'},
+])
+def test_invalid_generation_admission_never_dispatches_or_reserves(monkeypatch, tmp_path, change):
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    def deny(binding):
+        return dict(generation_admission_fixture(binding), **change)
+    params.update(generation_authorization_check=deny, generator=lambda _:pytest.fail('must not dispatch'))
+    with pytest.raises(ValueError, match='INVALID_GENERATION_ADMISSION'):
+        prepare_and_verify(**params)
+    task = TaskStorage(params['database']).get(params['task_id'])
+    assert 'admission' not in task['generation']
+    assert task['verification']['error_stage'] == 'generation_authorization'
+
+
+def test_admission_binding_cannot_be_mutated_by_authorizer(monkeypatch, tmp_path):
+    params = generation_params(monkeypatch, tmp_path)
+    def replaced(binding):
+        binding['source_sha256'] = 'f'*64
+        return generation_admission_fixture(binding)
+    params.update(generation_authorization_check=replaced, generator=lambda _:pytest.fail('must not dispatch'))
+    with pytest.raises(ValueError, match='INVALID_GENERATION_ADMISSION'):
+        prepare_and_verify(**params)
+
+
+def test_reservation_is_committed_before_callback_and_reopen_preserves_it(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    def generate(request):
+        task = TaskStorage(params['database']).get(params['task_id'])
+        admission = task['generation']['admission']
+        assert admission['receipt']['reserved_microuros'] == 1000
+        assert admission['receipt']['model'] == request['admission']['model'] == 'ci-fixture-model'
+        assert task['generation']['admission_sha256'] == request['admission']['admission_sha256']
+        request['admission']['model'] = 'in-memory-mutation'
+        return '```python\ndef f(): return 2\n```'
+    params['generator'] = generate
+    prepare_and_verify(**params)
+    task = TaskStorage(params['database']).get(params['task_id'])
+    assert task['generation']['admission']['receipt']['model'] == 'ci-fixture-model'
+    assert 'Synthetic verification audit fixture' not in str(task['generation'])
+
+
+def test_monthly_ceiling_survives_new_task_ids_and_failed_dispatch(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    params['generation_authorization_check'] = budget_authorizer(cap=1000, reserve=1000)
+    def uncertain(_):
+        raise RuntimeError('synthetic provider uncertainty')
+    params['generator'] = uncertain
+    with pytest.raises(RuntimeError, match='uncertainty'):
+        prepare_and_verify(**params)
+    assert TaskStorage(params['database']).get(params['task_id'])['generation']['admission']
+    second = add_analyzed_generation_task(params)
+    second['generator'] = lambda _:pytest.fail('reservation must not be refunded')
+    with pytest.raises(ValueError, match='GENERATION_BUDGET_EXHAUSTED'):
+        prepare_and_verify(**second)
+
+
+def test_monthly_call_count_cannot_restart_with_new_task_uuid(monkeypatch, tmp_path):
+    params = generation_params(monkeypatch, tmp_path)
+    params['generation_authorization_check'] = budget_authorizer(calls=2)
+    prepare_and_verify(**params)
+    params = add_analyzed_generation_task(params)
+    prepare_and_verify(**params)
+    params = add_analyzed_generation_task(params)
+    params['generator'] = lambda _:pytest.fail('call allowance exhausted')
+    with pytest.raises(ValueError, match='GENERATION_CALL_BUDGET_EXHAUSTED'):
+        prepare_and_verify(**params)
+
+
+@pytest.mark.parametrize('changed', ['cap','calls'])
+def test_new_task_cannot_raise_the_existing_month_policy(monkeypatch, tmp_path, changed):
+    params = generation_params(monkeypatch, tmp_path)
+    prepare_and_verify(**params)
+    second = add_analyzed_generation_task(params)
+    second.update(generation_authorization_check=budget_authorizer(
+        cap=2000000 if changed=='cap' else 1000000,
+        calls=200 if changed=='calls' else 100), generator=lambda _:pytest.fail('policy changed'))
+    with pytest.raises(ValueError, match='GENERATION_BUDGET_POLICY_CONFLICT'):
+        prepare_and_verify(**second)
+
+
+def test_rebinding_used_authorization_id_to_new_task_is_replay(monkeypatch, tmp_path):
+    params = generation_params(monkeypatch, tmp_path)
+    params['generation_authorization_check'] = budget_authorizer(authorization_id='ci-fixed-decision')
+    prepare_and_verify(**params)
+    second = add_analyzed_generation_task(params)
+    second['generator'] = lambda _:pytest.fail('authorization replay')
+    with pytest.raises(ValueError, match='GENERATION_AUTHORIZATION_REPLAY'):
+        prepare_and_verify(**second)
+
+
+def test_denied_admission_does_not_consume_reservation(monkeypatch, tmp_path):
+    params = generation_params(monkeypatch, tmp_path)
+    params.update(generation_authorization_check=lambda b:dict(generation_admission_fixture(b), generation_authorized=False),
+                  generator=lambda _:pytest.fail('denied'))
+    with pytest.raises(ValueError, match='INVALID_GENERATION_ADMISSION'):
+        prepare_and_verify(**params)
+    second = add_analyzed_generation_task(params)
+    second.update(generation_authorization_check=budget_authorizer(cap=1000,reserve=1000),
+                  generator=lambda _: '```python\ndef f(): return 2\n```')
+    assert prepare_and_verify(**second)['tests_passed']
+
+
+def test_concurrent_admission_has_one_committed_winner(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    storage = TaskStorage(params['database'])
+    nonce = 'd'*32
+    storage.begin_verification(params['task_id'], nonce)
+    request = storage.begin_generation(params['task_id'],nonce,'ci-synthetic',params['trusted_test_sha256'],params['image'])
+    receipt = generation_admission_fixture(request['binding'])
+    def reserve(_):
+        try:
+            TaskStorage(params['database']).authorize_generation(params['task_id'],nonce,receipt)
+            return True
+        except ValueError as error:
+            assert str(error) == 'GENERATION_ADMISSION_CONFLICT'
+            return False
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sum(pool.map(reserve,range(2))) == 1
+    assert TaskStorage(params['database']).get(params['task_id'])['generation']['admission']
+
+
+@pytest.mark.parametrize('tamper', ['receipt','legacy'])
+def test_unknown_or_corrupted_budget_history_blocks_later_dispatch(monkeypatch, tmp_path, tamper):
+    import json, sqlite3
+    params = generation_params(monkeypatch, tmp_path)
+    prepare_and_verify(**params)
+    with sqlite3.connect(params['database']) as conn:
+        task = json.loads(conn.execute('SELECT payload FROM tasks WHERE task_id=?',(params['task_id'],)).fetchone()[0])
+        if tamper == 'receipt': task['generation']['admission']['receipt']['reserved_microuros'] = 1
+        else: task['generation'].pop('admission_required')
+        conn.execute('UPDATE tasks SET payload=? WHERE task_id=?',(json.dumps(task),params['task_id']))
+    second = add_analyzed_generation_task(params)
+    second['generator'] = lambda _:pytest.fail('unaccounted history')
+    with pytest.raises(ValueError, match='INVALID_GENERATION_BUDGET_HISTORY|UNACCOUNTED_GENERATION_HISTORY'):
+        prepare_and_verify(**second)
+
+
+def test_callback_cannot_change_persisted_admission_before_response_commit(monkeypatch, tmp_path):
+    import json, sqlite3
+    params = generation_params(monkeypatch, tmp_path)
+    def change(_):
+        with sqlite3.connect(params['database']) as conn:
+            task = json.loads(conn.execute('SELECT payload FROM tasks WHERE task_id=?',(params['task_id'],)).fetchone()[0])
+            task['generation']['admission']['receipt']['model'] = 'replacement-model'
+            conn.execute('UPDATE tasks SET payload=? WHERE task_id=?',(json.dumps(task),params['task_id']))
+        return '```python\ndef f(): return 2\n```'
+    params['generator'] = change
+    with pytest.raises(ValueError, match='GENERATION_AUDIT_CONFLICT'):
+        prepare_and_verify(**params)
+
+
+def test_failed_reservation_write_never_calls_generator(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    original = TaskStorage._write_review_task
+    def fail(self, conn, task_id, task):
+        if task.get('generation',{}).get('admission'):
+            raise OSError('synthetic sensitive reservation write failure')
+        return original(self, conn, task_id, task)
+    monkeypatch.setattr(TaskStorage, '_write_review_task', fail)
+    params['generator'] = lambda _:pytest.fail('must not dispatch before committed reservation')
+    with pytest.raises(OSError):
+        prepare_and_verify(**params)
+    task = TaskStorage(params['database']).get(params['task_id'])
+    assert 'admission' not in task['generation']
+    assert 'sensitive reservation' not in str(task)
+
+
+def test_utc_month_rollover_keeps_history_and_clock_rewind_cannot_reset_budget(monkeypatch, tmp_path):
+    from datetime import datetime, timezone, timedelta
+    import central_ai.task_storage as storage_module
+    import central_ai.verified_review_pipeline as pipeline
+    from central_ai.task_storage import TaskStorage
+    clock = [datetime(2030,1,5,tzinfo=timezone.utc)]
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None): return clock[0]
+    monkeypatch.setattr(storage_module, 'datetime', Clock)
+    monkeypatch.setattr(pipeline, 'datetime', Clock)
+    params = generation_params(monkeypatch, tmp_path)
+    def authorize(binding):
+        return dict(budget_authorizer(cap=1000,reserve=1000)(binding),
+                    budget_period=clock[0].strftime('%Y-%m'),
+                    expires_at=(clock[0]+timedelta(minutes=1)).isoformat())
+    params['generation_authorization_check'] = authorize
+    first_id = params['task_id']
+    prepare_and_verify(**params)
+    clock[0] = datetime(2030,2,5,tzinfo=timezone.utc)
+    second = add_analyzed_generation_task(params)
+    assert prepare_and_verify(**second)['tests_passed']
+    assert TaskStorage(params['database']).get(first_id)['generation']['admission']['receipt']['budget_period'] == '2030-01'
+    clock[0] = datetime(2030,1,6,tzinfo=timezone.utc)
+    third = add_analyzed_generation_task(params)
+    third['generator'] = lambda _:pytest.fail('clock rewind cannot refund prior month')
+    with pytest.raises(ValueError, match='GENERATION_BUDGET_EXHAUSTED'):
+        prepare_and_verify(**third)
+
+
+def test_admission_expiry_is_checked_after_waiting_for_sqlite_write_lock(monkeypatch, tmp_path):
+    from datetime import datetime, timezone, timedelta
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    import sqlite3
+    import central_ai.task_storage as storage_module
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    clock = [datetime(2030,1,5,tzinfo=timezone.utc)]
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None): return clock[0]
+    monkeypatch.setattr(storage_module, 'datetime', Clock)
+    store = TaskStorage(params['database'])
+    nonce = 'e'*32
+    store.begin_verification(params['task_id'], nonce)
+    request = store.begin_generation(params['task_id'],nonce,'ci-synthetic',params['trusted_test_sha256'],params['image'])
+    receipt = dict(generation_admission_fixture(request['binding']), budget_period='2030-01',
+                   expires_at=(clock[0]+timedelta(minutes=1)).isoformat())
+    waiting = Event()
+    original = store._connect
+    def traced():
+        connection = original()
+        connection.set_trace_callback(lambda sql:waiting.set() if sql=='BEGIN IMMEDIATE' else None)
+        return connection
+    monkeypatch.setattr(store, '_connect', traced)
+    writer = sqlite3.connect(params['database'])
+    writer.execute('BEGIN IMMEDIATE')
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(store.authorize_generation,params['task_id'],nonce,receipt)
+        try:
+            assert waiting.wait(timeout=5)
+            clock[0] += timedelta(minutes=2)
+        finally:
+            writer.rollback(); writer.close()
+        with pytest.raises(ValueError, match='INVALID_GENERATION_ADMISSION'):
+            future.result(timeout=5)
+    assert 'admission' not in TaskStorage(params['database']).get(params['task_id'])['generation']
+
+
+@pytest.mark.parametrize('committed', [False,True])
+def test_uncertain_reservation_commit_never_dispatches_and_preserves_conservative_accounting(monkeypatch, tmp_path, committed):
+    from contextlib import contextmanager
+    import json
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    params.update(generation_authorization_check=budget_authorizer(cap=1000,reserve=1000),
+                  generator=lambda _:pytest.fail('uncertain commit must never dispatch'))
+    original = TaskStorage._connect
+    triggered = []
+    @contextmanager
+    def uncertain(self):
+        conn = original(self)
+        try:
+            yield conn
+            row = conn.execute('SELECT payload FROM tasks WHERE task_id=?',(params['task_id'],)).fetchone()
+            has_reservation = row and json.loads(row[0]).get('generation',{}).get('admission')
+            if not triggered and conn.in_transaction and has_reservation:
+                triggered.append(True)
+                conn.commit() if committed else conn.rollback()
+                raise OSError('synthetic sensitive commit uncertainty')
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    monkeypatch.setattr(TaskStorage, '_connect', uncertain)
+    with pytest.raises(OSError, match='commit uncertainty'):
+        prepare_and_verify(**params)
+    saved = TaskStorage(params['database']).get(params['task_id'])
+    assert bool(saved['generation'].get('admission')) is committed
+    assert 'sensitive commit' not in str(saved)
+    second = add_analyzed_generation_task(params)
+    second['generator'] = lambda _: '```python\ndef f(): return 2\n```'
+    if committed:
+        with pytest.raises(ValueError, match='GENERATION_BUDGET_EXHAUSTED'):
+            prepare_and_verify(**second)
+    else:
+        assert prepare_and_verify(**second)['tests_passed']

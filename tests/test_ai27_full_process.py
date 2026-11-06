@@ -45,7 +45,9 @@ def test_full_process_preserves_source_and_refuses_deploy(tmp_path, passed, gene
                 "reviewer_id":"ci-trusted-review-fixture","authorization_id":"ci-only",
                 "approved":False,"deployment_allowed":False}
     recommendation="```python\ndef candidate():\n    return 3\n```"
-    extra = {'generator':lambda request:recommendation, 'generator_id':'ci-synthetic'} if generated else {'recommendation':recommendation}
+    from test_ai26_verified_review_pipeline import generation_admission_fixture
+    extra = {'generator':lambda request:recommendation, 'generator_id':'ci-synthetic',
+             'generation_authorization_check':generation_admission_fixture} if generated else {'recommendation':recommendation}
     report=prepare_and_verify(
         enabled="YES",database=str(db),task_id=task["task_id"],
         handoffs=paths[0],proposals=paths[1],candidates=paths[2],
