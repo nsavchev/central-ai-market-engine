@@ -167,17 +167,28 @@ jobs:
                   paths=[]
                   for name in ('handoffs','proposals','candidates'):
                       path=root/('revision-'+str(ordinal)+'-'+name);path.mkdir(mode=0o700);paths.append(str(path))
-                  def generate(request):
-                      assert request['binding']['root_task_id'] == root_id
-                      assert request['binding']['ordinal'] == ordinal
+                  import os, httpx
+                  from central_ai.app import make_openai_generator
+                  os.environ['OPENAI_API_KEY']='synthetic-ci-only'
+                  os.environ['OPENAI_MODEL']='unapproved-environment-model'
+                  def mock_provider(request):
                       persisted = TaskStorage(database).get(task_id)['generation']
+                      assert persisted['binding']['root_task_id'] == root_id
+                      assert persisted['binding']['ordinal'] == ordinal
                       assert persisted['admission']['receipt']['generation_authorized'] is True
-                      assert persisted['admission_sha256'] == request['admission']['admission_sha256']
-                      return '```python\ndef f(): return '+str(ordinal)+'\n```'
+                      body=json.loads(request.content)
+                      assert body['model']=='ci-fixture-model' and body['max_tokens']==100
+                      assert body['messages']==[dict(role='user',content='Synthetic generated arithmetic correction')]
+                      assert persisted['dispatch']['admission_sha256']==persisted['admission_sha256']
+                      answer='```python\ndef f(): return '+str(ordinal)+'\n```'
+                      return httpx.Response(200,stream=httpx.ByteStream(json.dumps(
+                          dict(choices=[dict(message=dict(content=answer))])).encode()))
+                  generate=make_openai_generator(enabled='YES',database=str(database),
+                      transport=httpx.MockTransport(mock_provider))
                   report=prepare_and_verify(enabled='YES', database=str(database),task_id=task_id,
                       handoffs=paths[0],proposals=paths[1],candidates=paths[2],
                       trusted_test_file=str(frozen_test),trusted_test_sha256=test_digest,image=image,
-                      authorization_check=authorize,generator=generate,generator_id='ci-synthetic-generator',
+                      authorization_check=authorize,generator=generate,generator_id=generate.generator_id,
                       generation_authorization_check=authorize_generation)
                   audit=TaskStorage(database).get(task_id)
                   assert audit['generation']['phase']=='completed'
@@ -187,6 +198,6 @@ jobs:
                   if ordinal==1:
                       task_id=bridge.submit_revision(task_id,report['verification_nonce'])['task_id']
               assert len(TaskStorage(database).get(root_id)['revision_family']['members'])==2
-              print('SYNTHETIC_GENERATOR_REAL_DOCKER_FAILED_ROOT_LINKED_CORRECTION_PASSED')
+              print('MOCK_OPENAI_ADAPTER_REAL_DOCKER_FAILED_ROOT_LINKED_CORRECTION_PASSED')
               print('SYNTHETIC_AUTH_REAL_DOCKER_DURABLE_COMPLETION_AND_REPLAY_PASSED')
           PY

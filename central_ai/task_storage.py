@@ -7,6 +7,8 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+OPENAI_GENERATOR_ID = 'openai-bounded-v1'
+
 
 class TaskStorage:
     def __init__(self, db_path):
@@ -313,10 +315,64 @@ class TaskStorage:
                 generation['admission'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             self._write_review_task(conn, task_id, task)
         # Only the approved execution profile is given to the trusted adapter.
+        return self._generation_profile(generation)
+
+    @staticmethod
+    def _generation_profile(generation):
+        receipt = generation['admission']['receipt']
         profile = {key:receipt[key] for key in (
             'model','max_output_tokens','expires_at','disclosure','scope','approved','deployment_allowed')}
         profile['admission_sha256'] = generation['admission_sha256']
         return profile
+
+    def begin_openai_dispatch(self, request):
+        """Commit a single attempt before I/O; interrupted attempts are not retried."""
+        if not isinstance(request, dict) or set(request) != {'binding','task_description','admission'}:
+            raise ValueError('INVALID_OPENAI_DISPATCH')
+        binding = request['binding']
+        if not isinstance(binding, dict) or not isinstance(binding.get('task_id'), str):
+            raise ValueError('INVALID_OPENAI_DISPATCH')
+        with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            task = self._review_task(conn, binding['task_id'])
+            generation, audit = task.get('generation', {}), task.get('verification', {})
+            entry = generation.get('admission')
+            if (generation.get('phase') != 'requested' or audit.get('phase') != 'preparing'
+                    or generation.get('admission_required') is not True
+                    or audit.get('nonce') != binding.get('nonce')
+                    or binding.get('provider_id') != OPENAI_GENERATOR_ID
+                    or not isinstance(entry, dict) or set(entry) != {'receipt','reserved_at'}
+                    or self._json_digest(entry) != generation.get('admission_sha256')
+                    or 'dispatch' in generation or 'dispatch_sha256' in generation):
+                raise ValueError('OPENAI_DISPATCH_CONFLICT')
+            receipt = entry['receipt']
+            self._generation_admission(receipt, generation.get('binding'), datetime.fromisoformat(entry['reserved_at']))
+            profile = self._generation_profile(generation)
+            spec = task['task']['task']
+            expected = dict(binding=generation['binding'], task_description=spec, admission=profile)
+            if (self._json_digest(request) != self._json_digest(expected)
+                    or hashlib.sha256(spec.encode()).hexdigest() != binding.get('spec_sha256')
+                    or task.get('analysis', {}).get('source_sha256') != binding.get('source_sha256')
+                    or datetime.now(timezone.utc) >= datetime.fromisoformat(receipt['expires_at'])):
+                raise ValueError('OPENAI_DISPATCH_CONFLICT')
+            dispatch = self._openai_dispatch_profile(generation)
+            dispatch['started_at'] = datetime.now(timezone.utc).isoformat()
+            generation['dispatch'] = dispatch
+            generation['dispatch_sha256'] = self._json_digest(dispatch)
+            self._write_review_task(conn, binding['task_id'], task)
+        return dict(prompt=spec, model=profile['model'], max_tokens=profile['max_output_tokens'],
+                    expires_at=profile['expires_at'])
+
+    @staticmethod
+    def _json_digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+    @staticmethod
+    def _openai_dispatch_profile(generation):
+        receipt = generation['admission']['receipt']
+        return dict(provider='openai', model=receipt['model'], max_output_tokens=receipt['max_output_tokens'],
+                    prompt_sha256=generation['binding']['spec_sha256'],
+                    admission_sha256=generation['admission_sha256'])
 
     def complete_generation(self, task_id, nonce, recommendation, admission_sha256):
         if not isinstance(recommendation, str) or not recommendation.strip() or len(recommendation) > 12000:
@@ -337,6 +393,13 @@ class TaskStorage:
                     or task.get('analysis', {}).get('source_sha256') != generation['binding'].get('source_sha256')
                     or hashlib.sha256(task['task']['task'].encode('utf-8')).hexdigest() != generation['binding'].get('spec_sha256')):
                 raise ValueError('GENERATION_AUDIT_CONFLICT')
+            if generation['binding'].get('provider_id') == OPENAI_GENERATOR_ID:
+                dispatch = generation.get('dispatch')
+                if (not isinstance(dispatch, dict)
+                        or set(dispatch) != set(self._openai_dispatch_profile(generation)) | {'started_at'}
+                        or self._json_digest(dispatch) != generation.get('dispatch_sha256')
+                        or {k:v for k,v in dispatch.items() if k != 'started_at'} != self._openai_dispatch_profile(generation)):
+                    raise ValueError('OPENAI_DISPATCH_CONFLICT')
             generation.update(phase='completed', response_sha256=hashlib.sha256(recommendation.encode('utf-8')).hexdigest())
             self._write_review_task(conn, task_id, task)
 

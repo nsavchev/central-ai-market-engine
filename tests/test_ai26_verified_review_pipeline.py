@@ -1114,3 +1114,181 @@ def test_uncertain_reservation_commit_never_dispatches_and_preserves_conservativ
             prepare_and_verify(**second)
     else:
         assert prepare_and_verify(**second)['tests_passed']
+
+
+def admitted_openai_fixture(monkeypatch, tmp_path, handler):
+    import httpx
+    from central_ai.app import make_openai_generator
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    monkeypatch.setenv('OPENAI_API_KEY', 'synthetic-secret-never-log')
+    monkeypatch.setenv('OPENAI_MODEL', 'unapproved-environment-model')
+    generate = make_openai_generator(enabled='YES', database=params['database'],
+                                     transport=httpx.MockTransport(handler))
+    storage = TaskStorage(params['database'])
+    nonce = 'e'*32
+    storage.begin_verification(params['task_id'], nonce)
+    request = storage.begin_generation(params['task_id'], nonce, generate.generator_id,
+                                       params['trusted_test_sha256'], params['image'])
+    request['admission'] = storage.authorize_generation(params['task_id'], nonce,
+                                                       generation_admission_fixture(request['binding']))
+    return params, storage, request, generate
+
+
+def test_openai_adapter_approved_profile_and_durable_one_shot(monkeypatch, tmp_path):
+    import httpx, json
+    from pathlib import Path
+    seen = []
+    def handler(outgoing):
+        journal = storage.get(params['task_id'])['generation']
+        assert journal['dispatch']['model'] == 'ci-fixture-model'
+        body = json.loads(outgoing.content)
+        assert body == dict(model='ci-fixture-model', max_tokens=100,
+                            messages=[dict(role='user', content=request['task_description'])])
+        assert str(outgoing.url) == 'https://api.openai.com/v1/chat/completions'
+        seen.append(body)
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(
+            {'choices':[{'message':{'content':'```python\ndef f(): return 2\n```'}}]}).encode()))
+    params, storage, request, generate = admitted_openai_fixture(monkeypatch, tmp_path, handler)
+    original = (Path(params['database']).parent/'source/sample.py').read_bytes()
+    answer = generate(request)
+    with pytest.raises(ValueError, match='OPENAI_DISPATCH_CONFLICT'):
+        generate(request)
+    storage.complete_generation(params['task_id'], request['binding']['nonce'], answer,
+                                request['admission']['admission_sha256'])
+    assert len(seen) == 1
+    saved = storage.get(params['task_id'])['generation']
+    assert saved['phase'] == 'completed'
+    assert 'synthetic-secret' not in json.dumps(saved)
+    assert request['task_description'] not in json.dumps(saved)
+    assert (Path(params['database']).parent/'source/sample.py').read_bytes() == original
+
+
+@pytest.mark.parametrize('field', ['model','tokens','prompt','nonce','provider','spec','digest','extra','typed'])
+def test_openai_adapter_rejects_changed_request_without_http(monkeypatch, tmp_path, field):
+    params, storage, request, generate = admitted_openai_fixture(
+        monkeypatch, tmp_path, lambda _:pytest.fail('unauthorized HTTP'))
+    if field == 'model': request['admission']['model'] = 'unapproved'
+    if field == 'tokens': request['admission']['max_output_tokens'] = 1500
+    if field == 'prompt': request['task_description'] = 'unapproved content'
+    if field == 'nonce': request['binding']['nonce'] = 'f'*32
+    if field == 'provider': request['binding']['provider_id'] = 'other'
+    if field == 'spec': request['binding']['spec_sha256'] = 'a'*64
+    if field == 'digest': request['admission']['admission_sha256'] = 'a'*64
+    if field == 'extra': request['source'] = 'must not disclose'
+    if field == 'typed': request['binding']['ordinal'] = True
+    with pytest.raises(ValueError): generate(request)
+    assert 'dispatch' not in storage.get(params['task_id'])['generation']
+
+
+@pytest.mark.parametrize('failure', ['status','timeout','cancel'])
+def test_openai_adapter_failed_attempt_is_not_retried(monkeypatch, tmp_path, failure):
+    import asyncio, httpx
+    calls = []
+    def handler(outgoing):
+        calls.append(1)
+        if failure == 'timeout': raise httpx.ReadTimeout('private upstream detail')
+        if failure == 'cancel': raise asyncio.CancelledError()
+        return httpx.Response(429, stream=httpx.ByteStream(b'private upstream detail'))
+    params, storage, request, generate = admitted_openai_fixture(monkeypatch, tmp_path, handler)
+    expected = asyncio.CancelledError if failure == 'cancel' else RuntimeError
+    with pytest.raises(expected): generate(request)
+    with pytest.raises(ValueError, match='OPENAI_DISPATCH_CONFLICT'): generate(request)
+    assert len(calls) == 1
+    assert storage.get(params['task_id'])['generation']['admission']['receipt']['reserved_microuros'] == 1000
+
+
+@pytest.mark.parametrize('change', ['expired','deleted','model','hash'])
+def test_openai_adapter_rechecks_journal_and_dispatch(monkeypatch, tmp_path, change):
+    import json, sqlite3
+    from datetime import datetime, timedelta, timezone
+    params, storage, request, generate = admitted_openai_fixture(
+        monkeypatch, tmp_path, lambda _:pytest.fail('unauthorized HTTP'))
+    task = storage.get(params['task_id'])
+    if change == 'expired':
+        future = datetime.now(timezone.utc) + timedelta(minutes=10)
+        class FutureClock(datetime):
+            @classmethod
+            def now(cls, tz=None): return future
+        monkeypatch.setattr('central_ai.task_storage.datetime', FutureClock)
+    else:
+        if change == 'deleted': del task['generation']['admission']
+        if change == 'model': task['generation']['admission']['receipt']['model'] = 'unapproved'
+        if change == 'hash': task['generation']['admission_sha256'] = 'f'*64
+        with sqlite3.connect(params['database']) as conn:
+            conn.execute('UPDATE tasks SET payload=? WHERE task_id=?', (json.dumps(task),params['task_id']))
+    with pytest.raises(ValueError): generate(request)
+
+
+def test_openai_adapter_sync_and_configuration_gates(monkeypatch, tmp_path):
+    import asyncio
+    from central_ai.app import make_openai_generator
+    params, storage, request, generate = admitted_openai_fixture(
+        monkeypatch, tmp_path, lambda _:pytest.fail('unauthorized HTTP'))
+    async def invoke():
+        with pytest.raises(ValueError, match='SYNC_CONTEXT'): generate(request)
+    asyncio.run(invoke())
+    monkeypatch.delenv('OPENAI_API_KEY')
+    with pytest.raises(ValueError, match='NOT_CONFIGURED'): generate(request)
+    with pytest.raises(ValueError, match='NOT_CONFIGURED'):
+        make_openai_generator(enabled='NO',database=params['database'])
+    with pytest.raises(ValueError, match='NOT_CONFIGURED'):
+        make_openai_generator(enabled='YES',database=str(tmp_path/'absent.sqlite'))
+    assert not (tmp_path/'absent.sqlite').exists()
+    assert 'dispatch' not in storage.get(params['task_id'])['generation']
+
+
+def test_openai_adapter_pipeline_integration_and_dispatch_tamper(monkeypatch, tmp_path):
+    import httpx, json, sqlite3
+    from central_ai.app import make_openai_generator
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-only')
+    def handler(outgoing):
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(
+            {'choices':[{'message':{'content':'```python\ndef f(): return 2\n```'}}]}).encode()))
+    generate = make_openai_generator(enabled='YES',database=params['database'],transport=httpx.MockTransport(handler))
+    params.update(generator=generate,generator_id=generate.generator_id)
+    assert prepare_and_verify(**params)['tests_passed']
+    saved = TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['phase'] == 'completed'
+    assert saved['approved'] is saved['deployment_allowed'] is False
+
+    other = tmp_path/'tampered'
+    other.mkdir()
+    params, storage, request, generate = admitted_openai_fixture(monkeypatch, other, handler)
+    answer = generate(request)
+    task = storage.get(params['task_id'])
+    task['generation']['dispatch']['max_output_tokens'] = 1500
+    with sqlite3.connect(params['database']) as conn:
+        conn.execute('UPDATE tasks SET payload=? WHERE task_id=?',(json.dumps(task),params['task_id']))
+    with pytest.raises(ValueError,match='OPENAI_DISPATCH_CONFLICT'):
+        storage.complete_generation(params['task_id'],request['binding']['nonce'],answer,
+                                    request['admission']['admission_sha256'])
+
+
+def test_openai_adapter_concurrent_dispatch_has_one_winner(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    params, storage, request, generate = admitted_openai_fixture(
+        monkeypatch,tmp_path,lambda _:pytest.fail('no HTTP in journal concurrency check'))
+    def claim(_):
+        try:
+            storage.begin_openai_dispatch(request)
+            return True
+        except ValueError as error:
+            assert str(error)=='OPENAI_DISPATCH_CONFLICT'
+            return False
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sum(pool.map(claim,range(2)))==1
+    # A new adapter/storage object cannot erase an interrupted dispatch.
+    from central_ai.task_storage import TaskStorage
+    with pytest.raises(ValueError,match='OPENAI_DISPATCH_CONFLICT'):
+        TaskStorage(params['database']).begin_openai_dispatch(request)
+
+
+def test_openai_adapter_missing_dispatch_cannot_accept_response(monkeypatch, tmp_path):
+    params, storage, request, generate = admitted_openai_fixture(
+        monkeypatch,tmp_path,lambda _:pytest.fail('no HTTP'))
+    with pytest.raises(ValueError,match='OPENAI_DISPATCH_CONFLICT'):
+        storage.complete_generation(params['task_id'],request['binding']['nonce'],
+                                    'synthetic response',request['admission']['admission_sha256'])
