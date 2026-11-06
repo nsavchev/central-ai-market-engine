@@ -224,14 +224,27 @@ class TaskStorage:
         return {'binding':dict(binding), 'task_description':spec}
 
     @staticmethod
+    def _generation_budget(receipt):
+        """Explicit units; legacy EUR and USD admissions never imply conversion."""
+        if not isinstance(receipt, dict):
+            raise ValueError('INVALID_GENERATION_ADMISSION')
+        if receipt.get('schema') == 'generation-admission-v1':
+            return ('EUR', receipt.get('budget_limit_microuros'), receipt.get('reserved_microuros'),
+                    'budget_limit_microuros', 'reserved_microuros')
+        if receipt.get('schema') == 'generation-admission-usd-v2':
+            return ('USD', receipt.get('budget_limit_microusd'), receipt.get('reserved_microusd'),
+                    'budget_limit_microusd', 'reserved_microusd')
+        raise ValueError('INVALID_GENERATION_ADMISSION')
+
+    @staticmethod
     def _generation_admission(receipt, binding, reserved_at):
         """Validate host approval metadata, not a provider invoice or signature."""
+        _, limit, reserved, limit_key, reserved_key = TaskStorage._generation_budget(receipt)
         fields = {'schema','generation_authorized','binding','scope','disclosure',
-                  'authorization_id','budget_period','budget_limit_microuros',
-                  'budget_call_limit','reserved_microuros','model','max_output_tokens',
+                  'authorization_id','budget_period',limit_key,
+                  'budget_call_limit',reserved_key,'model','max_output_tokens',
                   'expires_at','approved','deployment_allowed'}
         if (not isinstance(receipt, dict) or set(receipt) != fields
-                or receipt.get('schema') != 'generation-admission-v1'
                 or receipt.get('generation_authorized') is not True
                 or receipt.get('binding') != binding or receipt.get('scope') != 'generate_only'
                 or receipt.get('disclosure') != 'task_description_only'
@@ -241,8 +254,8 @@ class TaskStorage:
                 or not isinstance(receipt.get('model'), str)
                 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}', receipt['model'])
                 or any(type(receipt.get(key)) is not int for key in (
-                    'budget_limit_microuros','budget_call_limit','reserved_microuros','max_output_tokens'))
-                or not 1 <= receipt['reserved_microuros'] <= receipt['budget_limit_microuros'] <= 10**12
+                    limit_key,'budget_call_limit',reserved_key,'max_output_tokens'))
+                or not 1 <= reserved <= limit <= 10**12
                 or not 1 <= receipt['budget_call_limit'] <= 100000
                 or not 1 <= receipt['max_output_tokens'] <= 1500
                 or receipt.get('budget_period') != reserved_at.strftime('%Y-%m')
@@ -275,6 +288,7 @@ class TaskStorage:
                 raise ValueError('GENERATION_ADMISSION_CONFLICT')
             now = datetime.now(timezone.utc)
             self._generation_admission(receipt, binding, now)
+            currency, limit, reserved, _, _ = self._generation_budget(receipt)
             total = calls = 0
             for other_id, encoded in conn.execute('SELECT task_id,payload FROM tasks'):
                 other = json.loads(encoded)
@@ -305,12 +319,15 @@ class TaskStorage:
                 if prior['authorization_id'] == receipt['authorization_id']:
                     raise ValueError('GENERATION_AUTHORIZATION_REPLAY')
                 if prior['budget_period'] == receipt['budget_period']:
-                    if (prior['budget_limit_microuros'] != receipt['budget_limit_microuros']
+                    prior_currency, prior_limit, prior_reserved, _, _ = self._generation_budget(prior)
+                    if prior_currency != currency:
+                        raise ValueError('GENERATION_BUDGET_CURRENCY_CONFLICT')
+                    if (prior_limit != limit
                             or prior['budget_call_limit'] != receipt['budget_call_limit']):
                         raise ValueError('GENERATION_BUDGET_POLICY_CONFLICT')
-                    total += prior['reserved_microuros']
+                    total += prior_reserved
                     calls += 1
-            if total + receipt['reserved_microuros'] > receipt['budget_limit_microuros']:
+            if total + reserved > limit:
                 raise ValueError('GENERATION_BUDGET_EXHAUSTED')
             if calls + 1 > receipt['budget_call_limit']:
                 raise ValueError('GENERATION_CALL_BUDGET_EXHAUSTED')

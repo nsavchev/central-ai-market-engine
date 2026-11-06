@@ -1732,3 +1732,83 @@ def test_operator_worker_setup_selects_separately_pinned_bundle(monkeypatch,tmp_
         check.end_to_end_main(SimpleNamespace(case_directory=str(tmp_path/'case'),container='ci',worker_check=True))
     assert len(urls)==1 and '/'+check.WORKER_SOURCE+'/' in urls[0]
     assert (tmp_path/'case/attempt.started').is_file()
+
+
+def usd_admission_fixture(binding, *, limit=20000000, reserved=10000, calls=1):
+    receipt=generation_admission_fixture(binding)
+    receipt.pop('budget_limit_microuros');receipt.pop('reserved_microuros')
+    return dict(receipt,schema='generation-admission-usd-v2',budget_limit_microusd=limit,
+                reserved_microusd=reserved,budget_call_limit=calls)
+
+
+def test_usd_budget_survives_task_and_handler_changes(monkeypatch,tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params=generation_params(monkeypatch,tmp_path)
+    requests=[]
+    def generate(request):
+        requests.append(request)
+        return '```python\ndef f(): return 2\n```'
+    params.update(generator=generate,generation_authorization_check=lambda b:usd_admission_fixture(b,limit=10000,reserved=6000,calls=2))
+    second=add_analyzed_generation_task(params)
+    assert prepare_and_verify(**params)['tests_passed']
+    saved=TaskStorage(params['database']).get(params['task_id'])['generation']
+    assert saved['admission']['receipt']['budget_limit_microusd']==10000
+    assert 'budget_limit_microuros' not in saved['admission']['receipt']
+    with pytest.raises(ValueError,match='BUDGET_EXHAUSTED'):prepare_and_verify(**second)
+    assert len(requests)==1
+
+
+@pytest.mark.parametrize('first_usd',[False,True])
+def test_budget_currencies_cannot_be_mixed_in_same_period(monkeypatch,tmp_path,first_usd):
+    params=generation_params(monkeypatch,tmp_path)
+    requests=[]
+    def generate(request):
+        requests.append(request)
+        return '```python\ndef f(): return 2\n```'
+    eur=lambda binding:dict(generation_admission_fixture(binding),budget_limit_microuros=1000000,
+                            reserved_microuros=1000,budget_call_limit=100)
+    usd=lambda binding:usd_admission_fixture(binding,limit=1000000,reserved=1000,calls=100)
+    params.update(generator=generate,generation_authorization_check=usd if first_usd else eur)
+    second=add_analyzed_generation_task(params)
+    second['generation_authorization_check']=eur if first_usd else usd
+    assert prepare_and_verify(**params)['tests_passed']
+    with pytest.raises(ValueError,match='CURRENCY_CONFLICT'):prepare_and_verify(**second)
+    assert len(requests)==1
+
+
+@pytest.mark.parametrize('change',[
+    {'schema':'generation-admission-v2'}, {'budget_limit_microusd':True},
+    {'reserved_microusd':0}, {'reserved_microusd':20000001},
+    {'budget_limit_microuros':20000000}, {'currency':'EUR'},
+])
+def test_usd_budget_rejects_ambiguous_units_before_dispatch(monkeypatch,tmp_path,change):
+    params=generation_params(monkeypatch,tmp_path)
+    params.update(generator=lambda _:pytest.fail('must not dispatch'),
+                  generation_authorization_check=lambda b:dict(usd_admission_fixture(b),**change))
+    with pytest.raises(ValueError,match='INVALID_GENERATION_ADMISSION'):prepare_and_verify(**params)
+
+
+def test_usd_profile_uses_existing_openai_adapter_and_worker(monkeypatch,tmp_path):
+    import httpx,json
+    from central_ai.app import make_openai_generator
+    from central_ai.verified_review_pipeline import make_worker_review_handler
+    from central_ai.worker_batch import run_batch
+    from central_ai.task_storage import TaskStorage
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-only')
+    def handle(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200,stream=httpx.ByteStream(json.dumps(
+            dict(choices=[dict(message=dict(content='```python\ndef f(): return 2\n```'))])).encode()))
+    generator=make_openai_generator(enabled='YES',database=params['database'],transport=httpx.MockTransport(handle))
+    worker=make_worker_review_handler(enabled='YES',database=params['database'],jobs=jobs,
+        generator=generator,generator_id=generator.generator_id,generation_authorization_check=usd_admission_fixture,
+        authorization_check=params['authorization_check'],verifier=params['verifier'])
+    for i in range(2):
+        result=run_batch(enabled='YES',database=params['database'],agent='ci-usd',max_tasks=1,
+                         idle_checks=1,review_handler=worker)
+        assert result['processed']==(1 if i==0 else 0)
+    assert len(calls)==1
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['admission']['receipt']['schema']=='generation-admission-usd-v2'
+    assert saved['verification']['phase']=='completed'
