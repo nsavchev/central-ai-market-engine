@@ -123,6 +123,20 @@ class TaskStorage:
         if cursor.rowcount != 1:
             raise RuntimeError('VERIFICATION_AUDIT_WRITE_FAILED')
 
+    @staticmethod
+    def check_verification_barrier(tasks):
+        """Shared read/dispatch guard; unresolved intents require reconciliation."""
+        for task in tasks:
+            if 'verification' not in task:
+                continue
+            audit = task['verification']
+            if (not isinstance(audit, dict) or audit.get('schema') != 'task-verification-v1'
+                    or audit.get('phase') not in ('preparing','running','completed','blocked','quarantined')
+                    or audit.get('approved') is not False or audit.get('deployment_allowed') is not False):
+                raise ValueError('INVALID_VERIFICATION_AUDIT')
+            if audit['phase'] in ('preparing','running','quarantined'):
+                raise ValueError('VERIFICATION_DATABASE_BLOCKED')
+
     def begin_verification(self, task_id, nonce):
         """Reserve a one-shot verification intent in the existing task payload.
 
@@ -141,17 +155,7 @@ class TaskStorage:
                 raise ValueError('REVISION_SOURCE_CHANGED')
             if 'verification' in task:
                 raise ValueError('VERIFICATION_ALREADY_STARTED')
-            for (encoded,) in conn.execute('SELECT payload FROM tasks'):
-                existing = json.loads(encoded)
-                if 'verification' not in existing:
-                    continue
-                audit = existing['verification']
-                if (not isinstance(audit, dict) or audit.get('schema') != 'task-verification-v1'
-                        or audit.get('phase') not in ('preparing','running','completed','blocked','quarantined')
-                        or audit.get('approved') is not False or audit.get('deployment_allowed') is not False):
-                    raise ValueError('INVALID_VERIFICATION_AUDIT')
-                if audit['phase'] in ('preparing','running','quarantined'):
-                    raise ValueError('VERIFICATION_DATABASE_BLOCKED')
+            self.check_verification_barrier(json.loads(row[0]) for row in conn.execute('SELECT payload FROM tasks'))
             now = datetime.now(timezone.utc).isoformat()
             task['verification'] = {'schema':'task-verification-v1', 'nonce':nonce,
                                     'phase':'preparing', 'started_at':now, 'updated_at':now,

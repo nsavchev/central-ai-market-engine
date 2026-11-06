@@ -219,4 +219,45 @@ jobs:
               assert not accepted['worker_activated'] and not accepted['approved'] and not accepted['deployment_allowed']
               assert containers()==before
               print('MOCK_OPENAI_OPERATOR_E2E_REAL_DOCKER_PASSED')
+              from central_ai.verified_review_pipeline import make_worker_review_handler
+              from central_ai.worker_scheduler import scheduled_cycles
+              from central_ai.worker_supervised import run_supervised
+              case=root/'review-worker'; case.mkdir(mode=0o700)
+              worker_db=case/'tasks.sqlite'
+              worker_source=case/'source'; worker_source.mkdir()
+              worker_original=worker_source/'sample.py'; worker_original.write_text('def f(a,b): return a+b\n')
+              worker_bytes=worker_original.read_bytes()
+              worker_bridge=PersistentTaskBridge(worker_db)
+              worker_task=worker_bridge.submit('Implement def f(a,b) to return a*b as one fenced python block.')['task_id']
+              worker_targets=TaskFileTargets(worker_db); worker_targets.initialize()
+              worker_targets.register(worker_task,str(worker_source),'sample.py')
+              worker_test=case/'test.py'; worker_test.write_bytes((e2e_case/'trusted_test.py').read_bytes())
+              worker_test_digest=hashlib.sha256(worker_test.read_bytes()).hexdigest()
+              job=dict(trusted_test_file=str(worker_test),trusted_test_sha256=worker_test_digest,image=image)
+              for name in ('handoffs','proposals','candidates'):
+                  path=case/name;path.mkdir(mode=0o700);job[name]=str(path)
+              underlying=e2e_factory(str(worker_db))
+              worker_calls=[]
+              def worker_generate(request):
+                  worker_calls.append(request['binding']['nonce'])
+                  return underlying(request)
+              def worker_admit(binding):
+                  return dict(authorize_generation(binding),model='gpt-4.1-mini',max_output_tokens=128,budget_call_limit=1)
+              handler=make_worker_review_handler(enabled='YES',database=str(worker_db),jobs={worker_task:job},
+                  generator=worker_generate,generator_id=underlying.generator_id,
+                  generation_authorization_check=worker_admit,authorization_check=authorize)
+              def bounded_batch(**kwargs):return run_batch(**kwargs,idle_checks=1,sleep=lambda _:None)
+              def bounded_schedule(**kwargs):return scheduled_cycles(**kwargs,batch=bounded_batch,sleep=lambda _:None)
+              worked=run_supervised(enabled='YES',database=str(worker_db),agent='ci-explicit-review',
+                  lock_path=str(case/'worker.lock'),status_path=str(case/'status.json'),cycles=3,interval=1,
+                  max_tasks=1,scheduler=bounded_schedule,review_handler=handler)
+              assert worked['processed']==1 and len(worker_calls)==1
+              worker_saved=TaskStorage(worker_db).get(worker_task)
+              assert worker_saved['generation']['phase']=='completed' and worker_saved['verification']['phase']=='completed'
+              assert worker_saved['verification']['outcome']['tests_passed']
+              assert not worker_saved['approved'] and not worker_saved['deployment_allowed']
+              assert worker_original.read_bytes()==worker_bytes
+              assert hashlib.sha256(worker_test.read_bytes()).hexdigest()==worker_test_digest
+              assert containers()==before
+              print('EXPLICIT_WORKER_REVIEW_THREE_CYCLES_ONE_GENERATION_REAL_DOCKER_PASSED')
           PY

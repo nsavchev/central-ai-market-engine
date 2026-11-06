@@ -1367,6 +1367,11 @@ def test_admitted_connectivity_composed_child_and_host_replay(monkeypatch,tmp_pa
             if url.endswith('/'+path):return io.BytesIO((root/path).read_bytes())
         pytest.fail('unexpected source URL')
     monkeypatch.setattr(check,'urlopen',source)
+    # Composition uses this checkout as a synthetic source fixture; the actual
+    # operator manifest stays pinned to its reviewed historical commit.
+    import hashlib
+    monkeypatch.setattr(check,'FILES',{name:(path,hashlib.sha256((root/path).read_bytes()).hexdigest())
+                                       for name,(path,_) in check.FILES.items()})
     original_run=check.subprocess.run
     calls=[]
     def child(args,**kwargs):
@@ -1461,13 +1466,16 @@ def test_operator_e2e_pinned_bundle_contains_local_import_closure():
                 assert node.module in E2E_FILES,(name,node.module)
 
 
-def test_operator_e2e_bundle_hashes_match_reviewed_source():
-    import hashlib
-    from pathlib import Path
-    from scripts.openai_admitted_acceptance import E2E_FILES
-    root=Path(__file__).resolve().parents[1]
-    for path,digest in E2E_FILES.values():
-        assert hashlib.sha256((root/path).read_bytes()).hexdigest()==digest,path
+def test_operator_e2e_pinned_download_mismatch_blocks_setup(monkeypatch,tmp_path):
+    import io
+    from types import SimpleNamespace
+    from scripts import openai_admitted_acceptance as check
+    monkeypatch.setattr(check,'urlopen',lambda *a,**kw:io.BytesIO(b'changed pinned source'))
+    monkeypatch.setattr(check.subprocess,'run',lambda *a,**kw:pytest.fail('must not execute unverified source'))
+    case=tmp_path/'case'
+    with pytest.raises(ValueError,match='E2E_SOURCE_MISMATCH'):
+        check.end_to_end_main(SimpleNamespace(case_directory=str(case),container='ci-only'))
+    assert (case/'attempt.started').is_file()
 
 
 def test_operator_e2e_unavailable_key_never_dispatches_or_leaks(monkeypatch,tmp_path):
@@ -1478,3 +1486,182 @@ def test_operator_e2e_unavailable_key_never_dispatches_or_leaks(monkeypatch,tmp_
     result=run_e2e_case(tmp_path,'python@sha256:'+'a'*64,key_container='ci-only')
     assert result['acceptance']=='failed_or_uncertain'
     assert 'private' not in json.dumps(result)
+
+
+def worker_review_fixture(monkeypatch,tmp_path,*,call_limit=100):
+    from central_ai.verified_review_pipeline import make_worker_review_handler
+    params=generation_params(monkeypatch,tmp_path)
+    calls=[]
+    def generate(request):
+        calls.append(request['binding']['task_id'])
+        return '```python\ndef f(): return 2\n```'
+    jobs={params['task_id']:{key:params[key] for key in (
+        'handoffs','proposals','candidates','trusted_test_file','trusted_test_sha256','image')}}
+    for key in ('handoffs','proposals','candidates'):
+        path=tmp_path/key; path.mkdir();jobs[params['task_id']][key]=str(path)
+    def build(custom_jobs=None,generator=generate):
+        return make_worker_review_handler(enabled='YES',database=params['database'],
+            jobs=jobs if custom_jobs is None else custom_jobs,generator=generator,generator_id='ci-worker-generator',
+            generation_authorization_check=budget_authorizer(calls=call_limit),
+            authorization_check=params['authorization_check'],verifier=params['verifier'])
+    return params,jobs,calls,build
+
+
+def test_worker_review_pending_analysis_resumes_once_across_cycles(monkeypatch,tmp_path):
+    from central_ai.worker_scheduler import scheduled_cycles
+    from central_ai.worker_batch import run_batch
+    from central_ai.task_storage import TaskStorage
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    handler=build()
+    def batch(**kwargs):return run_batch(**kwargs,idle_checks=1,sleep=lambda _:None)
+    result=scheduled_cycles(enabled='YES',database=params['database'],agent='ci-review',
+        lock_path=str(tmp_path/'scheduler.lock'),cycles=3,interval=1,max_tasks=1,
+        sleep=lambda _:None,batch=batch,review_handler=handler)
+    assert result==dict(status='complete',cycles=3,processed=1)
+    assert calls==[params['task_id']]
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['verification']['phase']=='completed' and saved['generation']['phase']=='completed'
+    assert saved['approved'] is saved['deployment_allowed'] is False
+    assert run_batch(enabled='YES',database=params['database'],agent='restart',max_tasks=1,
+        idle_checks=1,review_handler=build())['processed']==0
+    assert len(calls)==1
+
+
+def test_worker_review_new_analysis_finishes_before_generation(monkeypatch,tmp_path):
+    from central_ai.persistent_bridge import PersistentTaskBridge
+    from central_ai.task_file_targets import TaskFileTargets
+    from central_ai.worker_batch import run_batch
+    from central_ai.task_storage import TaskStorage
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    bridge=PersistentTaskBridge(params['database'])
+    task_id=bridge.submit('New explicitly allowed source task')['task_id']
+    TaskFileTargets(params['database']).register(task_id,str(tmp_path/'source'),'sample.py')
+    job=dict(jobs[params['task_id']])
+    handler=build({task_id:job})
+    def batch():return run_batch(enabled='YES',database=params['database'],agent='ci-analysis-review',
+        max_tasks=1,idle_checks=1,review_handler=handler)
+    assert batch()['processed']==1
+    saved=TaskStorage(params['database']).get(task_id)
+    assert saved['status']=='analyzed' and saved['verification']['phase']=='completed'
+    assert calls==[task_id]
+    assert batch()['processed']==0
+    assert 'verification' not in TaskStorage(params['database']).get(params['task_id'])
+
+
+def test_worker_review_freezes_allowlist_and_configuration(monkeypatch,tmp_path):
+    from central_ai.worker_batch import run_batch
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    handler=build()
+    jobs[params['task_id']]['image']='invalid'
+    jobs.clear()
+    assert handler.accepts(params['task_id']) and not handler.accepts('other')
+    with pytest.raises(ValueError,match='NOT_ALLOWED'):handler('other')
+    assert run_batch(enabled='YES',database=params['database'],agent='ci',max_tasks=1,
+                     idle_checks=1,review_handler=handler)['processed']==1
+    assert calls==[params['task_id']]
+
+
+def test_worker_review_persistent_budget_survives_new_handler_and_task(monkeypatch,tmp_path):
+    from central_ai.worker_batch import run_batch
+    from central_ai.task_storage import TaskStorage
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path,call_limit=1)
+    second=add_analyzed_generation_task(params)
+    jobs[second['task_id']]=dict(jobs[params['task_id']])
+    def batch(handler):return run_batch(enabled='YES',database=params['database'],agent='budget',
+        max_tasks=1,idle_checks=1,review_handler=handler)
+    assert batch(build())['processed']==1
+    with pytest.raises(ValueError,match='CALL_BUDGET_EXHAUSTED'):batch(build())
+    assert len(calls)==1
+    saved=TaskStorage(params['database']).get(second['task_id'])
+    assert saved['verification']['phase']=='blocked'
+    assert batch(build())['processed']==0 and len(calls)==1
+
+
+def test_worker_review_uncertain_dispatch_blocks_restart_without_retry(monkeypatch,tmp_path):
+    import multiprocessing,os
+    from central_ai.worker_batch import run_batch
+    from central_ai.task_storage import TaskStorage
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    def child():
+        handler=build(generator=lambda request:os._exit(23))
+        run_batch(enabled='YES',database=params['database'],agent='crash',max_tasks=1,idle_checks=1,review_handler=handler)
+    process=multiprocessing.get_context('fork').Process(target=child)
+    process.start();process.join(10)
+    assert process.exitcode==23
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['admission']['receipt']['generation_authorized'] is True
+    assert saved['verification']['phase']=='preparing'
+    with pytest.raises(ValueError,match='DATABASE_BLOCKED'):
+        run_batch(enabled='YES',database=params['database'],agent='restart',max_tasks=1,idle_checks=1,review_handler=build())
+    assert not calls
+
+
+def test_worker_review_concurrent_selection_cannot_double_dispatch(monkeypatch,tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from central_ai.developer_worker_coordinator import DeveloperWorkerCoordinator
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    barrier=Barrier(2)
+    handlers=[build(),build()]
+    for handler in handlers:
+        original=handler.next_task_id
+        def select(original=original):
+            task_id=original();barrier.wait(timeout=5);return task_id
+        handler.next_task_id=select
+    workers=[DeveloperWorkerCoordinator(params['database'],'race-'+str(i),review_handler=handler)
+             for i,handler in enumerate(handlers)]
+    def run(worker):
+        try:return worker.run_once()['verification']['tests_passed']
+        except ValueError as error:
+            assert str(error)=='VERIFICATION_ALREADY_STARTED'
+            return False
+    with ThreadPoolExecutor(max_workers=2) as pool:assert sum(pool.map(run,workers))==1
+    assert calls==[params['task_id']]
+
+
+def test_worker_review_requires_explicit_matching_handler(monkeypatch,tmp_path):
+    from central_ai.developer_worker_coordinator import DeveloperWorkerCoordinator
+    from central_ai.worker_batch import run_batch
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    assert run_batch(enabled='YES',database=params['database'],agent='default',max_tasks=1,idle_checks=1)['processed']==0
+    assert not calls
+    handler=build()
+    with pytest.raises(ValueError,match='INVALID_WORKER_REVIEW_HANDLER'):
+        DeveloperWorkerCoordinator(tmp_path/'other.sqlite','wrong-db',review_handler=handler)
+    assert not (tmp_path/'other.sqlite').exists()
+    with pytest.raises(ValueError,match='AMBIGUOUS_REVIEW_COORDINATOR'):
+        run_batch(enabled='YES',database=params['database'],agent='ci',review_handler=handler,coordinator=object())
+
+
+def test_worker_review_supervisor_propagates_explicit_handler_and_sanitizes_status(monkeypatch,tmp_path):
+    import json
+    from central_ai.worker_supervised import run_supervised
+    from central_ai.worker_scheduler import scheduled_cycles
+    from central_ai.worker_batch import run_batch
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    def batch(**kwargs):return run_batch(**kwargs,idle_checks=1,sleep=lambda _:None)
+    def schedule(**kwargs):return scheduled_cycles(**kwargs,batch=batch,sleep=lambda _:None)
+    result=run_supervised(enabled='YES',database=params['database'],agent='ci-supervised',
+        lock_path=str(tmp_path/'run.lock'),status_path=str(tmp_path/'status.json'),
+        cycles=2,interval=1,max_tasks=1,scheduler=schedule,review_handler=build())
+    assert result['processed']==1 and len(calls)==1
+    status=json.loads((tmp_path/'status.json').read_text())
+    assert status['state']=='complete' and status['processed']==1
+    assert params['task_id'] not in json.dumps(status) and 'generation-admission' not in json.dumps(status)
+
+
+@pytest.mark.parametrize('bad', ['disabled','authority','generator','jobs','image','paths'])
+def test_worker_review_factory_rejects_incomplete_host_configuration(monkeypatch,tmp_path,bad):
+    from central_ai.verified_review_pipeline import make_worker_review_handler
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    options=dict(enabled='YES',database=params['database'],jobs=jobs,generator=lambda _:pytest.fail('must not dispatch'),
+        generator_id='ci-only',generation_authorization_check=budget_authorizer(),
+        authorization_check=params['authorization_check'],verifier=params['verifier'])
+    if bad=='disabled':options['enabled']='NO'
+    if bad=='authority':options['generation_authorization_check']=None
+    if bad=='generator':options['generator']=None
+    if bad=='jobs':options['jobs']={}
+    if bad=='image':jobs[params['task_id']]['image']='python:latest'
+    if bad=='paths':jobs[params['task_id']]['candidates']='relative-path'
+    with pytest.raises(ValueError):make_worker_review_handler(**options)
+    assert not calls

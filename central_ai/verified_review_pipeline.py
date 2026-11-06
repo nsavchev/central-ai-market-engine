@@ -159,3 +159,67 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
             # preparing/running intent remains blocking after write uncertainty.
             raise RuntimeError("VERIFICATION_AUDIT_WRITE_FAILED") from None
         raise
+
+
+def make_worker_review_handler(*, enabled, database, jobs, generator, generator_id,
+                               generation_authorization_check, authorization_check,
+                               verifier=run_functional_tests):
+    """Trusted-host opt-in wiring; no environment defaults or task auto-approval.
+
+    jobs freezes an explicit task-ID allowlist and independent harness/output
+    configuration. Analysis completion is durable before review begins; pending
+    allowlisted analyses can therefore resume after a process restart. Existing
+    preparing/running/quarantined intents block instead of resending a request.
+    """
+    import json
+    import sqlite3
+    from uuid import UUID
+    fields = {'handoffs','proposals','candidates','trusted_test_file','trusted_test_sha256','image'}
+    db = Path(database)
+    if (enabled != 'YES' or not db.is_absolute() or not db.is_file() or db.is_symlink()
+            or not callable(generator) or not callable(generation_authorization_check)
+            or not callable(authorization_check) or not callable(verifier)
+            or not isinstance(generator_id, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', generator_id)
+            or not isinstance(jobs, dict) or not 1 <= len(jobs) <= 100):
+        raise ValueError('WORKER_REVIEW_NOT_CONFIGURED')
+    captured = {}
+    for task_id, config in jobs.items():
+        if (not isinstance(task_id, str) or not isinstance(config, dict) or set(config) != fields
+                or any(not isinstance(value, str) or not value for value in config.values())):
+            raise ValueError('INVALID_WORKER_REVIEW_JOB')
+        try:
+            if str(UUID(task_id)) != task_id:
+                raise ValueError('INVALID_WORKER_REVIEW_JOB')
+        except (ValueError, AttributeError):
+            raise ValueError('INVALID_WORKER_REVIEW_JOB') from None
+        if (not re.fullmatch(r'[0-9a-f]{64}', config['trusted_test_sha256'])
+                or not re.fullmatch(r'[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}', config['image'])
+                or any(not Path(config[key]).is_absolute() for key in fields-{'trusted_test_sha256','image'})):
+            raise ValueError('INVALID_WORKER_REVIEW_JOB')
+        captured[task_id] = dict(config)
+
+    def review(task_id):
+        if task_id not in captured:
+            raise ValueError('WORKER_REVIEW_TASK_NOT_ALLOWED')
+        return prepare_and_verify(enabled='YES', database=str(db), task_id=task_id,
+            generator=generator, generator_id=generator_id,
+            generation_authorization_check=generation_authorization_check,
+            authorization_check=authorization_check, verifier=verifier, **captured[task_id])
+
+    def next_task_id():
+        with sqlite3.connect(str(db), timeout=10) as conn:
+            rows = [(task_id, json.loads(payload)) for task_id, payload in conn.execute(
+                'SELECT task_id,payload FROM tasks ORDER BY created_at,task_id')]
+            # Global unresolved intents remain a barrier, including tasks outside
+            # this handler's allowlist. No new retry/lease/recovery mechanism.
+            TaskStorage.check_verification_barrier(task for _, task in rows)
+            for task_id, task in rows:
+                if task_id in captured and task.get('status') == 'analyzed' and 'verification' not in task:
+                    TaskStorage(db)._review_task(conn, task_id)
+                    return task_id
+        return None
+
+    review.database = str(db)
+    review.accepts = lambda task_id: task_id in captured
+    review.next_task_id = next_task_id
+    return review

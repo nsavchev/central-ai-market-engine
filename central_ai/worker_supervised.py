@@ -9,7 +9,7 @@ from central_ai.worker_scheduler import scheduled_cycles
 
 
 def run_supervised(*, enabled, database, agent, lock_path, status_path,
-                   cycles=3, interval=5, max_tasks=10, scheduler=scheduled_cycles):
+                   cycles=3, interval=5, max_tasks=10, scheduler=scheduled_cycles, review_handler=None):
     if enabled != "YES":
         raise ValueError("SERVICE_DISABLED")
     db = Path(database)
@@ -30,9 +30,10 @@ def run_supervised(*, enabled, database, agent, lock_path, status_path,
         os.replace(tmp, status)
     write_state("starting")
     try:
+        options = {} if review_handler is None else {'review_handler': review_handler}
         result = scheduler(enabled="YES",database=str(db),agent=agent,
                            lock_path=lock_path,cycles=cycles,interval=interval,
-                           max_tasks=max_tasks)
+                           max_tasks=max_tasks,**options)
         write_state("complete" if result["status"] == "complete" else "already_running",
                     cycles=result["cycles"], processed=result.get("processed", 0))
         return result
