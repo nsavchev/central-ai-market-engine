@@ -472,8 +472,65 @@ class TaskStorage:
             audit.update(resources=dict(resources), updated_at=datetime.now(timezone.utc).isoformat())
             self._write_review_task(conn, task_id, task)
 
-    def complete_verification(self, task_id, nonce, report):
-        """Atomically store only the bounded pipeline report; never promote task status."""
+    @staticmethod
+    def review_status(database, task_ids):
+        """Read durable outcomes in one RO snapshot; return counters, never content."""
+        path = Path(database)
+        if (not path.is_absolute() or path.resolve() != path or not path.is_file()
+                or not isinstance(task_ids, tuple) or not 1 <= len(task_ids) <= 100
+                or any(not isinstance(t, str) or not t for t in task_ids)
+                or len(set(task_ids)) != len(task_ids)):
+            raise ValueError('INVALID_REVIEW_STATUS_SCOPE')
+        counts = dict(cleanup_uncertain=0, blocked=0, candidate_failed=0, pending=0, verified=0)
+        seen = set()
+        with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=10) as conn:
+            conn.execute('PRAGMA query_only=ON'); conn.execute('BEGIN')
+            for task_id, encoded in conn.execute('SELECT task_id,payload FROM tasks'):
+                task = json.loads(encoded)
+                if not isinstance(task, dict):
+                    raise ValueError('INVALID_VERIFICATION_AUDIT')
+                if task_id in task_ids:
+                    seen.add(task_id)
+                try:
+                    TaskStorage.check_verification_barrier([task])
+                except ValueError as error:
+                    if str(error) != 'VERIFICATION_DATABASE_BLOCKED':
+                        raise
+                    audit = task['verification']
+                    name = ('cleanup_uncertain' if audit['phase'] == 'quarantined'
+                            and 'resources' in audit else 'blocked')
+                    counts[name] += 1
+                    continue
+                if task_id not in task_ids:
+                    continue
+                audit = task.get('verification')
+                if audit is None:
+                    counts['pending'] += 1
+                elif audit['phase'] == 'blocked':
+                    counts['blocked'] += 1
+                elif audit['phase'] == 'completed':
+                    outcome = audit.get('outcome')
+                    TaskStorage._validated_verification_report(task_id, audit.get('nonce'), outcome)
+                    if (outcome['verification_binding'] != audit.get('binding')
+                            or outcome['reviewer_id'] != audit.get('reviewer_id')
+                            or outcome['authorization_id'] != audit.get('authorization_id')
+                            or outcome['candidate_sha256'] != audit.get('binding', {}).get('candidate_sha256')
+                            or outcome['test_sha256'] != audit.get('binding', {}).get('test_sha256')
+                            or outcome['quarantine_required'] is not False
+                            or 'resources' not in audit
+                            or task.get('status') != 'analyzed'
+                            or task.get('approved') is not False or task.get('deployment_allowed') is not False):
+                        raise ValueError('INVALID_VERIFICATION_AUDIT')
+                    name = ('verified' if outcome['test_status'] == 'passed' else
+                            'candidate_failed' if outcome['test_status'] == 'failed' else 'blocked')
+                    counts[name] += 1
+        if seen != set(task_ids):
+            raise ValueError('REVIEW_STATUS_TASK_MISSING')
+        state = next((k for k, value in counts.items() if value), 'idle')
+        return dict(state=state, **counts)
+
+    @staticmethod
+    def _validated_verification_report(task_id, nonce, report):
         fields = {'task_id','candidate_sha256','test_sha256','reviewer_id','authorization_id',
                   'verification_nonce','verification_binding','test_status','tests_passed',
                   'quarantine_required','quarantine_resources','approved','deployment_allowed',
@@ -493,6 +550,11 @@ class TaskStorage:
         encoded = json.dumps(report, allow_nan=False)
         if len(encoded.encode('utf-8')) > 32768:
             raise ValueError('VERIFICATION_REPORT_TOO_LARGE')
+        return encoded
+
+    def complete_verification(self, task_id, nonce, report):
+        """Atomically store the bounded report; never promote task status."""
+        encoded = self._validated_verification_report(task_id, nonce, report)
         with self._connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
             task = self._review_task(conn, task_id)

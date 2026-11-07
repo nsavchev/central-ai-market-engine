@@ -1,6 +1,6 @@
 # Central AI / Market Engine — архитектура, решения и напредък
 
-**Основен жив регистър. Обновен: 2026-11-07 (Europe/Sofia).** Текущ source checkpoint: **P1-SCHEDULED-SCOPE-01** (последният запис); следва **P1-SCHEDULED-STATUS-01**. Реалното приемане на v2 runner остава отделен отворен gate. Това е source-only дизайн, не статус на внедрен worker. Предходните checkpoints и датираните одити остават доказателства за своите снимки. [Планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда; оперативните доказателства се съхраняват отделно.
+**Основен жив регистър. Обновен: 2026-11-07 (Europe/Sofia).** Текущ source checkpoint: **P1-SCHEDULED-STATUS-01** (последният запис); следва **P1-SCHEDULED-IDLE-01**. Реалното приемане на v2 runner остава отделен отворен gate. Това е source checkpoint, не статус на внедрен worker. Предходните checkpoints и датираните одити остават доказателства за своите снимки. [Планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда; оперативните доказателства се съхраняват отделно.
 
 ## 1. Кой код и коя среда описваме
 
@@ -757,3 +757,21 @@ TaskQueue accepts optional bounded parameterized allowed_task_ids inside the exi
 Checks: targetedAI26/retry/batch/scheduler/supervisor290passed/zero warnings, including mixed foreign pending/expired leases, default analysis continuation, frozen handler scope, empty/malformed/missing scope and competing acquisitions. Initial queue-only test fixtures omitted the pre-existing target registry table; fixtures now initialize the existing TaskFileTargets owner rather than changing unrelated runtime behavior. Exact local DUP01 workflow command521passed/3Docker-dependent skipped/zero warnings; existing ownership scanner has no parse failures; source syntax, disabled ten-file v2 example and runbook links pass. Exact-sourceCI pending. No VPS/OS/unit/private policy/provider/budget/ledger/migration change or paid model request.
 
 Next source task P1-SCHEDULED-STATUS-01 in existing supervisor/coordinator/storage owners: honest idle/blocked/test failure/cleanup uncertainty outcomes. Real isolated v2 runner acceptance, credential-free idle semantics and measured timeout/restart/cutover remain open. Source CI never authorizes standing review activation, arbitrary code, merge/promotion or live orders.
+
+
+### P1-SCHEDULED-SCOPE-01 — exact-source CI accepted
+
+84b758a4ac6a1e6d0241f73908a899988adcd5e9:33/33workflows successful. DUP01run42365124060/job128381456215 confirms521passed/3skipped and successful Docker config/image/SQLite replacement persistence. AI19run42365124070/job128381456406 confirms existing realDocker retained-state smoke; this is not real rootless v2 runner acceptance. Local exact-workflow521passed/3skipped, targeted290passed, zero warnings; scanner325definitions/80imports/no parse failures. PR#130body updated without bookkeeping-only commit. No VPS/config/ledger/provider/budget/service/merge/trading action. Next P1-SCHEDULED-STATUS-01, with real v2 runner acceptance and recurring activation still open.
+
+
+### P1-SCHEDULED-STATUS-01 — durable review outcomes in existing owners (2026-11-07)
+
+Parent84b758a4ac6a1e6d0241f73908a899988adcd5e9, PR#130/base7fd9c850f73edea70988b017d8dda2a4b70f3fc3. Objective: prevent completed worker cycles from being presented as passed verification. Existing owners TaskStorage.review_status/shared verification report validator, handler metadata in verified_review_pipeline and worker_supervised.run_supervised/main; no new runtime module/schema/status engine/service. Changed those owners, compatibility check in existing operator helper, existingAI04/AI26tests and focused/canonical/focus docs only.
+
+RO snapshot reads return fixed counts/states without task content, identities, receipts, resource paths or credentials. Completed reports reuse write-time validation and audit binding/promotion/resource checks; missing/corrupt state fails closed. Global unresolved intents remain barriers even outside job grants. Failure precedence cleanup_uncertain>blocked>candidate_failed>pending>verified>idle. Failed tests remain visible through later empty cycles; timeout/execution/completion uncertainty is blocked rather than blaming candidate code. A successful cycle is still raw cycle metadata, not a passed-test claim.
+
+Supervisor writes honest state/cycle_status/review_counts and returns review_state in review mode, while analysis-only behavior stays intact. CLI failed/blocked/uncertain review exits nonzero. Trusted policy loading moves inside supervised startup after writing starting; credential/isolation/load failure replaces stale success with blocked where writable, and invalid loaded handler cannot fall back to analysis. A failed status write propagates failure; old status is not a fresh outcome. Existing helper accepts extra review metadata without dropping required cycle/durable result checks; pinned staged bundles, policies and budget/admission history remain unchanged.
+
+Checks: exact local DUP01 workflow command533passed/3Docker-dependent skipped/zero warnings. Earlier targeted set328passed/3skipped before final bad-loader guard; aggregate includes that final regression. New cases cover verified/idle, failed tests/provider errors/timeouts, quarantine/restart/global foreign intent, corrupt reports, DB read-only preservation, sanitized fields and nonzero CLI/startup failures. Exact-sourceCI pending. No VPS/OS/config/unit/provider/budget/ledger/migration change, paid request, retry, merge or trading.
+
+Next P1-SCHEDULED-IDLE-01: credential-free idle startup with missing-key rejection before eligible admission, preserving the existing ownership/ledger barriers. Real v2 runner acceptance and measured timeout/restart/cutover remain separate unverified gates. Do not infer standing activation, general Python execution or promotion from honest status metadata or sourceCI.

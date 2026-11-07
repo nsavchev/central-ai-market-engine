@@ -562,7 +562,8 @@ def run_prepared_pilot(*, state_directory, authority_directory, key_container):
         result=run_supervised(enabled='YES',database=str(database),agent='operator-single-pilot',
             lock_path=str(state/'worker.lock'),status_path=str(state/'worker-status.json'),
             cycles=1,interval=1,max_tasks=1,review_handler=handler)
-        require(result==dict(status='complete',cycles=1,processed=1))
+        require(all(result.get(k)==v for k,v in dict(status='complete',cycles=1,processed=1).items())
+                and result.get('review_state') in (None,'verified'))
         saved=TaskStorage(database).get(task_id)
         generation=saved['generation'];verification=saved['verification'];outcome=verification['outcome']
         require(saved['status']=='analyzed' and generation['phase']=='completed'

@@ -1646,7 +1646,7 @@ def test_worker_review_supervisor_propagates_explicit_handler_and_sanitizes_stat
         cycles=2,interval=1,max_tasks=1,scheduler=schedule,review_handler=build())
     assert result['processed']==1 and len(calls)==1
     status=json.loads((tmp_path/'status.json').read_text())
-    assert status['state']=='complete' and status['processed']==1
+    assert status['state']=='verified' and status['processed']==1
     assert params['task_id'] not in json.dumps(status) and 'generation-admission' not in json.dumps(status)
 
 
@@ -2357,3 +2357,76 @@ def test_queue_scope_competing_acquisitions_share_one_lease_and_attempt(tmp_path
     assert sum(r is not None for r in results)==1
     assert queue.status('allowed')['attempt_count']==1
     assert queue.status('foreign')['attempt_count']==0
+
+@pytest.mark.parametrize('outcome,expected',[('passed','verified'),('failed','candidate_failed'),
+    ('cleanup_unconfirmed','cleanup_uncertain'),('timeout','blocked'),('provider_error','blocked')])
+def test_supervisor_durable_review_states_survive_idle_or_restart(monkeypatch,tmp_path,outcome,expected):
+    import json
+    from pathlib import Path
+    from central_ai.worker_supervised import run_supervised
+    from central_ai.task_storage import TaskStorage
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    if outcome=='provider_error':
+        def generator(request):
+            calls.append(request['binding']['task_id'])
+            raise RuntimeError('secret-provider-detail')
+        handler=build(generator=generator)
+    else:
+        def verify(**kwargs):
+            record_fixture_resources(kwargs)
+            if outcome=='cleanup_unconfirmed':
+                return valid_result(status=outcome,passed=False,
+                    snapshot_directory='/tmp/central-ai-input-ci-fixture',container_name='central-ai-verifier-'+'f'*32)
+            return valid_result(status=outcome,passed=outcome=='passed',returncode=1 if outcome=='failed' else 0)
+        params['verifier']=verify;handler=build()
+    status=tmp_path/'honest-status.json'
+    def cycle():return run_supervised(enabled='YES',database=params['database'],agent='status-test',
+        lock_path=str(tmp_path/'status.lock'),status_path=str(status),cycles=1,interval=1,max_tasks=1,review_handler=handler)
+    if outcome=='provider_error':
+        with pytest.raises(RuntimeError):cycle()
+    else:
+        result=cycle();assert result['review_state']==expected and result['status']=='complete'
+    first=json.loads(status.read_text());assert first['state']==expected
+    before=Path(params['database']).read_bytes()
+    summary=TaskStorage.review_status(params['database'],handler.allowed_task_ids)
+    assert summary['state']==expected and Path(params['database']).read_bytes()==before
+    if expected=='cleanup_uncertain':
+        with pytest.raises(ValueError):cycle()
+    else:
+        again=cycle()
+        assert again['processed']==0 and again['review_state']==('idle' if expected=='verified' else expected)
+    record=json.loads(status.read_text())
+    assert record['state']==('idle' if expected=='verified' else expected)
+    assert len(calls)==1
+    encoded=status.read_text()
+    assert params['task_id'] not in encoded and 'secret-provider-detail' not in encoded
+    assert 'generation-admission' not in encoded and '/tmp/' not in encoded
+
+
+def test_review_status_corrupt_outcomes_fail_closed(monkeypatch,tmp_path):
+    import json,sqlite3
+    from pathlib import Path
+    from central_ai.task_storage import TaskStorage
+    from central_ai.worker_batch import run_batch
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    handler=build()
+    assert run_batch(enabled='YES',database=params['database'],agent='status-good',max_tasks=1,idle_checks=1,review_handler=handler)['processed']==1
+    with sqlite3.connect(params['database']) as db:
+        encoded=db.execute('SELECT payload FROM tasks WHERE task_id=?',(params['task_id'],)).fetchone()[0]
+        task=json.loads(encoded);task['verification']['outcome']['completion_confirmed']=False
+        db.execute('UPDATE tasks SET payload=? WHERE task_id=?',(json.dumps(task),params['task_id']))
+    before=Path(params['database']).read_bytes()
+    with pytest.raises(ValueError):TaskStorage.review_status(params['database'],handler.allowed_task_ids)
+    assert Path(params['database']).read_bytes()==before
+
+
+def test_review_status_sees_global_intent_outside_grants_without_writes(monkeypatch,tmp_path):
+    from pathlib import Path
+    from central_ai.task_storage import TaskStorage
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    foreign=add_analyzed_generation_task(params)
+    TaskStorage(params['database']).begin_verification(foreign['task_id'],'a'*32)
+    before=Path(params['database']).read_bytes()
+    summary=build().review_status()
+    assert summary['state']=='blocked' and summary['blocked']==1 and summary['pending']==1
+    assert Path(params['database']).read_bytes()==before and calls==[]

@@ -221,6 +221,7 @@ def make_worker_review_handler(*, enabled, database, jobs, generator, generator_
 
     review.database = str(db)
     review.allowed_task_ids = tuple(captured)
+    review.review_status = lambda: TaskStorage.review_status(str(db), tuple(captured))
     review.accepts = lambda task_id: task_id in captured
     review.next_task_id = next_task_id
     return review
