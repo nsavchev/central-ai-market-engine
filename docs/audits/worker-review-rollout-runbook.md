@@ -49,3 +49,63 @@ The operator helper's --run-prepared --send-once mode runs only the existing pre
 The retained database must contain exactly the one granted planned/pending task, zero attempts and no generation/verification journal. The helper checks the existing image without pulling, then exclusively creates pilot.started before reading the provider key through a captured local Docker subprocess. Key bytes are held in process memory and never printed or placed in command arguments. A private temporary executable grant is loaded through the existing coordinator boundary and removed before dispatch; the original disabled runtime policy and persistent reviewer key remain unchanged. The existing supervisor runs one cycle with max_tasks=1. Generated arithmetic is executed only by the existing bounded Docker verifier with the fixed independent harness, and cannot be promoted.
 
 Keep pilot.started, the original state and pilot-report.json after every outcome. Missing report, timeout or interruption means reconcile retained journals/resources before proceeding; do not delete the marker, create a fresh database or automatically repeat the request. A process killed during grant construction may leave a temporary grant for explicit operator reconciliation; this does not enable a service. No timer/service is installed or enabled by this command. A successful pilot is not approval for recurring operation, arbitrary Python execution, production migration or trading.
+
+
+## Scheduled-review decision and implementation gates
+
+Source review: PR #130, runtime commit `e22c6e5d18b76ca0bd680c19a441139448722268`. This section describes repository behavior and proposed changes only. It does not attest a live service, account, private policy or runner.
+
+### Entry points and ownership
+
+| Concern | Existing owner | Source behavior / required change |
+|---|---|---|
+| Periodic trigger | [AI-08 timer](../../deploy/ai08/central-ai-staging.timer) and [service](../../deploy/ai08/central-ai-staging.service) | One systemd timer/oneshot identity. Keep its current analysis configuration until a reviewed cutover. Do not schedule the completed one-shot pilot helper. |
+| Container envelope | [AI-06 Compose](../../docker-compose.ai06.yml) | Analysis-only defaults: no network, nonroot user, read-only root, no daemon socket, two cycles/max_tasks=2, on-failure restart. These defaults do not supply a provider/verifier execution environment. |
+| Service execution | [run_supervised/main](../../central_ai/worker_supervised.py) | Existing opt-in CLI. The proposed review service explicitly sets cycles=1/max_tasks=1 and does not rely on CLI defaults. A successful process exit alone is not proof that candidate tests passed. |
+| Non-overlap and work bounds | [scheduled_cycles](../../central_ai/worker_scheduler.py), [run_batch](../../central_ai/worker_batch.py) | Reuse the existing ledger-adjacent lock and bounded loop. A timer and an out-of-band operator must use the same reviewed lock identity. |
+| Task selection | [DeveloperWorkerCoordinator.run_once](../../central_ai/developer_worker_coordinator.py), [make_worker_review_handler](../../central_ai/verified_review_pipeline.py) | Generation is restricted to configured jobs. However, fallback queue acquisition may analyze other registered targets. Recurring review needs scoped acquisition in existing owners or a demonstrated exclusive queue-registration invariant; a generation allowlist alone does not scope analysis. |
+| Trusted configuration | [configured_review_handler](../../central_ai/developer_worker_coordinator.py), [load_worker_review_config](../../central_ai/verified_review_pipeline.py) | Preserve the coordinator-to-pipeline dependency boundary, private authority, full grants/core hashes and explicit execution opt-in. No second handler factory in the scheduler or systemd wrapper. |
+| Generation/admission | [make_openai_generator](../../central_ai/app.py), [TaskStorage.authorize_generation/begin_openai_dispatch](../../central_ai/task_storage.py) | Same database, UTC-month reservations/call counts and durable dispatch intent. Provider errors and interruptions do not refund or authorize retries. Never use a new ledger to bypass a spent slot. |
+| Candidate execution and recovery | [run_functional_tests/_confirm_container_absent](../../central_ai/isolated_functional_verifier.py), [TaskStorage.check_verification_barrier](../../central_ai/task_storage.py) | Arithmetic-only candidate policy, fixed independent harness, recorded resource identities and daemon-observed absence. Preparing/running/quarantined intents block continuation; malformed journals also fail closed. |
+
+### Decision: isolate the trusted runner before scheduling review
+
+**Selected direction, not an accepted deployment:** reuse the existing trusted coordinator/supervisor and existing Docker verifier on a dedicated nonroot execution identity with a private, non-production Docker daemon. A local rootless daemon is a candidate implementation to validate, not a capability this repository currently provisions or attests.
+
+The worker must have no access to the production daemon, its credentials, production database/volumes, host-administration privilege or production checkout. Giving a nonroot process a production Docker socket does not meet that requirement. Generated candidates retain the existing no-network/read-only/capability/resource restrictions and receive only frozen candidate/harness inputs, never provider/reviewer secrets. The runner and daemon must share the reviewed host-path namespace for bind mounts; pointing the current verifier at an arbitrary remote daemon is not a complete execution design.
+
+Before any generation admission, the existing trusted loader/coordinator must verify the intended runner identity, pinned daemon endpoint/identity, absence of a production-context fallback, expected verifier image and required private paths/permissions. The current verifier invokes the inherited Docker CLI environment; existing container flags and source hashes do not establish these runner properties. This pre-admission guard is **not implemented** by this document. Its policy/version compatibility must be designed without weakening existing strict schemas or rewriting existing admissions.
+
+Reject these shortcuts: enabling network/secrets/daemon access in the old analysis container without review; running generated Python on the host; creating a parallel verifier/broker/scheduler to evade the existing boundary; or enabling a root host worker merely because a one-shot fixture passed. General project-code execution remains outside the arithmetic acceptance scope.
+
+### Proposed service and policy contract
+
+| Item | Proposed contract | Gate before implementation/activation |
+|---|---|---|
+| Units | Reuse one reviewed AI-08 timer/service; no second task scheduler | Preserve exact original unit/override/Compose identities and review an explicit replacement entrypoint |
+| Per trigger | One scheduler cycle, at most one task; registered and granted targets only | Prove mixed-queue behavior, non-overlap and no unauthorized target analysis |
+| Restarts | No blind automatic provider/job retry; proposed service Restart=no | Prove interrupted journals stop later triggers and are not requeued/reset |
+| Timeouts | Bound startup, dependency/daemon preflight, provider, verifier execution, cleanup and final journal write | Build a measured end-to-end worst-case bound with cleanup headroom; current120s unit and a suggested180s replacement are not automatically adequate |
+| Authority and billing | Explicit task/source/spec/harness/image/model grants; retained ledger; intentional policy change if more callbacks are needed | No implicit increase of call/month or USD ceiling; no currency relabelling, refunds, database replacement or ungranted automatic revisions |
+| Idle | With no eligible job, exit without dispatch or admission; completed work remains completed | Current live loader still requires a provider key at startup; credential-free idle behavior is a future decision/change, not an existing guarantee |
+| Status | Safe status fields plus durable generation/verification outcome | Distinguish idle, blocked, candidate test failure and uncertain cleanup; supervisor processed/complete counts alone are insufficient |
+| Promotion | approved=false/deployment_allowed=false throughout | Recurring review grants neither deployment nor live trading |
+
+A timer firing more frequently does not create a task grant, another callback allowance or a new retry right. Reservations are declared amounts, not provider invoices or an account-wide cap.
+
+### Cutover, stop and rollback sequence
+
+1. **Prepare while disabled:** review exact source/environment, task grants, retained ledger/history and private authority; build the runner preflight and scoped-selection changes in existing owners with focused negative/recovery tests. Keep live deployments out of the source review.
+2. **Rehearse without a real provider:** use a mocked provider and the intended isolated daemon to prove one eligible task, subsequent idle runs, malformed/changed grants, exhausted allowance, timeout/cleanup uncertainty and restart barriers. Pin and verify the same runner/daemon/path contract intended for deployment.
+3. **Prepare a reversible unit change:** preserve private original units/overrides/config and their hashes; validate a disabled candidate entrypoint, single-cycle bounds, status handling and timeout budget. Do not copy/reset the task database or reinterpret historical receipts.
+4. **Approve the concrete single-service change:** present exact changed unit/config/source identities, permissions, resource/secret boundaries, measured timeout and rollback steps. Source CI or arithmetic success alone is not activation approval.
+5. **Drain before cutover:** stop future starts of the exact existing timer, account for queued/active starts and wait for the bounded active service/daemon cleanup. Confirm lock/state/resource evidence. A stopped process does not establish that an upstream provider did no work.
+6. **Run one approved candidate invocation before recurring starts:** keep the timer disabled; use only an explicitly granted task and remaining allowance. Require the durable outcome and exact resource cleanup, not merely an HTTP200 or oneshot exit0. A new paid invocation is a separate deliberate acceptance, never repetition of a completed case.
+7. **Enable only the reviewed schedule:** confirm the installed entrypoint/source/environment and disabled-policy semantics first. Every later trigger uses the same ledger, same lock and fail-closed journal barriers. Do not automatically revise or promote completed output.
+8. **On failure or rollback:** prevent future triggers first, preserve any active dispatch/resource intent, then reconcile exact recorded resources. Restore the reviewed original unit/config/source only after bounded draining and identity checks; keep all task/marker/admission/outcome records. Report rollback as unconfirmed until actual service state and cleanup are verified. Resume the original analysis schedule only when it is explicitly part of the approved rollback; never silently downgrade a failed review run to success.
+
+### Next implementation task
+
+**P1-SCHEDULED-ISOLATION-01:** add the pre-admission runner/daemon identity guard in the existing trusted loader/coordinator/verifier boundary. Acceptance must prove rejection of a root/production/mismatched/fallback endpoint, wrong image/path identity and absent isolation **before** any provider callback, reservation or task mutation. Use mocked host/daemon observations for negative tests and a separately evidenced intended runner for positive integration; do not label a rootful CI daemon as rootless acceptance.
+
+Then address scoped analysis selection, honest status/idle behavior and measured timeout/restart handling in the existing owners before proposing an installed service change. No code in this document implements those gates. Issue #131 remains a source-design review task; neither its existence nor Copilot availability changes the deployment decision.

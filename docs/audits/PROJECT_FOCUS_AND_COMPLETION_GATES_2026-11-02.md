@@ -1,6 +1,6 @@
 # Project focus and completion gates
 
-**Living plan; created 2026-11-02, updated 2026-11-04.** Current statuses, decisions and evidence live in [the architecture/progress register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). This file defines scope and ordering; historical audit snapshots do not override that register.
+**Living plan; created 2026-11-02, source-task pointer updated 2026-11-07.** Current statuses, decisions and evidence live in [the architecture/progress register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). This file defines scope and ordering; historical audit snapshots do not override that register.
 
 ## Project objective
 
@@ -45,7 +45,7 @@ P0/P1 precede new P2 features. DB inventory/restore work is prerequisite evidenc
 
 ## Next active task and handoff rule
 
-**Next: P0-OPS-RECON-01.** The [canonical register §24](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md#24-p1-acceptance-handoff-01--2026-11-04-1638-europesofia) contains the bounded-candidate decision and OPS-E01–E07 read-only evidence checklist. Runtime candidate `749be72f7d647aafb0d03b82987238a14741c12a` and documentation head `d40bf28e6d76fdcd13e9a2079528ec9a54df3300` both have freshly confirmed 33/33 successful CI runs; only Markdown differs. GO is limited to the demonstrated synthetic arithmetic CI fixture. Complete P0/P1, developer VPS acceptance, rollout and Market MVP remain NO-GO for the listed evidence/control gaps. Review current deployment evidence first when the operator is available; no new VPS collection was performed by this handoff. No real provider wiring or new P2 features are authorized by green CI.
+**Next source task: P1-SCHEDULED-ISOLATION-01.** Complete the pre-admission runner/daemon identity guard in the existing trusted loader/coordinator/verifier owners. The latest canonical entry **P1-SCHEDULED-ROLLOUT-DESIGN-01** and [scheduled-review decision](worker-review-rollout-runbook.md#scheduled-review-decision-and-implementation-gates) describe the source review and remaining isolation, scoped-analysis, idle/status and timeout/restart gates. Reviewed runtime source is PR #130 `e22c6e5d18b76ca0bd680c19a441139448722268`; previously recorded CI on that source is33/33successful. This is not a claim of current live deployment, permission to repeat paid acceptances or recurring activation. **P0-OPS-RECON-01 / issue#90 remain open** for private evidence reconciliation; the source task stays within P1 and adds no new runtime subsystem. Retain the same ledger and false promotion flags; no timer/service, budget, production schema or trading change follows from this source-design checkpoint.
 
 For every change record TASK_ID, objective, existing owner/functions, files, PR/base/head, exact test SHA and result, GitHub/CI versus VPS evidence, blockers and one next action in the canonical register. The Git commit/diff preserves exact edits; the register explains why. Refresh the generated inventory on source-review checkpoints. No new dated master register, duplicated runtime module or percentage-based readiness claim.
 
