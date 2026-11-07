@@ -35,3 +35,17 @@ def test_unknown_source_blocked():
 
 def test_manual_import_allowed():
     assert validate_source('manual').key=='manual'
+
+
+@pytest.mark.parametrize('units', ['thousands', 'millions', 'billions', 'unknown'])
+def test_financials_rejects_unnormalized_or_unknown_units(units):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        Financials(**BASE, units=units)
+
+
+@pytest.mark.parametrize('retrieved_at', ['not-a-date', '2026-10-25T00:00:00'])
+def test_retrieval_metadata_requires_an_aware_timestamp(retrieved_at):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        Financials(**BASE, retrieved_at=retrieved_at)

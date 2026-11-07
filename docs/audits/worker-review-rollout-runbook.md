@@ -1,0 +1,156 @@
+# Controlled worker rollout review
+
+The [profile example](../../deploy/ai08/worker-review-profile.example.json) is a review artifact. No runtime entrypoint consumes it, and changing its enabled field cannot provision authority or activate a worker. Current operational evidence belongs in the protected operator record, separate from public source/CI. The [canonical register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md) owns progress.
+
+## First operational profile
+
+- Keep activation disabled and jobs empty until an operator independently authorizes a specific task/source/spec/test/image tuple. Completed acceptance tasks belong under evidence_jobs; they are not new pending work.
+- Retain the selected provider/model, 128 output-token limit and existing bounded transport. No fallback provider/model. The provider key and separate durable reviewer key must remain outside the profile. Ephemeral acceptance keys are not production authority.
+- Record the account's actual enforced monthly USD limit from private evidence. This is independent of application accounting and is not established by CI or an API key merely being configured.
+- Use generation-admission-usd-v2 for a USD application policy: budget_limit_microusd and reserved_microusd are integer millionths of a US dollar. For example, 1,000,000 micro-USD is USD1. One admitted callback per UTC month is the initial conservative proposal; changing it needs a new explicit host policy. Reservations are declared ceilings, not verified model pricing or provider invoices. Failed/interrupted admissions are not refunded automatically.
+- V1 receipts remain EUR and are never relabelled or converted. Mixed currencies in the same database/month are rejected. Keep acceptance databases intact. Choose and bind an operational ledger deliberately; never copy/delete/recreate a ledger to reset spent amounts or call counts. One application's ledger is not an account-wide cap; manual /ask and other databases/clients remain outside it.
+- Freeze a reviewed source commit, runtime environment/image, independent harness and output directories. The verifier image digest is distinct from the worker/runtime source binding. An acceptance image is not proof of a deployed release.
+- Reuse the existing worker/scheduler/service ownership. Proposed initial schedule: existing five-minute cadence, one cycle and max_tasks=1 per service run; 180-second service timeout is a proposal to review against worst-case transport/verifier cleanup time. No second timer or automatic activation. The CLI remains analysis-only by default. Review mode requires CENTRAL_SUPERVISED_SERVICE_ENABLED=YES, CENTRAL_WORKER_REVIEW_ENABLED=YES and CENTRAL_WORKER_REVIEW_CONFIG pointing to a complete trusted runtime policy; installing/enabling a service remains an independent operational action.
+
+## Stop and reconcile
+
+1. Stop future service/timer starts using the explicitly reviewed service identity. Do not reuse an assumed unit name from a historical transcript or stop unrelated production services.
+2. Allow bounded in-flight work/cleanup to settle and inspect the supervisor state and task verification journal. Killing a local process does not establish that the provider did not process a request.
+3. Treat preparing/running/quarantined or uncertain dispatch as reconciliation-required. Keep nonce, allowance, spent reservation, attempt marker, candidate/test hashes and resource handles. No automatic requeue, revision, new case or fresh database.
+4. Confirm cleanup by the recorded exact resource identities. Do not broadly remove Docker objects by a name prefix or delete unconfirmed resources from an untrusted report.
+5. Any resumed review needs the retained journal, unchanged source/tests, valid independent authority and remaining budget. Completed/blocked reviews do not automatically dispatch again. Promotion remains approved=false/deployment_allowed=false.
+
+## Activation gates still required
+
+The finite worker acceptance is one synthetic arithmetic scenario. Before recurring use, reconcile private source/image/task/harness bindings, persist separate operator authority, provide a reviewed trusted handler entrypoint, validate the chosen ledger/currency policy and remaining funds, review service timeout/isolation/rollback, and approve a concrete single-service change. Do not activate merely because all CI checks or one finite real-provider test passed. No schema migration, arbitrary code execution, real orders or automatic deployment is included.
+
+
+## Runtime policy and persistent authority
+
+The separate [runtime example](../../deploy/ai08/worker-review-runtime.example.json) uses worker-review-runtime-v1. Its disabled placeholders are intentionally rejected. The loader never converts a review profile into executable permissions. Policy and raw reviewer key must be regular, singly linked, owner-only files owned by the service identity, inside owner-only directories, with canonical absolute paths. Keep them outside ledger/source/artifact storage. No inline credential is accepted. Duplicate JSON keys, unsafe permissions, mismatched database, unknown fields, incomplete grants and changed core-file hashes fail closed. An absent model key fails before any reservation.
+
+Provision a raw 32-byte reviewer key only with the explicit existing verifier_gate.provision_reviewer_key(enabled='YES', path=...) operation after its private parent directory exists. It uses exclusive creation and syncs the result, returns only safe creation metadata, and refuses overwrite. A restart reads the same key rather than generating a new identity. Key provisioning does not grant any task or start work. The key authenticates a host-scoped HMAC reviewer role; it is not evidence of a separate human or external review service.
+
+The operator-owned runtime policy grants only listed task IDs, fixed source/spec/test/image tuples, the reviewed OpenAI model, at most 128 output tokens and one admitted callback per UTC month. It does not allow automatic revision tasks. Before constructing a handler, the loader rechecks target registration, source and independent harness hashes, false promotion flags and v1 eight / v2 ten core Python file hashes. Those core hashes are not a complete release/image attestation; remaining runtime dependencies and deployment identity still need the operational release checks. Separate generation and verify-only receipts are issued from these host grants. Verification continues through the existing HMAC authorizer and bounded Docker verifier. USD reservations remain declared ceilings, not invoices. No schema migration, counter reset, deployment or timer enable occurs in the loader.
+
+
+## Disabled preparation and validation
+
+load_worker_review_config(..., validation_only=True) accepts a fully specified runtime policy with execution_authorized=false and returns only a validation report. It performs the same private-file/core/grant/key checks, but never constructs a provider or callable worker handler, requires no model credential and does not write the database. Default live loading still rejects disabled execution. Validation does not prove provider account access or model/image availability.
+
+The existing operator script's --prepare-runtime mode stages a separately pinned source bundle into a new exclusive private state directory and reuses an explicitly selected existing virtualenv without dependency installation. It reads the existing private reviewer key, creates one newly identified public arithmetic pilot task through the actual bridge/target registry, writes an exclusive disabled policy and invokes validation-only. The task remains planned/pending with zero acquired attempts and no generation admission. This is deliberate initial preparation of a separate operational USD ledger, not a retry/reset/copy of spent acceptance history. Keep all old acceptance cases and partial preparation directories; do not choose fresh paths to bypass an error. The fixed call ceiling is one per UTC month; reservations are declared amounts, not invoices.
+
+No key is regenerated/copied, no model key is fetched, no Docker image is pulled and no provider/worker/timer starts during preparation. The selected verifier digest is bound as policy metadata; validation alone does not inspect the image. The policy remains execution_authorized=false and requires a separate concrete operational review before enabling any work. A prepared source directory is staging, not service deployment or release attestation.
+
+## Retained-state single pilot
+
+The operator helper's --run-prepared --send-once mode runs only the existing prepared arithmetic task. It rechecks the complete staged manifest, rejects extra Python source, verifies installed versions against the pinned lock and runs pip check without installing anything. These checks establish version consistency, not installed-wheel byte integrity. The fixed pilot uses USD20 as the declared application ceiling, USD0.01 as a reserved estimate, one admitted callback per UTC month, gpt-4.1-mini and at most128output tokens. Reservations are not provider invoices or account-wide enforcement.
+
+The retained database must contain exactly the one granted planned/pending task, zero attempts and no generation/verification journal. The helper checks the existing image without pulling, then exclusively creates pilot.started before reading the provider key through a captured local Docker subprocess. Key bytes are held in process memory and never printed or placed in command arguments. A private temporary executable grant is loaded through the existing coordinator boundary and removed before dispatch; the original disabled runtime policy and persistent reviewer key remain unchanged. The existing supervisor runs one cycle with max_tasks=1. Generated arithmetic is executed only by the existing bounded Docker verifier with the fixed independent harness, and cannot be promoted.
+
+Keep pilot.started, the original state and pilot-report.json after every outcome. Missing report, timeout or interruption means reconcile retained journals/resources before proceeding; do not delete the marker, create a fresh database or automatically repeat the request. A process killed during grant construction may leave a temporary grant for explicit operator reconciliation; this does not enable a service. No timer/service is installed or enabled by this command. A successful pilot is not approval for recurring operation, arbitrary Python execution, production migration or trading.
+
+
+## Scheduled-review decision and implementation gates
+
+Source review: PR #130, runtime commit `e22c6e5d18b76ca0bd680c19a441139448722268`. This section describes repository behavior and proposed changes only. It does not attest a live service, account, private policy or runner.
+
+### Entry points and ownership
+
+| Concern | Existing owner | Source behavior / required change |
+|---|---|---|
+| Periodic trigger | [AI-08 timer](../../deploy/ai08/central-ai-staging.timer) and [service](../../deploy/ai08/central-ai-staging.service) | One systemd timer/oneshot identity. Keep its current analysis configuration until a reviewed cutover. Do not schedule the completed one-shot pilot helper. |
+| Container envelope | [AI-06 Compose](../../docker-compose.ai06.yml) | Analysis-only defaults: no network, nonroot user, read-only root, no daemon socket, two cycles/max_tasks=2, on-failure restart. These defaults do not supply a provider/verifier execution environment. |
+| Service execution | [run_supervised/main](../../central_ai/worker_supervised.py) | Existing opt-in CLI. The proposed review service explicitly sets cycles=1/max_tasks=1 and does not rely on CLI defaults. Review runs now report a separate journal-derived review_state; CLI verification failures exit nonzero. Cycle completion alone is not a passed-test outcome. |
+| Non-overlap and work bounds | [scheduled_cycles](../../central_ai/worker_scheduler.py), [run_batch](../../central_ai/worker_batch.py) | Reuse the existing ledger-adjacent lock and bounded loop. A timer and an out-of-band operator must use the same reviewed lock identity. |
+| Task selection | [DeveloperWorkerCoordinator.run_once](../../central_ai/developer_worker_coordinator.py), [make_worker_review_handler](../../central_ai/verified_review_pipeline.py) | The handler exposes its frozen job IDs. Review-mode fallback acquisition now applies those IDs inside the existing queue writer transaction; unrelated pending/expired tasks are not acquired or changed. Normal analysis-only selection is unchanged. |
+| Trusted configuration | [configured_review_handler](../../central_ai/developer_worker_coordinator.py), [load_worker_review_config](../../central_ai/verified_review_pipeline.py) | Preserve the coordinator-to-pipeline dependency boundary, private authority, full grants/core hashes and explicit execution opt-in. No second handler factory in the scheduler or systemd wrapper. |
+| Generation/admission | [make_openai_generator](../../central_ai/app.py), [TaskStorage.authorize_generation/begin_openai_dispatch](../../central_ai/task_storage.py) | Same database, UTC-month reservations/call counts and durable dispatch intent. Provider errors and interruptions do not refund or authorize retries. Never use a new ledger to bypass a spent slot. |
+| Candidate execution and recovery | [run_functional_tests/_confirm_container_absent](../../central_ai/isolated_functional_verifier.py), [TaskStorage.check_verification_barrier](../../central_ai/task_storage.py) | Arithmetic-only candidate policy, fixed independent harness, recorded resource identities and daemon-observed absence. Preparing/running/quarantined intents block continuation; malformed journals also fail closed. |
+
+### Decision: isolate the trusted runner before scheduling review
+
+**Selected direction, not an accepted deployment:** reuse the existing trusted coordinator/supervisor and existing Docker verifier on a dedicated nonroot execution identity with a private, non-production Docker daemon. A local rootless daemon is a candidate implementation to validate, not a capability this repository currently provisions or attests.
+
+The worker must have no access to the production daemon, its credentials, production database/volumes, host-administration privilege or production checkout. Giving a nonroot process a production Docker socket does not meet that requirement. Generated candidates retain the existing no-network/read-only/capability/resource restrictions and receive only frozen candidate/harness inputs, never provider/reviewer secrets. The runner and daemon must share the reviewed host-path namespace for bind mounts; pointing the current verifier at an arbitrary remote daemon is not a complete execution design.
+
+Before any generation admission, the existing trusted loader/coordinator must verify the intended runner identity, pinned daemon endpoint/identity, absence of a production-context fallback, expected verifier image and required private paths/permissions. The legacy v1 verifier invokes the inherited Docker CLI environment; existing container flags and source hashes do not establish these runner properties. The v2 source guard described below now checks these local observations without changing v1 or rewriting admissions. Provisioning and real isolated-runner acceptance are still pending; source checks do not attest an entire host or prohibit every possible production resource path.
+
+Reject these shortcuts: enabling network/secrets/daemon access in the old analysis container without review; running generated Python on the host; creating a parallel verifier/broker/scheduler to evade the existing boundary; or enabling a root host worker merely because a one-shot fixture passed. General project-code execution remains outside the arithmetic acceptance scope.
+
+### Proposed service and policy contract
+
+| Item | Proposed contract | Gate before implementation/activation |
+|---|---|---|
+| Units | Reuse one reviewed AI-08 timer/service; no second task scheduler | Preserve exact original unit/override/Compose identities and review an explicit replacement entrypoint |
+| Per trigger | One scheduler cycle, at most one task; registered and granted targets only | Prove mixed-queue behavior, non-overlap and no unauthorized target analysis |
+| Restarts | No blind automatic provider/job retry; proposed service Restart=no | Prove interrupted journals stop later triggers and are not requeued/reset |
+| Timeouts | Bound startup, dependency/daemon preflight, provider, verifier execution, cleanup and final journal write | Build a measured end-to-end worst-case bound with cleanup headroom; current120s unit and a suggested180s replacement are not automatically adequate |
+| Authority and billing | Explicit task/source/spec/harness/image/model grants; retained ledger; intentional policy change if more callbacks are needed | No implicit increase of call/month or USD ceiling; no currency relabelling, refunds, database replacement or ungranted automatic revisions |
+| Idle | With no eligible job, exit without dispatch or admission; completed work remains completed | Current live loader still requires a provider key at startup; credential-free idle behavior is a future decision/change, not an existing guarantee |
+| Status | Safe status fields plus durable generation/verification outcome | Distinguish idle, blocked, candidate test failure and uncertain cleanup; supervisor processed/complete counts remain cycle metadata; use review_state and review_counts for durable review outcome |
+| Promotion | approved=false/deployment_allowed=false throughout | Recurring review grants neither deployment nor live trading |
+
+A timer firing more frequently does not create a task grant, another callback allowance or a new retry right. Reservations are declared amounts, not provider invoices or an account-wide cap.
+
+### Cutover, stop and rollback sequence
+
+1. **Prepare while disabled:** review exact source/environment, task grants, retained ledger/history and private authority; build the runner preflight and scoped-selection changes in existing owners with focused negative/recovery tests. Keep live deployments out of the source review.
+2. **Rehearse without a real provider:** use a mocked provider and the intended isolated daemon to prove one eligible task, subsequent idle runs, malformed/changed grants, exhausted allowance, timeout/cleanup uncertainty and restart barriers. Pin and verify the same runner/daemon/path contract intended for deployment.
+3. **Prepare a reversible unit change:** preserve private original units/overrides/config and their hashes; validate a disabled candidate entrypoint, single-cycle bounds, status handling and timeout budget. Do not copy/reset the task database or reinterpret historical receipts.
+4. **Approve the concrete single-service change:** present exact changed unit/config/source identities, permissions, resource/secret boundaries, measured timeout and rollback steps. Source CI or arithmetic success alone is not activation approval.
+5. **Drain before cutover:** stop future starts of the exact existing timer, account for queued/active starts and wait for the bounded active service/daemon cleanup. Confirm lock/state/resource evidence. A stopped process does not establish that an upstream provider did no work.
+6. **Run one approved candidate invocation before recurring starts:** keep the timer disabled; use only an explicitly granted task and remaining allowance. Require the durable outcome and exact resource cleanup, not merely an HTTP200 or oneshot exit0. A new paid invocation is a separate deliberate acceptance, never repetition of a completed case.
+7. **Enable only the reviewed schedule:** confirm the installed entrypoint/source/environment and disabled-policy semantics first. Every later trigger uses the same ledger, same lock and fail-closed journal barriers. Do not automatically revise or promote completed output.
+8. **On failure or rollback:** prevent future triggers first, preserve any active dispatch/resource intent, then reconcile exact recorded resources. Restore the reviewed original unit/config/source only after bounded draining and identity checks; keep all task/marker/admission/outcome records. Report rollback as unconfirmed until actual service state and cleanup are verified. Resume the original analysis schedule only when it is explicitly part of the approved rollback; never silently downgrade a failed review run to success.
+
+### Next implementation task
+
+**P1-SCHEDULED-ISOLATION-01:** the opt-in v2 source guard is implemented below; real isolated-runner integration acceptance remains pending. Acceptance must prove rejection of a root/production/mismatched/fallback endpoint, wrong image/path identity and absent isolation **before** any provider callback, reservation or task mutation. Use mocked host/daemon observations for negative tests and a separately evidenced intended runner for positive integration; do not label a rootful CI daemon as rootless acceptance.
+
+Scoped analysis selection is now implemented below. Honest status/idle behavior and measured timeout/restart handling in the existing owners remain before proposing an installed service change. No code in this document implements those gates. Issue #131 remains a source-design review task; neither its existence nor Copilot availability changes the deployment decision.
+
+
+## Opt-in v2 runner guard — source implemented, runner acceptance pending
+
+[worker-review-runtime-v2.example.json](../../deploy/ai08/worker-review-runtime-v2.example.json) is deliberately disabled/incomplete. V1 policies and all immutable operator bundle pins remain unchanged. V2 adds exactly one runner object: uid, socket, config_directory, daemon_id and data_root. Its runtime_sha256 map also binds isolated_functional_verifier.py and task_queue.py, in addition to the eight v1 core files. The queue hash is required for scoped acquisition; the example is incomplete and is never auto-upgraded into a host grant. Call limits, currencies, model/token bounds, job grants and false promotion flags are unchanged. No policy auto-upgrade or daemon installation occurs.
+
+The existing verifier owner provides _checked_runner_host and make_isolated_docker_runner. V2 loading checks a nonzero real/effective UID, absence of Docker-group membership, access to the conventional production socket, active/permitted/ambient capabilities and inherited nonempty DOCKER_* settings. Canonical local socket/private parent, empty private Docker configuration directory and data-root ownership/modes are checked. The expected daemon ID/data-root/rootless security option and every pinned verifier image digest must match successful bounded observations. A private configuration directory and explicit /usr/bin/docker --host unix://... --config ... commands avoid inherited context selection; command/environment overrides and socket inode changes are rejected. Docker observations are read-only, but these are checks of a trusted host, not cryptographic host attestation or kernel isolation. Rootless reports do not prove absence of all other production access; OS/runtime/permissions evidence remains required.
+
+The v2 loader runs this check even in validation-only mode, before provider construction, admission or task mutation. It repeats the checks while issuing generation admission and before verifier execution; the latter uses the returned endpoint-bound command runner for execution and cleanup. A drift found after verification intent was opened is durably blocked without admission/dispatch; do not clear the intent to retry. Changes after an admitted external request are uncertainty, not proof the request was unprocessed. V1 remains an explicitly separate legacy path and must not be presented as a guarded scheduled service.
+
+Tests cover simulated positive host/daemon observations, root/UID/context/capability/group/socket/permissions failures, daemon/image mismatch, bounded command routing and post-load drift before admission. Positive unit observations are synthetic; existing real rootful Docker CI for v1 is not real rootless v2 acceptance. Next acceptance must exercise a separately prepared intended nonroot/private daemon with safe paths and no production access, then verify source/hash policy, one eligible job, idle/restart and cleanup. Scoped queue analysis, honest idle/status, measured service timeout and installed-service cutover remain open. No provider call, daemon creation, VPS configuration or recurring service activation is part of this source change.
+
+
+## Scoped review acquisition — P1-SCHEDULED-SCOPE-01
+
+TaskQueue.acquire_next adds optional keyword-only allowed_task_ids. None retains the existing unscoped analysis behavior; an empty list/tuple returns idle without reserving an attempt. A supplied scope is a bounded unique list/tuple of nonempty IDs and uses parameterized SQL in the existing BEGIN IMMEDIATE selection transaction. Out-of-scope tasks are never acquired/released as a filtering workaround. Target-registration checks, deterministic ordering, lease/version/audit rules and the shared three-attempt budget remain unchanged; there is no new queue or schema.
+
+make_worker_review_handler exposes captured allowed_task_ids as a tuple. DeveloperWorkerCoordinator validates that the IDs are accepted by the handler and freezes its own tuple before initializing runtime dependencies. It rejects a review request outside that scope and passes the tuple only to review-mode fallback queue acquisition. Custom trusted review handlers must provide the explicit tuple; missing/malformed scope fails closed. Analysis-only callers keep their prior API behavior. Global unresolved verification barriers still run before scoped work; a scope does not bypass another unresolved intent.
+
+Tests prove unrelated task payloads, leases/attempt counters and audit rows remain unchanged for both pending and expired leased foreign tasks, including later idle cycles. The same queue remains usable by ordinary analysis workers. Concurrent scoped workers acquire one lease/attempt rather than duplicating work; invalid/empty/missing scopes and mutated handler metadata do not spend a foreign attempt. V2 runtime binding includes task_queue.py (ten core files); v1 and immutable operator bundle pins are retained as separate legacy source identities. These are source tests, not evidence that a running service has been updated.
+
+P1-SCHEDULED-STATUS-01 now provides journal-derived review outcomes below; credential-free idle startup is the next source task. Real v2 rootless-runner acceptance, credential-free idle design, measured service timeout/restart and operator-reviewed cutover remain open. No task grant, call allowance, ledger history, provider credential or service state is changed by scoped acquisition.
+
+
+## Durable review status — P1-SCHEDULED-STATUS-01
+
+TaskStorage.review_status reads the existing task payloads through SQLite mode=ro/query_only in one snapshot. It returns only fixed counters and a state, never task IDs, descriptions, bindings, receipts, paths, reviewer identity or secrets. Existing write-time verification report validation is reused for completed reads, with audit binding/identity/resource and promotion checks. Missing tasks or malformed/inconsistent journals fail closed. Global preparing/running/quarantined intents outside the configured grants still block a clean result; unrelated completed tasks do not become granted work.
+
+| review_state / status-file state | Meaning | CLI result / continuation |
+|---|---|---|
+| verified | The bounded invocation processed work and the configured durable outcomes are passed | Zero exit; no promotion or new grant implied |
+| idle | No work processed, no unresolved/failing outcome, no pending granted verification | Zero exit; prior verified counters remain visible |
+| pending | Granted work has no completed verification yet | Not a passed-test claim; includes work awaiting analysis/review or a busy lease |
+| candidate_failed | At least one granted completed report has test_status=failed | Nonzero CLI exit; persists through later empty cycles |
+| blocked | Blocked/preparing/running intent, incomplete test execution, missing/malformed state or configuration/load failure | Nonzero CLI exit or propagated exception; preserve journals, no automatic retry |
+| cleanup_uncertain | A quarantined intent retains recorded execution resources | Nonzero CLI exit or propagated exception; reconcile exact resources before continuation |
+| already_running | Another invocation holds the existing lock | Does not attest that invocation's test result |
+
+Failure precedence is cleanup uncertainty, blocked, failed tests, pending work, verified work, then empty idle. A timeout/execution-error/completion-unconfirmed report is blocked, not an assertion that candidate code is wrong. A failed outcome is not erased by a later idle cycle. The snapshot is a dated read, not continuous host attestation or provider billing evidence.
+
+The existing supervisor adds review_state to review-mode return metadata and writes its honest state, cycle_status and safe review_counts to the existing status JSON. The legacy status=complete field still describes scheduler cycle completion. Analysis-only return behavior/status fields remain unchanged. The CLI loads a requested trusted policy inside supervised startup after a starting record; a load/credential/isolation error replaces stale success with blocked when the status file is writable. A missing/invalid loaded handler cannot silently downgrade to analysis. Failed status writes propagate failure; an old file is not a fresh successful run. Custom trusted supervised review handlers must expose review_status.
+
+The operator helper accepts the added result metadata while retaining all required cycle/outcome checks; immutable staged bundle constants remain unchanged. No status database, background status service, journal clearing, attempt reset, provider retry or promotion is added. Tests cover passed/idle, failed-test persistence, timeout, provider error, cleanup quarantine, foreign unresolved intents, corrupt completed reports, read-only DB/key preservation, sanitized outputs, nonzero CLI exits and startup-load failure.
+
+Next P1-SCHEDULED-IDLE-01: define and test credential-free idle startup without weakening missing-credential rejection before eligible generation/admission. Real intended nonroot/private-daemon v2 acceptance, measured timeout/restart policy and separately reviewed service cutover remain open. No recurring review activation follows from these status fields.

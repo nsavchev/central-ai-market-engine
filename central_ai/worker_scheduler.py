@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from central_ai.worker_batch import run_batch
 
-def scheduled_cycles(*, enabled, database, agent, lock_path, cycles=3, interval=5, max_tasks=10, sleep=time.sleep, batch=run_batch):
+def scheduled_cycles(*, enabled, database, agent, lock_path, cycles=3, interval=5, max_tasks=10, sleep=time.sleep, batch=run_batch, review_handler=None):
     if enabled != "YES":
         raise ValueError("SCHEDULER_DISABLED")
     if type(cycles) is not int or not 1 <= cycles <= 24:
@@ -26,7 +26,8 @@ def scheduled_cycles(*, enabled, database, agent, lock_path, cycles=3, interval=
         completed = 0
         total = 0
         for i in range(cycles):
-            result = batch(enabled="YES", database=str(db), agent=agent, max_tasks=max_tasks)
+            options = {} if review_handler is None else {'review_handler': review_handler}
+            result = batch(enabled="YES", database=str(db), agent=agent, max_tasks=max_tasks, **options)
             completed += 1
             total += result["processed"]
             if i + 1 < cycles:

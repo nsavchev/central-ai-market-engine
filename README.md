@@ -1,8 +1,18 @@
-# Market Intelligence v0.2
+# Central AI / Market Engine
 
 Minimal working foundation: IBKR historical daily bars -> PostgreSQL -> relative performance/trend -> FastAPI; separate manual-fill internal paper ledger. **No real brokerage orders.**
 
-## VPS installation (Ubuntu with Docker Engine + Compose plugin)
+## Current architecture and progress
+
+Start with the [living architecture, ownership, decisions and task register](docs/audits/PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). Its filename records its creation date; the document is updated in place. The [P0–P4 focus plan](docs/audits/PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) defines the order of work; [static module/function/import and PR metadata](docs/audits/project-architecture-inventory.json) describe the exact inspected source snapshot.
+
+Checkpoint 2026-11-04: scoped review source `749be72…` handles revision commit uncertainty without transient registry success or slot refunds and pins candidate extraction to exact recommendation text. Local **509 passed / 47 skipped**, zero warnings; **33/33 exact-source CI successful**. Existing generation, family budget, authority, arithmetic and cleanup/replay boundaries remain. Next: exact bounded-candidate evidence/go-no-go handoff, without deployment or new features. Full worker-driven autonomy and #90/VPS/production authority remain unaccepted.
+
+Contributors: follow [AGENTS.md](AGENTS.md), reuse the existing owner, and record every change and handoff in the living register. No second queue/AI manager or new dated master audit.
+
+The versioned prototype examples below are historical interface documentation and limitations; they are not proof of deployed capabilities or an approved production rollout procedure.
+
+## Prototype installation example (not a production migration)
 
 ```bash
 cp .env.example .env
@@ -32,13 +42,14 @@ curl -H "X-API-Token: $TOKEN" http://127.0.0.1:8000/paper/account
 ## Tests
 
 ```bash
-pip install -r requirements.txt
-pytest -q
+pip install -r requirements-test.txt 'alembic>=1.13,<2'
+python -m pytest -q
 ```
 
 ## Explicit limitations and next milestones
 
 - IBKR import is a synchronous blocking request; production requires background job queue, pacing control, retries, monitoring and client-ID coordination.
+- Legacy manual paper fills are finite, capped at 1,000,000 per quantity/price/fee input, with at most six quantity decimals and two price/fee decimals; the legacy route stays disabled by default. The V2 Decimal path has separate checks.
 - Daily TRADES bars with `useRTH=1` and `formatDate=1`; returns are price-only, not total returns. Corporate actions and FX normalization must be addressed before cross-market comparisons.
 - SMA200 needs >=200 aligned observations; one year of daily bars may suffice but not always. All returns use intersecting sessions; align to a canonical market calendar in v0.3.
 - Multiple listings of the same ticker are rejected as ambiguous in the analysis endpoint. Use instrument identifiers in v0.3.
@@ -99,9 +110,15 @@ Adds `financial_snapshots` SQLAlchemy table with source, currency, fiscal period
 - GET `/fundamentals/history/DEMO?currency=USD&source=manual&years=10`, requires token.
 - Offline demo: `python -m app.history_cli data/demo_financial_history.json --database sqlite:///financial_history_demo.db --output history_report.json`
 
+History persistence now runs `validate_source` before the existing `check_snapshot` policy and before database access. Each new import must explicitly declare `"units":"ones"`: monetary totals are full currency units, share counts are actual shares, and prices/dividends are per-share values. Scaled or unknown units are rejected; there is no implicit scaling or FX conversion. Optional `accounting_standard`, timezone-aware `retrieved_at` and `total_liabilities` are preserved in JSON. Missing accounting/retrieval metadata remains a visible review warning under the existing quality policy; metadata assertions do not authenticate a filing.
+
+HTTP history import/report rejects blocked inputs with 422; authentication and source permissions remain required. A bad record rolls back the batch. Existing rows without units or with blocked quality are not rewritten/deleted: reports refuse them until the operator explicitly supplies corrected, confirmed metadata through the permissioned import. Reimport keeps the existing snapshot identity. There is no automatic backfill or database schema change. Calculation-only legacy inputs may still omit units; this does not grant import approval.
+
+CLI validates the whole batch before its existing demo schema initialization, and import/report share a transaction so a refused legacy report rolls back new rows. The CLI remains an offline prototype, not a production migration tool.
+
 Only manually provided data is supported. Investolens, Finviz and Investing.com are NOT scraped. The history calculations include CAGR (calendar-year span), ROIC/ROE/margin trends and basic debt-to-equity / cash-flow indicators. These are descriptive metrics, not financial health verdicts.
 
-**Deployment warning:** `create_all` creates new tables but is NOT a migration system. For a production VPS, take backups and introduce Alembic before changing existing schemas. Multiple fiscal periods per calendar year are rejected in reports; financial units, fiscal year-end, restatements, split-adjustments, point-in-time filings and FX are not harmonized. PostgreSQL integration is not exercised in automated SQLite tests.
+**Deployment warning:** `create_all` creates new tables but is NOT a migration system. For a production VPS, take backups and introduce Alembic before changing existing schemas. Multiple fiscal periods per calendar year are rejected in reports; financial units, fiscal year-end, restatements, split-adjustments, point-in-time filings and FX are not harmonized. The quality regression includes real PostgreSQL JSON/transaction checks in a uniquely named schema of the disposable CI database; this does not validate the production schema.
 
 ## v0.7: Investment Valuation Agent (explicit-input FCFF DCF)
 
@@ -138,8 +155,7 @@ Scenario probabilities are subjective, not backtested probabilities. Reverse DCF
 `app/data_quality.py` offers deterministic validation and source-to-source comparison.
 Run `python -m app.quality_cli data/demo_quality.json --output quality_report.json`.
 
-**Important:** The existing v0.6 import and valuation flows are **not yet gated** by these checks.
-The new validator is an independent preflight step; enforce it in ingestion pipelines before production use.
+**Current scope:** v0.6 history persistence and reporting now reuse this quality checker after source-permission validation. Standalone ratio evaluation and the explicit-input valuation/DCF flows are not a fully quality-gated automated ingestion pipeline.
 Requires explicit units, validates period/currency/balance equation, warns on old records and
 missing point-in-time metadata, compares only like-for-like figures. It does not fetch vendor
 data, reconcile restatements, normalize GAAP vs IFRS, or verify filing authenticity.

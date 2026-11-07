@@ -166,3 +166,81 @@ class PersistentTaskBridge:
             "approved": False,
             "deployment_allowed": False,
         }
+
+    def submit_revision(self, parent_task_id, expected_parent_nonce):
+        """Reserve a linked candidate slot atomically; never call a model or verify.
+
+        Three candidates per explicitly submitted root, including the root.
+        A reserved child is never refunded or replaced after a crash.
+        """
+        import json
+        import re
+        from datetime import datetime, timezone
+        child_id = None
+        try:
+            with self.storage._connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                parent = self.storage._review_task(conn, parent_task_id)
+                audit = parent.get('verification', {})
+                outcome = audit.get('outcome', {})
+                if (audit.get('phase') != 'completed' or audit.get('nonce') != expected_parent_nonce
+                        or not isinstance(expected_parent_nonce, str)
+                        or not re.fullmatch(r'[0-9a-f]{32}', expected_parent_nonce)
+                        or outcome.get('test_status') != 'failed' or outcome.get('tests_passed') is not False
+                        or outcome.get('completion_confirmed') is not False
+                        or outcome.get('quarantine_required') is not False
+                        or outcome.get('execution_policy') != 'bounded-arithmetic-v1'
+                        or outcome.get('approved') is not False or outcome.get('deployment_allowed') is not False
+                        or outcome.get('verification_binding') != audit.get('binding')):
+                    raise ValueError('REVISION_PARENT_NOT_ELIGIBLE')
+                # The same DB-wide unresolved verification barrier applies to reservation.
+                for (encoded,) in conn.execute('SELECT payload FROM tasks'):
+                    other = json.loads(encoded).get('verification')
+                    if other is not None and (not isinstance(other, dict)
+                            or other.get('phase') not in ('completed','blocked')
+                            or other.get('approved') is not False or other.get('deployment_allowed') is not False):
+                        raise ValueError('VERIFICATION_DATABASE_BLOCKED')
+                lineage = parent.get('revision')
+                root_id = lineage['root_task_id'] if isinstance(lineage, dict) else parent_task_id
+                root = self.storage._review_task(conn, root_id)
+                digest = root.get('analysis', {}).get('source_sha256')
+                test_digest = audit.get('binding', {}).get('test_sha256')
+                if (not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
+                        or parent.get('analysis', {}).get('source_sha256') != digest
+                        or not isinstance(test_digest, str) or not re.fullmatch(r'[0-9a-f]{64}', test_digest)):
+                    raise ValueError('REVISION_SOURCE_NOT_BOUND')
+                family = root.get('revision_family', {'schema':'revision-family-v1',
+                    'members':[root_id], 'source_sha256':digest, 'test_sha256':test_digest})
+                members = family.get('members')
+                if (family.get('schema') != 'revision-family-v1' or not isinstance(members, list)
+                        or not 1 <= len(members) <= 3 or members[0] != root_id
+                        or len(set(members)) != len(members) or members[-1] != parent_task_id
+                        or family.get('source_sha256') != digest or family.get('test_sha256') != test_digest
+                        or (lineage is not None and (lineage.get('schema') != 'revision-v1'
+                            or lineage.get('ordinal') != len(members)
+                            or lineage.get('source_sha256') != digest or lineage.get('test_sha256') != test_digest))):
+                    raise ValueError('REVISION_FAMILY_CONFLICT')
+                if len(members) >= 3:
+                    raise ValueError('REVISION_BUDGET_EXHAUSTED')
+                child = self.bridge.submit(parent['task']['task'])
+                child_id = child['task_id']
+                child['revision'] = {'schema':'revision-v1', 'root_task_id':root_id,
+                    'parent_task_id':parent_task_id, 'parent_verification_nonce':expected_parent_nonce,
+                    'ordinal':len(members)+1, 'source_sha256':digest, 'test_sha256':test_digest}
+                self.storage.save(child, conn=conn)
+                self.workflow.insert_prepared(self.workflow.prepare_registration(child), conn)
+                self.queue.enqueue(child_id, conn=conn)
+                conn.execute('INSERT INTO task_file_targets (task_id,workspace,filename) '
+                    'SELECT ?,workspace,filename FROM task_file_targets WHERE task_id=? '
+                    'AND approved=0 AND deployment_allowed=0', (child_id, root_id))
+                if conn.execute('SELECT changes()').fetchone()[0] != 1:
+                    raise ValueError('REVISION_TARGET_MISSING')
+                root['revision_family'] = dict(family, members=members+[child_id],
+                    updated_at=datetime.now(timezone.utc).isoformat())
+                self.storage._write_review_task(conn, root_id, root)
+            return child
+
+        except BaseException:
+            if child_id is not None:
+                self.bridge.registry.pop(child_id, None)
+            raise

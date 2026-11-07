@@ -20,7 +20,8 @@
     "shares_diluted": 100000,
     "share_price": null,
     "dividends_per_share": 0.5,
-    "asof_price_date": null
+    "asof_price_date": null,
+    "units": "ones"
   },
   {
     "symbol": "DEMO",
@@ -43,7 +44,8 @@
     "shares_diluted": 100000,
     "share_price": null,
     "dividends_per_share": 0.5,
-    "asof_price_date": null
+    "asof_price_date": null,
+    "units": "ones"
   },
   {
     "symbol": "DEMO",
@@ -66,7 +68,8 @@
     "shares_diluted": 100000,
     "share_price": null,
     "dividends_per_share": 0.5,
-    "asof_price_date": null
+    "asof_price_date": null,
+    "units": "ones"
   },
   {
     "symbol": "DEMO",
@@ -89,7 +92,8 @@
     "shares_diluted": 100000,
     "share_price": null,
     "dividends_per_share": 0.5,
-    "asof_price_date": null
+    "asof_price_date": null,
+    "units": "ones"
   },
   {
     "symbol": "DEMO",
@@ -112,6 +116,7 @@
     "shares_diluted": 100000,
     "share_price": null,
     "dividends_per_share": 0.5,
-    "asof_price_date": null
+    "asof_price_date": null,
+    "units": "ones"
   }
 ]

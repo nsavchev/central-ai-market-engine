@@ -65,18 +65,52 @@ class TaskQueue:
         con.execute("\n            INSERT INTO task_queue_audit\n            (task_id,event,timestamp)\n            VALUES (?,'enqueued',?)\n        ", (task_id, utcnow().isoformat()))
 
     def acquire(self, task_id, agent, seconds=30):
+        """Acquire one of the same three durable attempts used by acquire_next.
+
+        A busy or exhausted task returns None without spending an attempt.
+        Heartbeats and completion remain valid during the final active lease.
+        """
         if not isinstance(agent, str) or not agent.strip():
             raise ValueError('INVALID_AGENT')
         if type(seconds) is not int or not 5 <= seconds <= 3600:
             raise ValueError('INVALID_LEASE')
         now = utcnow()
         token = secrets.token_urlsafe(32)
+        timestamp = now.isoformat()
         expiry = (now + timedelta(seconds=seconds)).isoformat()
         with self._connect() as con:
-            cursor = con.execute("\n                UPDATE task_queue\n                SET status='leased',\n                    owner=?,\n                    lease_token=?,\n                    lease_until=?,\n                    version=version+1\n                WHERE task_id=?\n                  AND approved=0\n                  AND deployment_allowed=0\n                  AND (\n                    (status='pending' AND owner IS NULL)\n                    OR\n                    (status='leased' AND lease_until <= ?)\n                  )\n            ", (agent, token, expiry, task_id, now.isoformat()))
+            # Guard, ownership change and budget reservation are one atomic
+            # UPDATE, including races with acquire_next's writer transaction.
+            cursor = con.execute("""
+                UPDATE task_queue
+                SET status='leased',
+                    owner=?,
+                    lease_token=?,
+                    lease_until=?,
+                    version=version+1,
+                    attempt_count=attempt_count+1,
+                    retry_exhausted=CASE
+                        WHEN attempt_count+1 >= 3 THEN 1
+                        ELSE 0
+                    END
+                WHERE task_id=?
+                  AND approved=0
+                  AND deployment_allowed=0
+                  AND retry_exhausted=0
+                  AND attempt_count < 3
+                  AND (
+                    (status='pending' AND owner IS NULL)
+                    OR
+                    (status='leased' AND lease_until <= ?)
+                  )
+            """, (agent, token, expiry, task_id, timestamp))
             if cursor.rowcount != 1:
                 return None
-            con.execute("\n                INSERT INTO task_queue_audit\n                (task_id,event,agent,timestamp)\n                VALUES (?,'acquired',?,?)\n            ", (task_id, agent, now.isoformat()))
+            con.execute("""
+                INSERT INTO task_queue_audit
+                (task_id,event,agent,timestamp)
+                VALUES (?,'acquired',?,?)
+            """, (task_id, agent, timestamp))
         return token
 
     def heartbeat(self, task_id, agent, token, seconds=30):
@@ -130,18 +164,31 @@ class TaskQueue:
             rows = con.execute('\n                SELECT event,agent,timestamp\n                FROM task_queue_audit\n                WHERE task_id=?\n                ORDER BY id\n            ', (task_id,)).fetchall()
         return [{'event': e, 'agent': a, 'timestamp': t} for e, a, t in rows]
 
-    def acquire_next(self, agent, seconds=30, require_target=False):
+    def acquire_next(self, agent, seconds=30, require_target=False, *, allowed_task_ids=None):
         if not isinstance(agent, str) or not agent.strip():
             raise ValueError('INVALID_AGENT')
         if type(seconds) is not int or not 5 <= seconds <= 3600:
             raise ValueError('INVALID_LEASE')
+        # Scope selection inside the existing writer transaction; never acquire
+        # a foreign task and release it afterward (that would spend its attempt).
+        task_ids = ()
+        scope_sql = ''
+        if allowed_task_ids is not None:
+            if (not isinstance(allowed_task_ids, (list, tuple)) or len(allowed_task_ids) > 100
+                    or any(not isinstance(t, str) or not t.strip() or len(t) > 128 for t in allowed_task_ids)
+                    or len(set(allowed_task_ids)) != len(allowed_task_ids)):
+                raise ValueError('INVALID_TASK_SCOPE')
+            task_ids = tuple(allowed_task_ids)
+            if not task_ids:
+                return None
+            scope_sql = ' AND task_id IN (' + ','.join('?' for _ in task_ids) + ') '
         now = utcnow()
         timestamp = now.isoformat()
         expiry = (now + timedelta(seconds=seconds)).isoformat()
         token = secrets.token_urlsafe(32)
         with self._connect() as con:
             con.execute('BEGIN IMMEDIATE')
-            row = con.execute("\n                SELECT task_id\n                FROM task_queue\n                WHERE approved=0\n                  AND deployment_allowed=0\n                    AND retry_exhausted=0\n                    AND attempt_count < 3\n                  AND (\n                    NOT ? OR EXISTS (\n                      SELECT 1 FROM task_file_targets AS t\n                      WHERE t.task_id = task_queue.task_id\n                        AND t.approved = 0\n                        AND t.deployment_allowed = 0\n                    )\n                  )\n\n                  AND (\n                    (status='pending' AND owner IS NULL)\n                    OR\n                    (status='leased' AND lease_until <= ?)\n                  )\n                ORDER BY task_id\n                LIMIT 1\n                ", (int(require_target), timestamp)).fetchone()
+            row = con.execute("\n                SELECT task_id\n                FROM task_queue\n                WHERE approved=0\n                  AND deployment_allowed=0\n                    AND retry_exhausted=0\n                    AND attempt_count < 3\n                  AND (\n                    NOT ? OR EXISTS (\n                      SELECT 1 FROM task_file_targets AS t\n                      WHERE t.task_id = task_queue.task_id\n                        AND t.approved = 0\n                        AND t.deployment_allowed = 0\n                    )\n                  )\n\n                  AND (\n                    (status='pending' AND owner IS NULL)\n                    OR\n                    (status='leased' AND lease_until <= ?)\n                  )\n                " + scope_sql + "ORDER BY task_id\n                LIMIT 1\n                ", (int(require_target), timestamp) + task_ids).fetchone()
             if row is None:
                 return None
             task_id = row[0]

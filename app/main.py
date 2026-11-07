@@ -1,12 +1,15 @@
 from datetime import date
+import logging
+import math
+import secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .config import settings
 from .db import init_db,SessionLocal,Instrument,DailyBar,PaperAccount,PaperTrade
-from .engine import analyze
+from .engine import analyze as analyze_market
 try:
     from .ibkr import fetch_daily
 except ModuleNotFoundError as exc:
@@ -29,6 +32,7 @@ async def lifespan(app):
         init_db()  # Developer SQLite convenience only.
     yield
 app=FastAPI(title='Market Intelligence v0.2',lifespan=lifespan)
+logger = logging.getLogger(__name__)
 
 def auth(x_api_token: str|None=Header(default=None)):
     if settings.api_token=='change-me' or x_api_token!=settings.api_token:
@@ -49,7 +53,10 @@ def health(): return {'status':'ok'}
 def ingest(req:ImportRequest):
     try:
         bars=fetch_daily(req.symbol,req.exchange,req.currency,req.primary_exchange,req.sec_type,req.duration,settings.ibkr_host,settings.ibkr_port,settings.ibkr_client_id)
-    except Exception as e: raise HTTPException(502,str(e))
+    except Exception:
+        error_id = secrets.token_hex(12)
+        logger.error('IBKR_INGEST_FAILED id=%s', error_id)
+        raise HTTPException(502, detail={'code': 'IBKR_INGEST_FAILED', 'error_id': error_id}) from None
     with SessionLocal.begin() as db:
         ins=db.scalar(select(Instrument).where(Instrument.symbol==req.symbol,Instrument.exchange==req.exchange,Instrument.currency==req.currency,Instrument.primary_exchange==req.primary_exchange,Instrument.sec_type==req.sec_type))
         if ins is None:
@@ -73,7 +80,7 @@ def analysis(symbol:str,benchmark:str='SPY'):
             rows=db.scalars(select(DailyBar).where(DailyBar.instrument_id==instruments[0].id).order_by(DailyBar.day)).all()
             return {r.day:r.close for r in rows}
         a,b=load(symbol),load(benchmark)
-    try: return {'symbol':symbol,'benchmark':benchmark,**analyze(a,b)}
+    try: return {'symbol':symbol,'benchmark':benchmark,**analyze_market(a,b)}
     except ValueError as e: raise HTTPException(422,str(e))
 
 class TradeRequest(BaseModel):
@@ -82,6 +89,19 @@ class TradeRequest(BaseModel):
     quantity:float=Field(gt=0)
     price:float=Field(gt=0,description='Explicit hypothetical fill price, not a live quote')
     fee:float=Field(default=0,ge=0)
+
+    @model_validator(mode='after')
+    def validate_paper_fill(self):
+        # Preserve the existing PR #16 legacy policy before ledger access.
+        if not all(math.isfinite(value) for value in (self.quantity, self.price, self.fee)):
+            raise ValueError('NON_FINITE_PAPER_FILL')
+        if max(self.quantity, self.price, self.fee) > 1_000_000:
+            raise ValueError('PAPER_FILL_LIMIT_EXCEEDED')
+        if round(self.price, 2) != self.price or round(self.fee, 2) != self.fee:
+            raise ValueError('PAPER_MONEY_REQUIRES_CENTS')
+        if round(self.quantity, 6) != self.quantity:
+            raise ValueError('PAPER_QUANTITY_PRECISION_EXCEEDED')
+        return self
 
 @app.post('/paper/trades',dependencies=[Depends(auth)])
 def paper_trade(t:TradeRequest):
@@ -183,7 +203,7 @@ def valuation_evaluate(request: ValuationRequest):
     except (ValueError, OverflowError) as exc: raise HTTPException(422,str(exc))
 
 # Advanced probability-weighted DCF valuation
-from .advanced_valuation import AdvancedRequest, analyze
+from .advanced_valuation import AdvancedRequest, analyze as analyze_valuation
 
 @app.post(
     "/valuation/advanced",
@@ -191,7 +211,7 @@ from .advanced_valuation import AdvancedRequest, analyze
 )
 def valuation_advanced(request: AdvancedRequest):
     try:
-        return analyze(request)
+        return analyze_valuation(request)
     except (ValueError, OverflowError, ZeroDivisionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
