@@ -1,0 +1,42 @@
+{
+  "schema": "worker-review-runtime-v2",
+  "scope": "isolated_only",
+  "execution_policy": "bounded-arithmetic-v1",
+  "execution_authorized": false,
+  "approved": false,
+  "deployment_allowed": false,
+  "database": null,
+  "policy_id": null,
+  "model": "gpt-4.1-mini",
+  "max_output_tokens": 128,
+  "budget": {
+    "currency": "USD",
+    "limit_microusd": null,
+    "reserved_microusd": null,
+    "call_limit": 1
+  },
+  "authority": {
+    "generation_id": null,
+    "reviewer_id": null,
+    "reviewer_key_file": null
+  },
+  "runtime_sha256": {
+    "app.py": null,
+    "task_storage.py": null,
+    "verified_review_pipeline.py": null,
+    "verifier_gate.py": null,
+    "developer_worker_coordinator.py": null,
+    "worker_batch.py": null,
+    "worker_scheduler.py": null,
+    "worker_supervised.py": null,
+    "isolated_functional_verifier.py": null
+  },
+  "jobs": {},
+  "runner": {
+    "uid": null,
+    "socket": null,
+    "config_directory": null,
+    "daemon_id": null,
+    "data_root": null
+  }
+}

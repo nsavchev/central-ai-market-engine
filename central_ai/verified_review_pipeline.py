@@ -235,7 +235,7 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
     from datetime import timedelta
     from uuid import UUID
     from central_ai.verifier_gate import read_private_host_file,make_hmac_review_authorizer
-    from central_ai.isolated_functional_verifier import _read_input
+    from central_ai.isolated_functional_verifier import _read_input,make_isolated_docker_runner
     from central_ai.app import make_openai_generator
     if enabled!='YES' or type(validation_only) is not bool:
         raise ValueError('WORKER_REVIEW_CONFIG_DISABLED')
@@ -254,8 +254,10 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
                       object_pairs_hook=pairs,parse_constant=constant)
     fields={'schema','scope','execution_policy','execution_authorized','approved','deployment_allowed','database','policy_id',
             'model','max_output_tokens','budget','authority','runtime_sha256','jobs'}
+    isolated = isinstance(config,dict) and config.get('schema')=='worker-review-runtime-v2'
+    if isolated:fields=fields|{'runner'}
     if (not isinstance(config,dict) or set(config)!=fields
-            or config['schema']!='worker-review-runtime-v1' or config['scope']!='isolated_only'
+            or config['schema'] not in ('worker-review-runtime-v1','worker-review-runtime-v2') or config['scope']!='isolated_only'
             or config['execution_policy']!='bounded-arithmetic-v1'
             or type(config['execution_authorized']) is not bool
             or (not validation_only and config['execution_authorized'] is not True)
@@ -277,6 +279,7 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
         reject()
     core={'app.py','task_storage.py','verified_review_pipeline.py','verifier_gate.py',
           'developer_worker_coordinator.py','worker_batch.py','worker_scheduler.py','worker_supervised.py'}
+    if isolated:core=core|{'isolated_functional_verifier.py'}
     hashes=config['runtime_sha256']
     if not isinstance(hashes,dict) or set(hashes)!=core:reject()
     for name,digest in hashes.items():
@@ -322,12 +325,17 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
                 if key_path.is_relative_to(area) or Path(config_path).is_relative_to(area):
                     raise ValueError('WORKER_REVIEW_AUTHORITY_INSIDE_ARTIFACTS')
             jobs[task_id]={field:grant[field] for field in job_fields}
+    def checked_runner():
+        return make_isolated_docker_runner(config['runner'],[job['image'] for job in jobs.values()])
+    if isolated:
+        checked_runner()  # Before provider construction, admission or task writes.
     if validation_only:
         return dict(config_validated=True,validation_only=True,
             execution_authorized=config['execution_authorized'],reviewer_key_loaded=True,
             task_grants=len(jobs),generation_started=False,worker_started=False,
             provider_key_verified=False,database_modified=False)
     def admit(binding):
+        if isolated:checked_runner()
         grant=grants.get(binding.get('task_id'))
         if (grant is None or binding.get('source_sha256')!=grant['source_sha256']
                 or binding.get('spec_sha256')!=grant['spec_sha256'] or binding.get('test_sha256')!=grant['trusted_test_sha256']
@@ -356,5 +364,10 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
     if not os.getenv('OPENAI_API_KEY'):
         raise ValueError('WORKER_REVIEW_PROVIDER_NOT_CONFIGURED')
     generator=make_openai_generator(enabled='YES',database=str(db))
+    options={}
+    if isolated:
+        def verify(**kwargs):
+            return run_functional_tests(**kwargs,run=checked_runner())
+        options['verifier']=verify
     return make_worker_review_handler(enabled='YES',database=str(db),jobs=jobs,generator=generator,
-        generator_id=generator.generator_id,generation_authorization_check=admit,authorization_check=authorize)
+        generator_id=generator.generator_id,generation_authorization_check=admit,authorization_check=authorize,**options)

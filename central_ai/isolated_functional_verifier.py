@@ -17,6 +17,94 @@ import uuid
 from pathlib import Path
 
 
+def _checked_runner_host(policy):
+    """Trusted local identity check, not a proof against a compromised host."""
+    import grp
+    fields = {'uid', 'socket', 'config_directory', 'daemon_id', 'data_root'}
+    def deny():
+        raise ValueError('ISOLATED_RUNNER_REQUIRED')
+    if not isinstance(policy, dict) or set(policy) != fields:
+        deny()
+    uid = policy['uid']
+    if (type(uid) is not int or uid <= 0 or os.getuid() != uid or os.geteuid() != uid
+            or any(k.startswith('DOCKER_') and v for k, v in os.environ.items())):
+        deny()
+    try:
+        docker_group = grp.getgrnam('docker').gr_gid
+    except KeyError:
+        docker_group = None
+    if docker_group is not None and docker_group in set(os.getgroups()) | {os.getgid(), os.getegid()}:
+        deny()
+    if os.access('/var/run/docker.sock', os.R_OK | os.W_OK):
+        deny()
+    caps = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
+    if any(int(caps.get(k, '1').strip(), 16) for k in ('CapEff', 'CapPrm', 'CapAmb')):
+        deny()
+    if (not isinstance(policy['daemon_id'], str)
+            or not re.fullmatch(r'[A-Za-z0-9:._-]{8,128}', policy['daemon_id'])):
+        deny()
+    for name in ('socket', 'config_directory', 'data_root'):
+        value = policy[name]
+        if not isinstance(value, str):
+            deny()
+        path = Path(value)
+        if not path.is_absolute() or path.resolve() != path:
+            deny()
+        metadata = path.stat()
+        if metadata.st_uid != uid:
+            deny()
+        if name == 'socket':
+            if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_mode & 0o007:
+                deny()
+            parent = path.parent.stat()
+            if parent.st_uid != uid or parent.st_mode & 0o077:
+                deny()
+        elif not stat.S_ISDIR(metadata.st_mode) or metadata.st_mode & 0o077:
+            deny()
+        if name == 'config_directory' and any(path.iterdir()):
+            deny()
+    socket = Path(policy['socket']).stat()
+    return socket.st_dev, socket.st_ino
+
+
+def make_isolated_docker_runner(policy, images, *, run=subprocess.run):
+    """Pin a non-production local rootless daemon; never inherit Docker context."""
+    import json
+    policy = dict(policy) if isinstance(policy, dict) else policy
+    identity = _checked_runner_host(policy)
+    if (not isinstance(images, (list, tuple)) or not images
+            or any(not isinstance(image, str) or not re.fullmatch(
+                r'[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}', image) for image in images)):
+        raise ValueError('ISOLATED_RUNNER_IMAGE_INVALID')
+    command = ['/usr/bin/docker', '--host', 'unix://' + policy['socket'],
+               '--config', policy['config_directory']]
+    def bound(args, **kwargs):
+        if (not isinstance(args, list) or not args or args[0] != 'docker'
+                or any(isinstance(arg, str) and (arg in ('-H','-c','--context','--host','--config')
+                    or arg.startswith(('--host=','--context=','--config='))) for arg in args[1:])
+                or any(x in kwargs for x in ('env', 'cwd', 'shell', 'executable'))
+                or _checked_runner_host(policy) != identity):
+            raise ValueError('ISOLATED_RUNNER_CHANGED')
+        return run(command + args[1:], **kwargs)
+    def inspect(args):
+        result = bound(args, capture_output=True, text=True, timeout=10, check=False)
+        if result.returncode or not isinstance(result.stdout, str) or len(result.stdout) > 131072:
+            raise ValueError('ISOLATED_RUNNER_UNAVAILABLE')
+        return json.loads(result.stdout)
+    info = inspect(['docker', 'info', '--format', '{{json .}}'])
+    if (not isinstance(info, dict) or info.get('ID') != policy['daemon_id']
+            or info.get('DockerRootDir') != policy['data_root']
+            or not isinstance(info.get('SecurityOptions'), list)
+            or not any(isinstance(s, str) and 'name=rootless' in s.split(',') for s in info['SecurityOptions'])):
+        raise ValueError('ISOLATED_RUNNER_DAEMON_MISMATCH')
+    for image in sorted(set(images)):
+        found = inspect(['docker', 'image', 'inspect', image])
+        if (not isinstance(found, list) or len(found) != 1 or not isinstance(found[0], dict)
+                or image not in (found[0].get('RepoDigests') or [])):
+            raise ValueError('ISOLATED_RUNNER_IMAGE_MISMATCH')
+    return bound
+
+
 def _read_input(path):
     """Read bounded regular-file bytes through one no-follow descriptor."""
     if not path.is_absolute() or path.suffix != ".py":

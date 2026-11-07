@@ -2033,7 +2033,7 @@ def test_runtime_preparation_cli_cannot_combine_paid_modes(monkeypatch,tmp_path)
 
 
 def test_runtime_preparation_pinned_bootstrap_uses_real_child_without_dispatch(monkeypatch,tmp_path,capsys):
-    import io,json,sys
+    import io,json,sys,hashlib
     from pathlib import Path
     from types import SimpleNamespace
     from central_ai.verifier_gate import provision_reviewer_key
@@ -2042,6 +2042,11 @@ def test_runtime_preparation_pinned_bootstrap_uses_real_child_without_dispatch(m
     key=authority/'reviewer.key';provision_reviewer_key(enabled='YES',path=key)
     key_before=key.read_bytes()
     root=Path(__file__).resolve().parents[1]
+    # This bootstrap test serves current fixture bytes. Production bundle pins
+    # still point to the previously reviewed immutable runtime, not this tree.
+    monkeypatch.setattr(check,'PREPARE_FILES',{
+        name:(path,hashlib.sha256((root/path).read_bytes()).hexdigest())
+        for name,(path,digest) in check.PREPARE_FILES.items()})
     urls=[]
     def download(url,**kwargs):
         assert '/'+check.PREPARE_SOURCE+'/' in url
@@ -2129,3 +2134,147 @@ def test_retained_pilot_requires_unambiguous_explicit_single_request(monkeypatch
     monkeypatch.setattr(sys,'argv',['check','--case-directory',str(tmp_path/'state'),'--run-prepared',*flags])
     with pytest.raises(ValueError,match='EXPLICIT_SINGLE_MODE_REQUIRED'):check.main()
     assert not (tmp_path/'state').exists()
+
+@pytest.mark.parametrize('bad',['rootful','id','root','image','unavailable'])
+def test_isolated_runner_daemon_rejection_and_explicit_endpoint(monkeypatch,bad):
+    import json
+    from types import SimpleNamespace
+    import central_ai.isolated_functional_verifier as vf
+    policy=dict(uid=10001,socket='/private/docker.sock',config_directory='/private/empty',
+                daemon_id='fixture-daemon-id',data_root='/private/docker-data')
+    monkeypatch.setattr(vf,'_checked_runner_host',lambda p:(1,2))
+    image='python@sha256:'+'a'*64;commands=[]
+    def docker(args,**kw):
+        commands.append(args)
+        assert args[:5]==['/usr/bin/docker','--host','unix:///private/docker.sock','--config','/private/empty']
+        if args[5]=='info':
+            data=dict(ID='other-daemon' if bad=='id' else policy['daemon_id'],
+                DockerRootDir='/other' if bad=='root' else policy['data_root'],
+                SecurityOptions=[] if bad=='rootful' else ['name=rootless'])
+        else:data=[dict(RepoDigests=[] if bad=='image' else [image])]
+        return SimpleNamespace(returncode=1 if bad=='unavailable' else 0,stdout=json.dumps(data))
+    with pytest.raises(ValueError):vf.make_isolated_docker_runner(policy,[image],run=docker)
+    assert commands
+
+
+def test_isolated_runner_binds_all_commands_and_detects_socket_change(monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import central_ai.isolated_functional_verifier as vf
+    p=dict(uid=10001,socket='/private/docker.sock',config_directory='/private/empty',
+           daemon_id='fixture-daemon-id',data_root='/private/docker-data')
+    identity=[(1,2)];commands=[];image='python@sha256:'+'a'*64
+    monkeypatch.setattr(vf,'_checked_runner_host',lambda _:identity[0])
+    def docker(args,**kwargs):
+        commands.append(args)
+        data=(dict(ID=p['daemon_id'],DockerRootDir=p['data_root'],SecurityOptions=['name=rootless'])
+              if args[5]=='info' else [dict(RepoDigests=[image])])
+        return SimpleNamespace(returncode=0,stdout=json.dumps(data))
+    bound=vf.make_isolated_docker_runner(p,[image],run=docker)
+    p['socket']='/mutated'  # Caller cannot redirect the captured endpoint.
+    bound(['docker','container','ls'],timeout=10)
+    assert commands[-1][:5]==['/usr/bin/docker','--host','unix:///private/docker.sock','--config','/private/empty']
+    with pytest.raises(ValueError):bound(['docker','--host','tcp://production','info'])
+    with pytest.raises(ValueError):bound(['docker','info'],env={'DOCKER_HOST':'tcp://production'})
+    before=len(commands);identity[0]=(1,3)
+    with pytest.raises(ValueError):bound(['docker','container','ls'])
+    assert len(commands)==before
+
+
+@pytest.mark.parametrize('bad',[None,'uid','override','capabilities','socket','socket_parent','config','data_root','docker_group','production_socket'])
+def test_isolated_runner_host_rejections_before_docker(monkeypatch,tmp_path,bad):
+    import os,grp,stat
+    from types import SimpleNamespace
+    from pathlib import Path
+    import central_ai.isolated_functional_verifier as vf
+    p=dict(uid=10001,socket='/private/docker.sock',config_directory='/private/empty',
+           daemon_id='fixture-daemon-id',data_root='/private/docker-data')
+    monkeypatch.setattr(os,'getuid',lambda:0 if bad=='uid' else 10001)
+    monkeypatch.setattr(os,'geteuid',lambda:10001)
+    monkeypatch.setattr(os,'getgid',lambda:10001);monkeypatch.setattr(os,'getegid',lambda:10001)
+    monkeypatch.setattr(os,'getgroups',lambda:[123] if bad=='docker_group' else [])
+    monkeypatch.setattr(os,'access',lambda *args:bad=='production_socket')
+    monkeypatch.setattr(grp,'getgrnam',lambda _:SimpleNamespace(gr_gid=123))
+    for key in list(os.environ):
+        if key.startswith('DOCKER_'):monkeypatch.delenv(key)
+    if bad=='override':monkeypatch.setenv('DOCKER_CONTEXT','production')
+    monkeypatch.setattr(Path,'read_text',lambda self:'CapEff: '+('1' if bad=='capabilities' else '0')+'\nCapPrm: 0\nCapAmb: 0\n')
+    monkeypatch.setattr(Path,'resolve',lambda self:self)
+    def metadata(path):
+        is_socket=str(path)==p['socket']
+        mode=(stat.S_IFREG if bad=='socket' else stat.S_IFSOCK)|0o600 if is_socket else stat.S_IFDIR|0o700
+        if (bad=='socket_parent' and str(path)=='/private') or (bad=='config' and str(path)==p['config_directory']):mode|=0o020
+        return SimpleNamespace(st_uid=0 if bad=='data_root' and str(path)==p['data_root'] else 10001,st_mode=mode,st_dev=1,st_ino=2)
+    monkeypatch.setattr(Path,'stat',metadata);monkeypatch.setattr(Path,'iterdir',lambda self:iter([]))
+    if bad is None:
+        assert vf._checked_runner_host(p)==(1,2)
+    else:
+        with pytest.raises(ValueError,match='ISOLATED_RUNNER_REQUIRED'):vf._checked_runner_host(p)
+
+
+def test_runtime_v2_rejects_runner_before_provider_and_task_mutation(monkeypatch,tmp_path):
+    import hashlib,json
+    from pathlib import Path
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    config['schema']='worker-review-runtime-v2'
+    config['runner']=dict(uid=0,socket='/var/run/docker.sock',config_directory='/bad',daemon_id='production',data_root='/bad')
+    source=Path(pipeline.__file__).parent/'isolated_functional_verifier.py'
+    config['runtime_sha256']['isolated_functional_verifier.py']=hashlib.sha256(source.read_bytes()).hexdigest();save()
+    database=Path(params['database']);before=database.read_bytes();key_before=key.read_bytes()
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('must reject before provider'))
+    with pytest.raises(ValueError,match='ISOLATED_RUNNER_REQUIRED'):
+        pipeline.load_worker_review_config(enabled='YES',config_path=path,database=str(database))
+    assert database.read_bytes()==before and key.read_bytes()==key_before
+
+@pytest.mark.parametrize('drift',[False,True])
+def test_runtime_v2_synthetic_runner_full_flow_and_preadmission_drift(monkeypatch,tmp_path,drift):
+    import hashlib,json,httpx
+    from pathlib import Path
+    from types import SimpleNamespace
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    import central_ai.isolated_functional_verifier as vf
+    from central_ai.worker_batch import run_batch
+    from central_ai.task_storage import TaskStorage
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    config['schema']='worker-review-runtime-v2'
+    config['runner']=dict(uid=10001,socket='/private/docker.sock',config_directory='/private/empty',
+                         daemon_id='synthetic-daemon-id',data_root='/private/root')
+    config['runtime_sha256']['isolated_functional_verifier.py']=hashlib.sha256(Path(vf.__file__).read_bytes()).hexdigest();save()
+    daemon=[config['runner']['daemon_id']];commands=[];requests=[]
+    monkeypatch.setattr(vf,'_checked_runner_host',lambda p:(1,2))  # Synthetic host observations, not rootless acceptance.
+    def docker(args,**kwargs):
+        commands.append(args)
+        if args[5]=='info':data=dict(ID=daemon[0],DockerRootDir='/private/root',SecurityOptions=['name=rootless'])
+        elif args[5]=='image':data=[dict(RepoDigests=[config['jobs'][params['task_id']]['image']])]
+        else:data=[]
+        return SimpleNamespace(returncode=0,stdout=json.dumps(data))
+    factory=vf.make_isolated_docker_runner
+    monkeypatch.setattr(vf,'make_isolated_docker_runner',lambda p,images:factory(p,images,run=docker))
+    real_generator=provider.make_openai_generator
+    def transport(request):
+        requests.append(request)
+        return httpx.Response(200,stream=httpx.ByteStream(json.dumps(dict(choices=[dict(message=dict(content='```python\ndef f(): return 2\n```'))])).encode()))
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-only')
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:real_generator(**kw,transport=httpx.MockTransport(transport)))
+    def verify(**kwargs):
+        kwargs['run'](['docker','container','ls'],capture_output=True,text=True,timeout=10)
+        record_fixture_resources(kwargs)
+        return valid_result(test_sha256=kwargs['expected_test_sha256'])
+    monkeypatch.setattr(pipeline,'run_functional_tests',verify)
+    handler=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+    if drift:daemon[0]='changed-daemon-id'
+    def execute():return run_batch(enabled='YES',database=params['database'],agent='synthetic-isolation',max_tasks=1,idle_checks=1,review_handler=handler)
+    if drift:
+        with pytest.raises(ValueError,match='DAEMON_MISMATCH'):execute()
+    else:
+        assert execute()['processed']==1
+        assert execute()['processed']==0
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert len(requests)==(0 if drift else 1)
+    assert ('admission' in saved['generation']) is (not drift)
+    if not drift:assert saved['verification']['outcome']['tests_passed'] is True
+    assert saved['approved'] is saved['deployment_allowed'] is False
+    assert all(c[:5]==['/usr/bin/docker','--host','unix:///private/docker.sock','--config','/private/empty'] for c in commands)
