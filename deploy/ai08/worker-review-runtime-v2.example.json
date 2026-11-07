@@ -29,7 +29,8 @@
     "worker_batch.py": null,
     "worker_scheduler.py": null,
     "worker_supervised.py": null,
-    "isolated_functional_verifier.py": null
+    "isolated_functional_verifier.py": null,
+    "task_queue.py": null
   },
   "jobs": {},
   "runner": {

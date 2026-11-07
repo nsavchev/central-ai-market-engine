@@ -19,6 +19,16 @@ class DeveloperWorkerCoordinator:
                 or not callable(getattr(review_handler, 'accepts', None))
                 or Path(getattr(review_handler, 'database', '')).resolve() != Path(db_path).resolve()):
             raise ValueError('INVALID_WORKER_REVIEW_HANDLER')
+        self.review_task_ids = None
+        if review_handler is not None:
+            task_ids = getattr(review_handler, 'allowed_task_ids', None)
+            if (not isinstance(task_ids, tuple) or not 1 <= len(task_ids) <= 100
+                    or any(not isinstance(t, str) or not t.strip() or len(t) > 128 for t in task_ids)
+                    or len(set(task_ids)) != len(task_ids)):
+                raise ValueError('INVALID_WORKER_REVIEW_SCOPE')
+            if any(review_handler.accepts(t) is not True for t in task_ids):
+                raise ValueError('INVALID_WORKER_REVIEW_SCOPE')
+            self.review_task_ids = tuple(task_ids)
         self.review_handler = review_handler
         self.bridge = PersistentTaskBridge(db_path)
         self.targets = TaskFileTargets(db_path)
@@ -30,9 +40,12 @@ class DeveloperWorkerCoordinator:
         if self.review_handler is not None:
             pending = self.review_handler.next_task_id()
             if pending is not None:
+                if pending not in self.review_task_ids:
+                    raise ValueError('REVIEW_TASK_OUTSIDE_SCOPE')
                 return {'task_id': pending, 'status': 'reviewed',
                         'verification': self.review_handler(pending)}
-        acquired = self.bridge.queue.acquire_next(self.agent, seconds=30, require_target=True)
+        options = {} if self.review_task_ids is None else {'allowed_task_ids': self.review_task_ids}
+        acquired = self.bridge.queue.acquire_next(self.agent, seconds=30, require_target=True, **options)
         if acquired is None:
             return None
         task_id = acquired['task_id']

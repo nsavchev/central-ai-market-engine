@@ -220,6 +220,7 @@ def make_worker_review_handler(*, enabled, database, jobs, generator, generator_
         return None
 
     review.database = str(db)
+    review.allowed_task_ids = tuple(captured)
     review.accepts = lambda task_id: task_id in captured
     review.next_task_id = next_task_id
     return review
@@ -279,7 +280,7 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
         reject()
     core={'app.py','task_storage.py','verified_review_pipeline.py','verifier_gate.py',
           'developer_worker_coordinator.py','worker_batch.py','worker_scheduler.py','worker_supervised.py'}
-    if isolated:core=core|{'isolated_functional_verifier.py'}
+    if isolated:core=core|{'isolated_functional_verifier.py','task_queue.py'}
     hashes=config['runtime_sha256']
     if not isinstance(hashes,dict) or set(hashes)!=core:reject()
     for name,digest in hashes.items():

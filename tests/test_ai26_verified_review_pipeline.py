@@ -2221,7 +2221,8 @@ def test_runtime_v2_rejects_runner_before_provider_and_task_mutation(monkeypatch
     config['schema']='worker-review-runtime-v2'
     config['runner']=dict(uid=0,socket='/var/run/docker.sock',config_directory='/bad',daemon_id='production',data_root='/bad')
     source=Path(pipeline.__file__).parent/'isolated_functional_verifier.py'
-    config['runtime_sha256']['isolated_functional_verifier.py']=hashlib.sha256(source.read_bytes()).hexdigest();save()
+    config['runtime_sha256']['isolated_functional_verifier.py']=hashlib.sha256(source.read_bytes()).hexdigest()
+    config['runtime_sha256']['task_queue.py']=hashlib.sha256(source.with_name('task_queue.py').read_bytes()).hexdigest();save()
     database=Path(params['database']);before=database.read_bytes();key_before=key.read_bytes()
     monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('must reject before provider'))
     with pytest.raises(ValueError,match='ISOLATED_RUNNER_REQUIRED'):
@@ -2242,7 +2243,8 @@ def test_runtime_v2_synthetic_runner_full_flow_and_preadmission_drift(monkeypatc
     config['schema']='worker-review-runtime-v2'
     config['runner']=dict(uid=10001,socket='/private/docker.sock',config_directory='/private/empty',
                          daemon_id='synthetic-daemon-id',data_root='/private/root')
-    config['runtime_sha256']['isolated_functional_verifier.py']=hashlib.sha256(Path(vf.__file__).read_bytes()).hexdigest();save()
+    config['runtime_sha256']['isolated_functional_verifier.py']=hashlib.sha256(Path(vf.__file__).read_bytes()).hexdigest()
+    config['runtime_sha256']['task_queue.py']=hashlib.sha256(Path(vf.__file__).with_name('task_queue.py').read_bytes()).hexdigest();save()
     daemon=[config['runner']['daemon_id']];commands=[];requests=[]
     monkeypatch.setattr(vf,'_checked_runner_host',lambda p:(1,2))  # Synthetic host observations, not rootless acceptance.
     def docker(args,**kwargs):
@@ -2278,3 +2280,80 @@ def test_runtime_v2_synthetic_runner_full_flow_and_preadmission_drift(monkeypatc
     if not drift:assert saved['verification']['outcome']['tests_passed'] is True
     assert saved['approved'] is saved['deployment_allowed'] is False
     assert all(c[:5]==['/usr/bin/docker','--host','unix:///private/docker.sock','--config','/private/empty'] for c in commands)
+
+@pytest.mark.parametrize('foreign_leased',[False,True])
+def test_review_scope_mixed_queue_never_mutates_foreign_pending_or_expired(monkeypatch,tmp_path,foreign_leased):
+    import sqlite3
+    from central_ai.persistent_bridge import PersistentTaskBridge
+    from central_ai.task_file_targets import TaskFileTargets
+    from central_ai.worker_batch import run_batch
+    from central_ai.task_storage import TaskStorage
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    bridge=PersistentTaskBridge(params['database']);targets=TaskFileTargets(params['database'])
+    foreign=bridge.submit('Unrelated registered analysis task')['task_id']
+    granted=bridge.submit('Explicitly granted analysis task')['task_id']
+    for task_id in (foreign,granted):targets.register(task_id,str(tmp_path/'source'),'sample.py')
+    if foreign_leased:
+        bridge.queue.acquire(foreign,'other-owner')
+        with sqlite3.connect(params['database']) as db:
+            db.execute("UPDATE task_queue SET lease_until='2000-01-01T00:00:00+00:00' WHERE task_id=?",(foreign,))
+    def snapshot():
+        with sqlite3.connect(params['database']) as db:
+            return (db.execute('SELECT * FROM task_queue WHERE task_id=?',(foreign,)).fetchall(),
+                    db.execute('SELECT * FROM task_queue_audit WHERE task_id=? ORDER BY id',(foreign,)).fetchall(),
+                    db.execute('SELECT payload FROM tasks WHERE task_id=?',(foreign,)).fetchone())
+    before=snapshot();handler=build({granted:dict(jobs[params['task_id']])})
+    def cycle():return run_batch(enabled='YES',database=params['database'],agent='scoped',max_tasks=1,idle_checks=1,review_handler=handler)
+    assert cycle()['processed']==1
+    assert calls==[granted] and snapshot()==before
+    assert cycle()['processed']==0 and snapshot()==before
+    assert TaskStorage(params['database']).get(granted)['verification']['phase']=='completed'
+    # The default analysis-only worker still handles ordinary registered work.
+    assert run_batch(enabled='YES',database=params['database'],agent='analysis-only',max_tasks=1,idle_checks=1)['processed']==1
+    assert TaskStorage(params['database']).get(foreign)['status']=='analyzed'
+    assert calls==[granted]
+
+
+def test_review_scope_is_frozen_and_cannot_select_foreign_task(monkeypatch,tmp_path):
+    from central_ai.developer_worker_coordinator import DeveloperWorkerCoordinator
+    params,jobs,calls,build=worker_review_fixture(monkeypatch,tmp_path)
+    handler=build();worker=DeveloperWorkerCoordinator(params['database'],'scoped',review_handler=handler)
+    handler.allowed_task_ids=('unrelated',)
+    handler.next_task_id=lambda:'unrelated'
+    before=__import__('pathlib').Path(params['database']).read_bytes()
+    with pytest.raises(ValueError,match='OUTSIDE_SCOPE'):worker.run_once()
+    assert __import__('pathlib').Path(params['database']).read_bytes()==before and calls==[]
+    assert worker.review_task_ids==(params['task_id'],)
+
+
+@pytest.mark.parametrize('scope',[[],(),['missing'],"one",{'one'},[None],[''],['same','same'],['x'*129],list(map(str,range(101)))])
+def test_queue_scope_empty_missing_or_invalid_spends_no_attempt(tmp_path,scope):
+    import sqlite3
+    from central_ai.task_queue import TaskQueue
+    queue=TaskQueue(tmp_path/'queue.sqlite');queue.enqueue('ordinary')
+    from central_ai.task_file_targets import TaskFileTargets
+    TaskFileTargets(queue.db_path).initialize()
+    before=queue.status('ordinary')
+    with sqlite3.connect(queue.db_path) as db:events=db.execute('SELECT * FROM task_queue_audit').fetchall()
+    if scope in ([],(),['missing']):assert queue.acquire_next('scoped',allowed_task_ids=scope) is None
+    else:
+        with pytest.raises(ValueError,match='INVALID_TASK_SCOPE'):queue.acquire_next('scoped',allowed_task_ids=scope)
+    assert queue.status('ordinary')==before
+    with sqlite3.connect(queue.db_path) as db:assert db.execute('SELECT * FROM task_queue_audit').fetchall()==events
+
+
+def test_queue_scope_competing_acquisitions_share_one_lease_and_attempt(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from central_ai.task_queue import TaskQueue
+    queue=TaskQueue(tmp_path/'queue.sqlite');queue.enqueue('allowed');queue.enqueue('foreign')
+    from central_ai.task_file_targets import TaskFileTargets
+    TaskFileTargets(queue.db_path).initialize()
+    barrier=Barrier(2)
+    def acquire(agent):
+        barrier.wait()
+        return queue.acquire_next(agent,allowed_task_ids=['allowed'])
+    with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(acquire,['first','second']))
+    assert sum(r is not None for r in results)==1
+    assert queue.status('allowed')['attempt_count']==1
+    assert queue.status('foreign')['attempt_count']==0
