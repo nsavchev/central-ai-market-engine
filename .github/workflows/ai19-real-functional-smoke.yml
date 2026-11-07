@@ -307,4 +307,30 @@ jobs:
               assert not dry['execution_authorized'] and not dry['generation_started'] and not dry['worker_started']
               assert dry['planned_tasks']==1 and containers()==before
               print('DISABLED_RUNTIME_PROFILE_PREPARED_AND_VALIDATED_NO_DISPATCH_PASSED')
+              from scripts.openai_admitted_acceptance import run_prepared_pilot
+              from types import SimpleNamespace
+              pilot_state=root/'retained-pilot-state';pilot_state.mkdir(mode=0o700)
+              pilot_authority=root/'retained-pilot-authority';pilot_authority.mkdir(mode=0o700)
+              provision_reviewer_key(enabled='YES',path=pilot_authority/'reviewer.key')
+              prepare_runtime_files(state_directory=pilot_state,authority_directory=pilot_authority,
+                  verifier_image=image,budget_limit_microusd=20000000)
+              real_run=subprocess.run
+              def pilot_run(args,**kwargs):
+                  if args[:3]==['docker','exec','ci-provider-key-source']:
+                      return SimpleNamespace(returncode=0,stdout=json.dumps('synthetic-ci-provider-key-only'))
+                  return real_run(args,**kwargs)
+              provider_module.make_openai_generator=lambda **kw:e2e_factory(kw['database'])
+              subprocess.run=pilot_run
+              try:
+                  pilot=run_prepared_pilot(state_directory=pilot_state,authority_directory=pilot_authority,
+                      key_container='ci-provider-key-source')
+              finally:
+                  subprocess.run=real_run
+                  provider_module.make_openai_generator=original_factory
+              assert pilot['acceptance']=='passed',pilot
+              assert pilot['worker_cycles_completed']==1 and pilot['worker_processed']==1
+              assert pilot['standing_disabled_policy_and_key_unchanged'] and pilot['snapshot_removed']
+              assert not pilot['persistent_worker_enabled'] and not pilot['timer_modified']
+              assert not list(pilot_authority.glob('pilot-grant-*.json')) and containers()==before
+              print('RETAINED_STATE_ONE_SHOT_USD_PILOT_REAL_DOCKER_PASSED')
           PY

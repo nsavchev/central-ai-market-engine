@@ -2063,3 +2063,69 @@ def test_runtime_preparation_pinned_bootstrap_uses_real_child_without_dispatch(m
     assert key.read_bytes()==key_before
     assert 'reviewer.key' not in capsys.readouterr().out
     with pytest.raises(ValueError,match='AUTHORITY_NOT_READY'):check.prepare_runtime_main(args)
+
+
+@pytest.mark.parametrize('provider_fails',[False,True])
+def test_retained_pilot_one_dispatch_no_standing_grant_and_no_replay(monkeypatch,tmp_path,provider_fails):
+    import json,subprocess,httpx
+    from types import SimpleNamespace
+    from scripts.openai_admitted_acceptance import prepare_runtime_files,run_prepared_pilot
+    from central_ai.verifier_gate import provision_reviewer_key
+    from central_ai.task_storage import TaskStorage
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    authority=tmp_path/'authority';authority.mkdir(mode=0o700)
+    key=authority/'reviewer.key';provision_reviewer_key(enabled='YES',path=key)
+    state=tmp_path/'state';state.mkdir(mode=0o700)
+    prepare_runtime_files(state_directory=state,authority_directory=authority,
+        verifier_image='python@sha256:'+'a'*64,budget_limit_microusd=20000000)
+    policy_before=(authority/'runtime.json').read_bytes();key_before=key.read_bytes()
+    calls=[];commands=[]
+    def docker(args,**kwargs):
+        commands.append(args)
+        if args[:3]==['docker','image','inspect']:
+            return SimpleNamespace(returncode=0,stdout='[{}]')
+        assert args[:3]==['docker','exec','key-source']
+        assert (state/'pilot.started').is_file()
+        return SimpleNamespace(returncode=0,stdout=json.dumps('synthetic-provider-key-only'))
+    monkeypatch.setattr(subprocess,'run',docker)
+    real_generator=provider.make_openai_generator
+    def transport(request):
+        assert not list(authority.glob('pilot-grant-*.json'))
+        assert (authority/'runtime.json').read_bytes()==policy_before
+        calls.append(json.loads(request.content))
+        return httpx.Response(503 if provider_fails else 200,stream=httpx.ByteStream(json.dumps(dict(
+            choices=[dict(message=dict(content='```python\ndef f(a, b): return a * b\n```'))])).encode()))
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:real_generator(**kw,transport=httpx.MockTransport(transport)))
+    real_handler=pipeline.make_worker_review_handler
+    def verify(**kw):
+        record_fixture_resources(kw)
+        return valid_result(test_sha256=kw['expected_test_sha256'])
+    monkeypatch.setattr(pipeline,'make_worker_review_handler',lambda **kw:real_handler(**kw,verifier=verify))
+    monkeypatch.setenv('OPENAI_API_KEY','previous-value')
+    report=run_prepared_pilot(state_directory=state,authority_directory=authority,key_container='key-source')
+    assert report['acceptance']==('failed_or_uncertain' if provider_fails else 'passed')
+    assert len(calls)==1 and calls[0]['max_tokens']==128
+    assert report['standing_disabled_policy_and_key_unchanged'] is True
+    assert report['persistent_worker_enabled'] is report['timer_modified'] is report['retry_allowed'] is False
+    assert __import__('os').environ['OPENAI_API_KEY']=='previous-value'
+    assert not list(authority.glob('pilot-grant-*.json'))
+    assert (authority/'runtime.json').read_bytes()==policy_before and key.read_bytes()==key_before
+    assert 'synthetic-provider-key-only' not in json.dumps(report)
+    assert json.loads((state/'pilot-report.json').read_text())==report
+    before=len(commands)
+    with pytest.raises((ValueError,FileExistsError)):
+        run_prepared_pilot(state_directory=state,authority_directory=authority,key_container='key-source')
+    assert len(commands)==before and len(calls)==1
+    saved=TaskStorage(state/'tasks.sqlite').get(next(iter(json.loads(policy_before)['jobs'])))
+    assert saved['generation']['admission']['receipt']['schema']=='generation-admission-usd-v2'
+    assert saved['generation']['phase']==('requested' if provider_fails else 'completed')
+
+
+@pytest.mark.parametrize('flags',[[],['--end-to-end','--send-once'],['--prepare-runtime','--send-once']])
+def test_retained_pilot_requires_unambiguous_explicit_single_request(monkeypatch,tmp_path,flags):
+    import sys
+    from scripts import openai_admitted_acceptance as check
+    monkeypatch.setattr(sys,'argv',['check','--case-directory',str(tmp_path/'state'),'--run-prepared',*flags])
+    with pytest.raises(ValueError,match='EXPLICIT_SINGLE_MODE_REQUIRED'):check.main()
+    assert not (tmp_path/'state').exists()

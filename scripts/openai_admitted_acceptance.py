@@ -143,11 +143,16 @@ def main():
     parser.add_argument('--end-to-end', action='store_true')
     parser.add_argument('--worker-check', action='store_true')
     parser.add_argument('--prepare-runtime', action='store_true')
+    parser.add_argument('--run-prepared', action='store_true')
     parser.add_argument('--authority-directory')
     parser.add_argument('--runtime-python')
     parser.add_argument('--verifier-image')
     parser.add_argument('--budget-usd', type=int)
     args = parser.parse_args()
+    if args.run_prepared:
+        if args.prepare_runtime or args.end_to_end or args.worker_check or not args.send_once:
+            raise ValueError('RUNTIME_PILOT_EXPLICIT_SINGLE_MODE_REQUIRED')
+        return prepared_pilot_main(args)
     if args.prepare_runtime:
         if args.send_once or args.end_to_end or args.worker_check:
             raise ValueError('RUNTIME_PREPARATION_MODE_AMBIGUOUS')
@@ -485,6 +490,149 @@ def prepare_runtime_main(args):
     (state/'preparation-report.json').write_text(json.dumps(report,sort_keys=True)+'\n')
     print(json.dumps(report,sort_keys=True))
     return 0
+
+
+def run_prepared_pilot(*, state_directory, authority_directory, key_container):
+    """One retained arithmetic task; temporary host grant is removed before dispatch."""
+    import hashlib,json,os,sqlite3,subprocess,tempfile
+    from pathlib import Path
+    from central_ai.verifier_gate import read_private_host_file
+    from central_ai.verified_review_pipeline import load_worker_review_config
+    from central_ai.developer_worker_coordinator import DeveloperWorkerCoordinator
+    from central_ai.worker_supervised import run_supervised
+    from central_ai.task_storage import TaskStorage
+    def require(ok):
+        if not ok:raise ValueError('RUNTIME_PILOT_PRECONDITION_FAILED')
+    def sync_directory(path):
+        fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+    state=Path(state_directory);authority=Path(authority_directory)
+    require(state.is_absolute() and state.resolve()==state and state.is_dir()
+            and state.stat().st_uid==os.geteuid() and not state.stat().st_mode & 0o077)
+    original_path=authority/'runtime.json'
+    original=read_private_host_file(original_path,max_bytes=256*1024)
+    config=json.loads(original);database=state/'tasks.sqlite'
+    require(config['execution_authorized'] is False and config['database']==str(database)
+            and config['max_output_tokens']==128 and len(config['jobs'])==1
+            and config['budget']==dict(currency='USD',limit_microusd=20000000,
+                reserved_microusd=10000,call_limit=1))
+    load_worker_review_config(enabled='YES',config_path=original_path,database=str(database),validation_only=True)
+    task_id=next(iter(config['jobs']));job=config['jobs'][task_id]
+    key_path=Path(config['authority']['reviewer_key_file'])
+    key_hash=hashlib.sha256(read_private_host_file(key_path,max_bytes=128)).hexdigest()
+    with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True) as conn:
+        conn.execute('PRAGMA query_only=ON')
+        require(conn.execute('SELECT task_id,status FROM tasks').fetchall()==[(task_id,'planned')])
+        require(conn.execute('SELECT task_id,status,attempt_count FROM task_queue').fetchall()==[(task_id,'pending',0)])
+        payload=json.loads(conn.execute('SELECT payload FROM tasks').fetchone()[0])
+        require('generation' not in payload and 'verification' not in payload)
+    image_check=subprocess.run(['docker','image','inspect',job['image']],capture_output=True,text=True,timeout=15)
+    require(image_check.returncode==0 and len(json.loads(image_check.stdout))==1)
+    # Exclusive marker survives every later outcome. Never delete it to retry.
+    fd=os.open(state/'pilot.started',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'w') as out:
+        out.write('Single retained-state pilot claimed; preserve on uncertainty.\n');out.flush();os.fsync(out.fileno())
+    sync_directory(state)
+    previous_key=os.environ.get('OPENAI_API_KEY');temporary=None
+    report=dict(acceptance='failed_or_uncertain',scope='retained_state_single_arithmetic_pilot',
+        retry_allowed=False,persistent_worker_enabled=False,timer_modified=False,
+        approved=False,deployment_allowed=False,model='gpt-4.1-mini',max_output_tokens=128)
+    try:
+        fetched=subprocess.run(['docker','exec',key_container,'python','-c',
+            'import os,json; print(json.dumps(os.environ.get("OPENAI_API_KEY", "")))'],
+            capture_output=True,text=True,timeout=15)
+        require(fetched.returncode==0 and len(fetched.stdout)<=8192)
+        secret=json.loads(fetched.stdout)
+        require(isinstance(secret,str) and 20<=len(secret)<=4096)
+        os.environ['OPENAI_API_KEY']=secret
+        del secret,fetched
+        granted=dict(config,execution_authorized=True)
+        fd,name=tempfile.mkstemp(prefix='pilot-grant-',suffix='.json',dir=authority)
+        temporary=Path(name)
+        try:
+            with os.fdopen(fd,'w') as out:
+                json.dump(granted,out,sort_keys=True);out.flush();os.fsync(out.fileno())
+            sync_directory(authority)
+            handler=DeveloperWorkerCoordinator.configured_review_handler(
+                enabled='YES',config_path=temporary,database=str(database))
+        finally:
+            temporary.unlink();temporary=None;sync_directory(authority)
+        # No standing executable policy remains when the worker starts.
+        result=run_supervised(enabled='YES',database=str(database),agent='operator-single-pilot',
+            lock_path=str(state/'worker.lock'),status_path=str(state/'worker-status.json'),
+            cycles=1,interval=1,max_tasks=1,review_handler=handler)
+        require(result==dict(status='complete',cycles=1,processed=1))
+        saved=TaskStorage(database).get(task_id)
+        generation=saved['generation'];verification=saved['verification'];outcome=verification['outcome']
+        require(saved['status']=='analyzed' and generation['phase']=='completed'
+            and verification['phase']=='completed' and saved['approved'] is False
+            and saved['deployment_allowed'] is False and not outcome['quarantine_required']
+            and outcome['completion_confirmed'] is True and outcome['tests_passed'] is True
+            and outcome['test_status']=='passed'
+            and generation['admission']['receipt']['schema']=='generation-admission-usd-v2'
+            and generation['dispatch']['max_output_tokens']==128
+            and not Path(verification['resources']['snapshot_directory']).exists()
+            and hashlib.sha256(Path(job['source_file']).read_bytes()).hexdigest()==job['source_sha256']
+            and hashlib.sha256(Path(job['trusted_test_file']).read_bytes()).hexdigest()==job['trusted_test_sha256'])
+        report.update(acceptance='passed',worker_cycles_completed=1,worker_processed=1,
+            generation_completed=True,verification_journal_completed=True,test_status='passed',
+            source_unchanged=True,trusted_tests_unchanged=True,snapshot_removed=True,ledger_currency='USD')
+    except BaseException as error:
+        report['error_type']=type(error).__name__
+    finally:
+        if temporary is not None:
+            try:temporary.unlink();sync_directory(authority)
+            except OSError:report['acceptance']='failed_or_uncertain'
+        if previous_key is None:os.environ.pop('OPENAI_API_KEY',None)
+        else:os.environ['OPENAI_API_KEY']=previous_key
+        unchanged=(read_private_host_file(original_path,max_bytes=256*1024)==original
+            and hashlib.sha256(read_private_host_file(key_path,max_bytes=128)).hexdigest()==key_hash)
+        report['standing_disabled_policy_and_key_unchanged']=unchanged
+        if not unchanged:report['acceptance']='failed_or_uncertain'
+    fd=os.open(state/'pilot-report.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'w') as out:
+        json.dump(report,out,sort_keys=True);out.write('\n');out.flush();os.fsync(out.fileno())
+    sync_directory(state)
+    return report
+
+
+def prepared_pilot_main(args):
+    """Validate pinned staged code/dependencies before loading the one-shot operator."""
+    if not args.container or not args.authority_directory or not args.runtime_python:
+        raise ValueError('RUNTIME_PILOT_ARGUMENTS_REQUIRED')
+    state=Path(args.case_directory);package=state/'package'
+    expected_python=set()
+    for path,expected in PREPARE_FILES.values():
+        item=package/path
+        if item.resolve()!=item or not item.is_file() or hashlib.sha256(item.read_bytes()).hexdigest()!=expected:
+            raise ValueError('RUNTIME_PILOT_SOURCE_CHANGED')
+        if path.endswith('.py'):expected_python.add(path)
+    if {p.relative_to(package).as_posix() for p in package.rglob('*.py')}!=expected_python:
+        raise ValueError('RUNTIME_PILOT_EXTRA_SOURCE')
+    check=r'''
+import importlib.metadata as md,re,sys,subprocess
+from pathlib import Path
+assert sys.prefix!=sys.base_prefix
+expected={}
+for line in Path(LOCK).read_text().splitlines():
+    if not line.strip() or line.lstrip().startswith('#'):continue
+    match=re.fullmatch(r'([A-Za-z0-9_.-]+)==(\S+) --hash=sha256:[a-f0-9]{64}',line)
+    assert match
+    expected[re.sub(r'[-_.]+','-',match[1]).lower()]=match[2]
+installed={re.sub(r'[-_.]+','-',d.metadata['Name']).lower():d.version for d in md.distributions()}
+assert all(installed.get(k)==v for k,v in expected.items())
+assert not set(installed)-set(expected)-{'pip','setuptools','wheel'}
+assert subprocess.run([sys.executable,'-I','-B','-m','pip','check'],capture_output=True,timeout=30).returncode==0
+'''.replace('LOCK',repr(str(package/'release/requirements-linux-amd64.lock')))
+    program=check+'\nimport sys,json\nsys.path.insert(0,'+repr(str(package))+')\n'+inspect.getsource(run_prepared_pilot)
+    program+='\nreport=run_prepared_pilot(state_directory='+repr(str(state))+',authority_directory='+repr(args.authority_directory)+',key_container='+repr(args.container)+')\nprint(json.dumps(report,sort_keys=True))\n'
+    result=subprocess.run([args.runtime_python,'-I','-B','-c',program],capture_output=True,text=True,timeout=180)
+    if result.returncode or len(result.stdout)>8192:raise RuntimeError('RUNTIME_PILOT_PROCESS_UNCERTAIN')
+    report=json.loads(result.stdout)
+    if report.get('scope')!='retained_state_single_arithmetic_pilot':raise ValueError('RUNTIME_PILOT_REPORT_INVALID')
+    print(json.dumps(report,sort_keys=True))
+    return 0 if report.get('acceptance')=='passed' else 1
 
 
 if __name__ == '__main__':
