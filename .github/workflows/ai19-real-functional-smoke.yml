@@ -408,6 +408,13 @@ jobs:
             XDG_RUNTIME_DIR="/run/user/${REVIEW_CI_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${REVIEW_CI_UID}/bus" \
             CENTRAL_AI_ROOTLESS_CI_POLICY=/home/ci-review/runner.json CENTRAL_AI_ROOTLESS_CI_IMAGE="$image" \
             /bin/sh -c 'cd /home/ci-review/source && exec /home/ci-review/venv/bin/python -m pytest -q -s --basetemp=/home/ci-review/test-state tests/test_ai26_verified_review_pipeline.py -k test_real_rootless_private_runner_lifecycle'
+      - name: Diagnose disposable daemon startup failure
+        if: failure()
+        run: |
+          if id ci-review >/dev/null 2>&1; then
+            review_uid=$(id -u ci-review)
+            sudo journalctl _UID="$review_uid" _SYSTEMD_USER_UNIT=ci-rootless.service --no-pager -n 80
+          fi
       - name: Remove disposable daemon and identity
         if: always()
         run: |
