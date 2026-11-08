@@ -851,3 +851,14 @@ Current task: PR #130, base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`, existing
 - Safety/provenance: source and CI only. No VPS inspection, private policy/keys, paid API request, automatic worker activation, live trading, deployment, schema migration or PR merge. Issue #90 is open.
 
 **One next action:** inspect the new AI-19 exact-source rootless job and identify the first invalid baseline prerequisite, then apply a minimal correction in the existing test/CI owner and update this register. Keep real pass/fail/timeout and cleanup tests blocked until their inputs are valid.
+
+
+### P1-SCHEDULED-RUNNER-ACCEPTANCE-01 — private CI artifact-directory prerequisite (2026-11-08)
+
+Task/source: PR #130, `audit/architecture-progress-20261104`, base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`. Existing owners only: AI-19 disposable runner workflow, AI-26 rootless fixture, `load_worker_review_config` and `make_isolated_docker_runner`. No runtime module, policy schema, architecture owner or deployment action was added.
+
+- Exact CI source `9cc1e100dcde6deae3e9a7c62b5f6f2b36229e44`: [AI-19 run 42458488834](https://github.com/nsavchev/central-ai-market-engine/actions/runs/42458488834) **failed** overall; `functional-smoke` **passed** and disposable rootless Docker daemon initialized. Three real rootless tests failed during the new *positive* baseline loader check, before the negative daemon-ID check and before pass/fail/timeout lifecycle execution. Traceback: `central_ai/verified_review_pipeline.py:315`, `WORKER_REVIEW_CONFIG_INVALID`, in the existing job grant check for an image digest, absolute artifact paths and private directory permissions. This narrows the failure to a *fixture grant prerequisite*, not an accepted daemon mismatch or candidate execution.
+- Narrow test-only adjustment `3a9cee56cfeb54ed93954889f5babb3168d212df`: explicitly set existing temporary `handoffs`, `proposals`, `candidates` fixture directory modes to `0700` before persisting the v2 test policy, preserving the loader's strict directory checks. Exact-source CI result is **pending**. If it still fails at the same line, inspect the path portion and actual grant values rather than relaxing the validator.
+- GitHub source and CI are the only evidence in this entry. VPS state, production runtime, actual service identity/daemon, backup/restore and Issue #90 reconciliation remain unverified. No paid provider API requests, private policy/ledger resets, worker activation, production migration, merge, deployment or live trading.
+
+**One next action:** examine exact-source AI-19 CI for `3a9cee5...`; verify the baseline policy is accepted, then inspect deliberately wrong daemon identity and the real pass/fail/timeout/cleanup/restart assertions. Preserve fail-closed boundaries.
