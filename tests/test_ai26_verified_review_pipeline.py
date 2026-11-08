@@ -2631,6 +2631,11 @@ else:
     monkeypatch.setenv('OPENAI_API_KEY', 'synthetic-ci-only')
     monkeypatch.setattr(provider, 'make_openai_generator', lambda **kw:
         original(**kw, transport=httpx.MockTransport(response)))
+    # Validate the legitimate host policy first; do not mask an unrelated fixture error
+    # as an expected daemon-identity rejection.
+    baseline_handler = pipeline.load_worker_review_config(
+        enabled='YES', config_path=path, database=params['database'])
+    assert callable(baseline_handler)
     # A real endpoint with a wrong daemon identity must reject before task writes/provider.
     daemon_id = config['runner']['daemon_id']
     config['runner']['daemon_id'] = ('0' if daemon_id[0] != '0' else '1') + daemon_id[1:]
