@@ -862,3 +862,14 @@ Task/source: PR #130, `audit/architecture-progress-20261104`, base `7fd9c850f73e
 - GitHub source and CI are the only evidence in this entry. VPS state, production runtime, actual service identity/daemon, backup/restore and Issue #90 reconciliation remain unverified. No paid provider API requests, private policy/ledger resets, worker activation, production migration, merge, deployment or live trading.
 
 **One next action:** examine exact-source AI-19 CI for `3a9cee5...`; verify the baseline policy is accepted, then inspect deliberately wrong daemon identity and the real pass/fail/timeout/cleanup/restart assertions. Preserve fail-closed boundaries.
+
+
+### P1-SCHEDULED-RUNNER-ACCEPTANCE-01 — trusted source file mode in real-rootless fixture (2026-11-08)
+
+Objective/owner: continue existing PR #130 `audit/architecture-progress-20261104` (base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`) with the existing AI-19 rootless workflow, AI-26 fixture, `load_worker_review_config` and `_read_input` owners. Only the existing test and canonical documentation change; no new runner/verifier/manager/queue/module or architectural ownership revision.
+
+- Exact source `3a9cee56cfeb54ed93954889f5babb3168d212df`: [AI-19 run 42467275027](https://github.com/nsavchev/central-ai-market-engine/actions/runs/42467275027) **failed**. Ordinary `functional-smoke` passed, and dedicated rootless daemon/image prerequisites completed. The existing private-artifact-directory mode fix advanced the three scenarios past the prior `WORKER_REVIEW_CONFIG_INVALID` failure. The *positive baseline* loader now failed at `central_ai/verified_review_pipeline.py:323` when `_read_input(source)` rejected an unsafe Python source file (`UNSAFE_INPUT`). The strict reader rejects group/world writable modes and unsafe file metadata; the code trace does not establish that actual lifecycle test cases ran. No security guard was changed.
+- Minimal test-only change `0ec9d622618f89fb858474575441dc22c371a5f2`: set the disposable fixture `source_file` permissions to `0600` before persisting the v2 policy. The existing reader, loader, Docker identity checks, frozen hashes and restrictions remain intact. **Exact-source CI outcome pending**, not accepted.
+- Evidence provenance: GitHub Actions source/CI only. VPS service/daemon/source/deployed SHA, backups, operational approvals and Issue #90 reconciliation remain separate, unverified. No paid provider call, activation, policy/ledger change, migration, merge, deployment or trading.
+
+**One next action:** inspect exact-source AI-19 after `0ec9d62...`. If baseline loader succeeds, verify the mismatched daemon rejection then actual pass/fail/timeout, resource limits, cleanup and restart. Record any failure at its first true precondition and fix only within the existing owners.
