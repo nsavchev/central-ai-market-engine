@@ -2632,7 +2632,9 @@ else:
     monkeypatch.setattr(provider, 'make_openai_generator', lambda **kw:
         original(**kw, transport=httpx.MockTransport(response)))
     # A real endpoint with a wrong daemon identity must reject before task writes/provider.
-    config['runner']['daemon_id'] += '-wrong'; save()
+    daemon_id = config['runner']['daemon_id']
+    config['runner']['daemon_id'] = ('0' if daemon_id[0] != '0' else '1') + daemon_id[1:]
+    save()
     before = Path(params['database']).read_bytes()
     with pytest.raises(ValueError, match='DAEMON_MISMATCH'):
         pipeline.load_worker_review_config(enabled='YES', config_path=path, database=params['database'])
