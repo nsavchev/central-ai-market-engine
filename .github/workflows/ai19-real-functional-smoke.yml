@@ -334,3 +334,85 @@ jobs:
               assert not list(pilot_authority.glob('pilot-grant-*.json')) and containers()==before
               print('RETAINED_STATE_ONE_SHOT_USD_PILOT_REAL_DOCKER_PASSED')
           PY
+  rootless-private-runner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare disposable rootless identity and delegated cgroups
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y uidmap slirp4netns fuse-overlayfs dbus-user-session docker-ce-rootless-extras python3-venv
+          test -x /usr/bin/dockerd-rootless.sh
+          sudo useradd --create-home --shell /bin/bash ci-review
+          review_uid=$(id -u ci-review)
+          sudo chmod 700 /home/ci-review
+          sudo install -d -m 755 "/run/systemd/system/user@${review_uid}.service.d"
+          printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee "/run/systemd/system/user@${review_uid}.service.d/delegate.conf" >/dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl start "user@${review_uid}.service"
+          sudo install -d -o ci-review -g ci-review -m 700 /home/ci-review/source /home/ci-review/data /home/ci-review/empty-config /home/ci-review/.config/systemd/user
+          # Copy reviewed source only; never copy the checkout credential directory.
+          tar --exclude=.git -cf - . | sudo -u ci-review tar -xf - -C /home/ci-review/source
+          sudo -u ci-review python3 -m venv /home/ci-review/venv
+          sudo -u ci-review /home/ci-review/venv/bin/pip install -r /home/ci-review/source/requirements-test.txt pytest
+          sudo -u ci-review tee /home/ci-review/.config/systemd/user/ci-rootless.service >/dev/null <<EOF
+          [Unit]
+          Description=Disposable CI-only private Docker daemon
+          [Service]
+          Environment=PATH=/usr/bin:/bin
+          Environment=XDG_RUNTIME_DIR=/run/user/${review_uid}
+          ExecStart=/usr/bin/dockerd-rootless.sh --host=unix:///run/user/${review_uid}/docker.sock --data-root=/home/ci-review/data --exec-root=/run/user/${review_uid}/docker-exec --pidfile=/run/user/${review_uid}/docker.pid --storage-driver=fuse-overlayfs --exec-opt native.cgroupdriver=systemd
+          Delegate=yes
+          KillMode=mixed
+          TimeoutStopSec=30
+          EOF
+          sudo -u ci-review env XDG_RUNTIME_DIR="/run/user/${review_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${review_uid}/bus" systemctl --user daemon-reload
+          sudo -u ci-review env XDG_RUNTIME_DIR="/run/user/${review_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${review_uid}/bus" systemctl --user start ci-rootless.service
+          echo "REVIEW_CI_UID=${review_uid}" >> "$GITHUB_ENV"
+      - name: Pin private daemon and image without inherited Docker context
+        run: |
+          set -euo pipefail
+          sudo -u ci-review env -i HOME=/home/ci-review PATH=/usr/bin:/bin REVIEW_CI_UID="$REVIEW_CI_UID" python3 - <<'PY'
+          import json, os, subprocess, time
+          from pathlib import Path
+          socket='/run/user/'+os.environ['REVIEW_CI_UID']+'/docker.sock'
+          command=['/usr/bin/docker','--host','unix://'+socket,'--config','/home/ci-review/empty-config']
+          for attempt in range(45):
+              result=subprocess.run(command+['info','--format','{{json .}}'],capture_output=True,text=True,timeout=10)
+              if result.returncode==0:break
+              time.sleep(1)
+          assert result.returncode==0, 'ROOTLESS_DAEMON_UNAVAILABLE'
+          info=json.loads(result.stdout)
+          assert info['CgroupDriver']=='systemd' and str(info['CgroupVersion'])=='2'
+          assert any('name=rootless' in s.split(',') for s in info['SecurityOptions'])
+          subprocess.run(command+['pull','python:3.12-alpine'],check=True,timeout=180,stdout=subprocess.DEVNULL)
+          image=subprocess.check_output(command+['image','inspect','python:3.12-alpine','--format','{{index .RepoDigests 0}}'],text=True).strip()
+          root=Path('/home/ci-review')
+          (root/'image.txt').write_text(image)
+          policy=dict(uid=os.getuid(),socket=socket,config_directory=str(root/'empty-config'),daemon_id=info['ID'],data_root=str(root/'data'))
+          (root/'runner.json').write_text(json.dumps(policy));(root/'runner.json').chmod(0o600)
+          PY
+      - name: Real rootless limits, verification, timeout, cleanup and restart
+        run: |
+          set -euo pipefail
+          image=$(sudo cat /home/ci-review/image.txt)
+          sudo -u ci-review env -i HOME=/home/ci-review PATH=/usr/bin:/bin \
+            XDG_RUNTIME_DIR="/run/user/${REVIEW_CI_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${REVIEW_CI_UID}/bus" \
+            CENTRAL_AI_ROOTLESS_CI_POLICY=/home/ci-review/runner.json CENTRAL_AI_ROOTLESS_CI_IMAGE="$image" \
+            /bin/sh -c 'cd /home/ci-review/source && exec /home/ci-review/venv/bin/python -m pytest -q -s --basetemp=/home/ci-review/test-state tests/test_ai26_verified_review_pipeline.py -k test_real_rootless_private_runner_lifecycle'
+      - name: Remove disposable daemon and identity
+        if: always()
+        run: |
+          set -euo pipefail
+          if id ci-review >/dev/null 2>&1; then
+            review_uid=$(id -u ci-review)
+            sudo systemctl stop "user@${review_uid}.service"
+            test "$(sudo systemctl is-active "user@${review_uid}.service" || true)" = inactive
+            sudo userdel --remove ci-review
+            sudo rm -rf "/run/systemd/system/user@${review_uid}.service.d"
+            sudo systemctl daemon-reload
+          fi

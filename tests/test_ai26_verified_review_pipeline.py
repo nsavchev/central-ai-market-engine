@@ -2570,3 +2570,107 @@ def test_coordinator_freezes_key_preflight_before_pending_analysis(monkeypatch,t
     before=(state/'tasks.sqlite').read_bytes()
     with pytest.raises(ValueError,match='PROVIDER_NOT_CONFIGURED'):worker.run_once()
     assert (state/'tasks.sqlite').read_bytes()==before
+
+
+@pytest.mark.parametrize('outcome', ['passed', 'failed', 'timeout'])
+def test_real_rootless_private_runner_lifecycle(monkeypatch, tmp_path, outcome):
+    """Opt-in real daemon integration; only the provider response is synthetic."""
+    import os, json, hashlib, time, httpx
+    from pathlib import Path
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    from central_ai.worker_supervised import run_supervised
+    from central_ai.task_storage import TaskStorage
+    runner_file = os.environ.get('CENTRAL_AI_ROOTLESS_CI_POLICY')
+    if not runner_file:
+        pytest.skip('requires disposable nonroot/private rootless CI daemon')
+    # Never replace host/daemon guards, candidate preparation or the verifier.
+    prepare = pipeline.prepare_review_pipeline
+    params, config, path, key, save = runtime_policy_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline, 'prepare_review_pipeline', prepare)
+    config['schema'] = 'worker-review-runtime-v2'
+    config['runner'] = json.loads(Path(runner_file).read_text())
+    image = os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE']
+    job = config['jobs'][params['task_id']]
+    job['image'] = image
+    trusted = Path(job['trusted_test_file'])
+    trusted.write_text('''import sys, os
+from pathlib import Path
+sys.path.insert(0, '/sandbox')
+from candidate import f
+assert f() == 2
+assert os.getuid() == os.geteuid() == 65534
+status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
+assert all(int(status[k].strip(), 16) == 0 for k in ('CapEff', 'CapPrm', 'CapAmb'))
+assert status['NoNewPrivs'].strip() == '1'
+assert Path('/sys/fs/cgroup/memory.max').read_text().strip() == '134217728'
+assert Path('/sys/fs/cgroup/pids.max').read_text().strip() == '32'
+quota, period = Path('/sys/fs/cgroup/cpu.max').read_text().split()
+assert int(quota) * 2 == int(period)
+assert not any(line.split()[1] == '00000000' for line in Path('/proc/net/route').read_text().splitlines()[1:])
+assert not os.environ.get('OPENAI_API_KEY')
+try:
+    Path('/rootfs-write-probe').write_text('forbidden')
+except OSError as error:
+    assert error.errno == 30
+else:
+    raise AssertionError('root filesystem writable')
+'''+({'passed':'', 'failed':"assert False, 'trusted negative fixture'\n",
+      'timeout':'import time\ntime.sleep(40)\n'}[outcome]))
+    job['trusted_test_sha256'] = hashlib.sha256(trusted.read_bytes()).hexdigest()
+    for name in ('isolated_functional_verifier.py', 'task_queue.py'):
+        config['runtime_sha256'][name] = hashlib.sha256(Path(pipeline.__file__).with_name(name).read_bytes()).hexdigest()
+    save()
+    source = Path(job['source_file']); source_before = source.read_bytes()
+    test_before = trusted.read_bytes(); key_before = key.read_bytes(); calls = []
+    original = provider.make_openai_generator
+    def response(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(dict(
+            choices=[dict(message=dict(content='```python\ndef f(): return 2\n```'))])).encode()))
+    monkeypatch.setenv('OPENAI_API_KEY', 'synthetic-ci-only')
+    monkeypatch.setattr(provider, 'make_openai_generator', lambda **kw:
+        original(**kw, transport=httpx.MockTransport(response)))
+    # A real endpoint with a wrong daemon identity must reject before task writes/provider.
+    config['runner']['daemon_id'] += '-wrong'; save()
+    before = Path(params['database']).read_bytes()
+    with pytest.raises(ValueError, match='DAEMON_MISMATCH'):
+        pipeline.load_worker_review_config(enabled='YES', config_path=path, database=params['database'])
+    assert Path(params['database']).read_bytes() == before and not calls
+    config['runner'] = json.loads(Path(runner_file).read_text()); save()
+    handler = pipeline.load_worker_review_config(enabled='YES', config_path=path, database=params['database'])
+    def cycle(loaded):
+        return run_supervised(enabled='YES', database=params['database'], agent='rootless-ci',
+            lock_path=str(Path(params['database']).parent/'rootless.lock'),
+            status_path=str(Path(params['database']).parent/'rootless-status.json'),
+            cycles=1, interval=1, max_tasks=1, review_handler=loaded)
+    started = time.monotonic()
+    result = cycle(handler)
+    elapsed = time.monotonic() - started
+    record = TaskStorage(params['database']).get(params['task_id'])
+    audit = record['verification']
+    assert audit['phase'] == 'completed' and audit['outcome']['test_status'] == outcome
+    assert audit['outcome']['tests_passed'] is (outcome == 'passed')
+    assert not Path(audit['resources']['snapshot_directory']).exists()
+    from central_ai.isolated_functional_verifier import make_isolated_docker_runner
+    run = make_isolated_docker_runner(config['runner'], [image])
+    absent = run(['docker', 'container', 'ls', '--all', '--format', '{{.Names}}'],
+                 capture_output=True, text=True, timeout=10, check=False)
+    assert absent.returncode == 0 and not absent.stdout.strip()
+    assert len(calls) == 1 and result['processed'] == 1 and elapsed < 90
+    assert source.read_bytes() == source_before and trusted.read_bytes() == test_before and key.read_bytes() == key_before
+    assert record['approved'] is record['deployment_allowed'] is False
+    monkeypatch.delenv('OPENAI_API_KEY')
+    monkeypatch.setattr(provider, 'make_openai_generator', lambda **kw: pytest.fail('restart must not construct provider'))
+    db_before = Path(params['database']).read_bytes()
+    if outcome == 'passed':
+        for _ in range(2):
+            loaded = pipeline.load_worker_review_config(enabled='YES', config_path=path, database=params['database'])
+            idle = cycle(loaded)
+            assert idle['processed'] == 0 and idle['review_state'] == 'idle'
+    else:
+        with pytest.raises(ValueError, match='PROVIDER_NOT_CONFIGURED'):
+            pipeline.load_worker_review_config(enabled='YES', config_path=path, database=params['database'])
+    assert Path(params['database']).read_bytes() == db_before and len(calls) == 1
+    print(json.dumps(dict(rootless_case=outcome, provider='mock', elapsed_seconds=round(elapsed, 3),
+                         cleanup_confirmed=True, promotion_allowed=False), sort_keys=True))
