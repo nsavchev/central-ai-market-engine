@@ -840,3 +840,14 @@ Task: continue PR #130 `audit/architecture-progress-20261104`, base `7fd9c850f73
 - Evidence provenance: GitHub Actions only. Operator VPS deployment/DB/daemon/service evidence remains separately unverified under Issue #90. No paid provider API, worker activation, production migration, PR merge or trade.
 
 **One next action:** inspect new exact-source AI-19 run for `69db3a6...`; if the mismatch gate passes, inspect subsequent lifecycle assertions and record their actual outcomes. Keep the runner strict and avoid changing expected behavior to conceal a real error.
+
+
+### P1-SCHEDULED-RUNNER-ACCEPTANCE-01 — baseline-vs-negative rootless gate (2026-11-08)
+
+Current task: PR #130, base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`, existing AI-19 workflow + AI-26 tests and the existing v2 runner/loader. Scope restricted to diagnostic CI test and the canonical register; no new architecture owner or runtime behavior.
+
+- Exact source `69db3a6d8871df887cd3e2366200f7073da607ce`: [AI-19 run 42456784411](https://github.com/nsavchev/central-ai-market-engine/actions/runs/42456784411) finished **failure**. The ordinary `functional-smoke` job succeeded. The actual rootless daemon and pinned image setup completed, but all three opt-in rootless cases (`passed`, `failed`, `timeout`) failed **before the intended candidate lifecycle**, at the deliberately wrong-daemon negative preflight. Expected `ISOLATED_RUNNER_DAEMON_MISMATCH`; observed `WORKER_REVIEW_CONFIG_INVALID` even with the fixed-length mutated ID. No resource-limit/cleanup/restart acceptance follows from this run.
+- Exact diagnostic change `9cc1e100dcde6deae3e9a7c62b5f6f2b36229e44`: introduce a positive baseline `load_worker_review_config` check of the untouched, properly pinned v2 test fixture immediately ahead of the wrong-ID negative assertion. This is a diagnostic **test-only** change, not a guard bypass or expansion of accepted identifiers. If the baseline fails, investigate the specific existing loader/grant precondition before changing the test's mismatch expectation; if the baseline succeeds but the mutation yields generic validation failure, inspect the daemon-policy structural constraints. Exact-source CI remains pending.
+- Safety/provenance: source and CI only. No VPS inspection, private policy/keys, paid API request, automatic worker activation, live trading, deployment, schema migration or PR merge. Issue #90 is open.
+
+**One next action:** inspect the new AI-19 exact-source rootless job and identify the first invalid baseline prerequisite, then apply a minimal correction in the existing test/CI owner and update this register. Keep real pass/fail/timeout and cleanup tests blocked until their inputs are valid.
