@@ -349,7 +349,7 @@ jobs:
           sudo chmod a+r /etc/apt/keyrings/docker.asc
           printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable\n' | sudo tee /etc/apt/sources.list.d/ci-docker.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y uidmap slirp4netns fuse-overlayfs dbus-user-session docker-ce-rootless-extras python3-venv
+          sudo apt-get install -y uidmap slirp4netns fuse-overlayfs dbus-user-session docker-ce-rootless-extras python3-venv procps
           test -x /usr/bin/dockerd-rootless.sh
           sudo useradd --create-home --shell /bin/bash ci-review
           review_uid=$(id -u ci-review)
