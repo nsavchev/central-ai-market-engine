@@ -2592,6 +2592,9 @@ def test_real_rootless_private_runner_lifecycle(monkeypatch, tmp_path, outcome):
     config['runner'] = json.loads(Path(runner_file).read_text())
     image = os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE']
     job = config['jobs'][params['task_id']]
+    # The hardened loader requires private artifact directories; CI umask varies.
+    for directory_name in ('handoffs', 'proposals', 'candidates'):
+        Path(job[directory_name]).chmod(0o700)
     job['image'] = image
     trusted = Path(job['trusted_test_file'])
     trusted.write_text('''import sys, os
