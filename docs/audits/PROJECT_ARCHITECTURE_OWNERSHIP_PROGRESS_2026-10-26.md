@@ -873,3 +873,14 @@ Objective/owner: continue existing PR #130 `audit/architecture-progress-20261104
 - Evidence provenance: GitHub Actions source/CI only. VPS service/daemon/source/deployed SHA, backups, operational approvals and Issue #90 reconciliation remain separate, unverified. No paid provider call, activation, policy/ledger change, migration, merge, deployment or trading.
 
 **One next action:** inspect exact-source AI-19 after `0ec9d62...`. If baseline loader succeeds, verify the mismatched daemon rejection then actual pass/fail/timeout, resource limits, cleanup and restart. Record any failure at its first true precondition and fix only within the existing owners.
+
+
+### P1-SCHEDULED-RUNNER-ACCEPTANCE-01 — rootless host-path ownership diagnostic (2026-11-08)
+
+Task owner: existing AI-19 disposable GitHub Actions rootless test, AI-26 fixture and `_checked_runner_host` in the existing isolated verifier. PR #130, branch `audit/architecture-progress-20261104`, base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`. No new verifier/worker/module or change to architecture ownership.
+
+- Exact source `0ec9d622618f89fb858474575441dc22c371a5f2`: [AI-19 run 42485082054](https://github.com/nsavchev/central-ai-market-engine/actions/runs/42485082054) completed **failure**. Ordinary functional-smoke **passed**, rootless service and image pinning progressed. All three rootless fixture cases failed at the *positive* baseline policy load with `ISOLATED_RUNNER_REQUIRED`, from `_checked_runner_host` in `central_ai/isolated_functional_verifier.py:63`, before candidate tests. That line rejects invalid owner/mode of the `config_directory` or `data_root`; exact offending path was not present in the original log. This is not a successful acceptance of daemon isolation, test cases or cleanup.
+- Exact CI-only source `072de7e40357605a93b3e4e700b32867139e2fcd`: emit only `uid`, POSIX mode and file type for the three named isolated path roles (socket, config directory, data root) ahead of rootless pytest. No paths' raw contents, tokens, daemon config, private policy, keys or Docker environment values are emitted. Keep existing secure `0700` requirement for private directories and `_checked_runner_host` unchanged; **do not loosen the security guard based on an assumption**. Exact-source CI result is pending.
+- Evidence classification: only public GitHub source and CI. The VPS's actual daemon, user, artifacts, secrets, deployed source SHA and Issue #90 reconciliation remain separately unverified; no operator activation, migration, merge, external paid API or real trading.
+
+**One next action:** inspect exact-source AI-19 log for `072de7e...`, identify which private directory's observed metadata violates the current runner contract and correct only its CI setup, with exact CI evidence and documented limitations. Keep rootless lifecycle acceptance OPEN until pass/fail/timeout/resource/cleanup/restart tests actually execute and pass.
