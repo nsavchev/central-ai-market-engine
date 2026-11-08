@@ -367,7 +367,7 @@ jobs:
           [Unit]
           Description=Disposable CI-only private Docker daemon
           [Service]
-          Environment=PATH=/usr/bin:/bin
+          Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
           Environment=XDG_RUNTIME_DIR=/run/user/${review_uid}
           ExecStart=/usr/bin/dockerd-rootless.sh --host=unix:///run/user/${review_uid}/docker.sock --data-root=/home/ci-review/data --exec-root=/run/user/${review_uid}/docker-exec --pidfile=/run/user/${review_uid}/docker.pid --storage-driver=fuse-overlayfs --exec-opt native.cgroupdriver=systemd
           Delegate=yes
