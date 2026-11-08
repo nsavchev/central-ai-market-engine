@@ -344,6 +344,10 @@ jobs:
       - name: Prepare disposable rootless identity and delegated cgroups
         run: |
           set -euo pipefail
+          sudo install -m 0755 -d /etc/apt/keyrings
+          sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          sudo chmod a+r /etc/apt/keyrings/docker.asc
+          printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable\n' | sudo tee /etc/apt/sources.list.d/ci-docker.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y uidmap slirp4netns fuse-overlayfs dbus-user-session docker-ce-rootless-extras python3-venv
           test -x /usr/bin/dockerd-rootless.sh
