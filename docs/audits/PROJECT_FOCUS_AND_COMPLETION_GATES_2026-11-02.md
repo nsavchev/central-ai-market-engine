@@ -1,6 +1,6 @@
 # Project focus and completion gates
 
-**Living plan; created 2026-11-02, source-task pointer updated 2026-11-07.** Current statuses, decisions and evidence live in [the architecture/progress register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). This file defines scope and ordering; historical audit snapshots do not override that register.
+**Living plan; created 2026-11-02, source-task pointer updated 2026-11-08.** Current statuses, decisions and evidence live in [the architecture/progress register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). This file defines scope and ordering; historical audit snapshots do not override that register.
 
 ## Project objective
 
@@ -45,7 +45,7 @@ P0/P1 precede new P2 features. DB inventory/restore work is prerequisite evidenc
 
 ## Next active task and handoff rule
 
-**Next source task: P1-SCHEDULED-IDLE-01.** Define credential-free idle startup in existing loader/coordinator owners while rejecting missing credentials before eligible generation/admission. P1-SCHEDULED-STATUS-01 adds journal-derived review outcomes and nonzero failure exits; P1-SCHEDULED-SCOPE-01 retains atomic scoped acquisition, and v2 runner guards still need real nonroot/private-daemon acceptance. See the latest canonical entries and [durable status contract](worker-review-rollout-runbook.md#durable-review-status--p1-scheduled-status-01). Credential/idle semantics, measured timeout/restart and isolated integration remain before recurring activation. **P0-OPS-RECON-01 / issue#90 remain open** for private evidence reconciliation. No new subsystem, ledger reset, call-limit increase, automatic policy upgrade, paid replay, service/timer/schema change or trading follows from this source checkpoint.
+**Next source task: P1-SCHEDULED-RUNNER-ACCEPTANCE-01.** Prepare a disposable rehearsal of the intended nonroot/private Docker daemon with mocked provider and frozen source/harness/image, reusing existing CI/verifier owners. Record actual isolation/resource/cleanup and idle/restart/timeout observations; existing rootful Docker CI and synthetic v2 observations are not this acceptance. P1-SCHEDULED-IDLE-01 permits key-free verified idle without weakening pending-work credential checks. See the latest canonical entry and [idle contract](worker-review-rollout-runbook.md#credential-free-verified-idle--p1-scheduled-idle-01). Real isolated integration, measured timeout/restart and concrete single-service approval remain before recurring activation. **P0-OPS-RECON-01 / issue#90 remain open** for private evidence reconciliation. No new subsystem, ledger reset, call-limit increase, automatic policy upgrade, paid replay, VPS daemon/user/service/timer/schema change or trading follows from this source checkpoint.
 
 For every change record TASK_ID, objective, existing owner/functions, files, PR/base/head, exact test SHA and result, GitHub/CI versus VPS evidence, blockers and one next action in the canonical register. The Git commit/diff preserves exact edits; the register explains why. Refresh the generated inventory on source-review checkpoints. No new dated master register, duplicated runtime module or percentage-based readiness claim.
 

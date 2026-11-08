@@ -163,7 +163,7 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
 
 def make_worker_review_handler(*, enabled, database, jobs, generator, generator_id,
                                generation_authorization_check, authorization_check,
-                               verifier=run_functional_tests):
+                               verifier=run_functional_tests, preflight=None):
     """Trusted-host opt-in wiring; no environment defaults or task auto-approval.
 
     jobs freezes an explicit task-ID allowlist and independent harness/output
@@ -176,7 +176,8 @@ def make_worker_review_handler(*, enabled, database, jobs, generator, generator_
     from uuid import UUID
     fields = {'handoffs','proposals','candidates','trusted_test_file','trusted_test_sha256','image'}
     db = Path(database)
-    if (enabled != 'YES' or not db.is_absolute() or not db.is_file() or db.is_symlink()
+    if (enabled != 'YES' or (preflight is not None and not callable(preflight))
+            or not db.is_absolute() or not db.is_file() or db.is_symlink()
             or not callable(generator) or not callable(generation_authorization_check)
             or not callable(authorization_check) or not callable(verifier)
             or not isinstance(generator_id, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', generator_id)
@@ -201,6 +202,7 @@ def make_worker_review_handler(*, enabled, database, jobs, generator, generator_
     def review(task_id):
         if task_id not in captured:
             raise ValueError('WORKER_REVIEW_TASK_NOT_ALLOWED')
+        if preflight is not None:preflight()
         return prepare_and_verify(enabled='YES', database=str(db), task_id=task_id,
             generator=generator, generator_id=generator_id,
             generation_authorization_check=generation_authorization_check,
@@ -222,6 +224,7 @@ def make_worker_review_handler(*, enabled, database, jobs, generator, generator_
     review.database = str(db)
     review.allowed_task_ids = tuple(captured)
     review.review_status = lambda: TaskStorage.review_status(str(db), tuple(captured))
+    review.before_cycle = preflight
     review.accepts = lambda task_id: task_id in captured
     review.next_task_id = next_task_id
     return review
@@ -337,6 +340,7 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
             task_grants=len(jobs),generation_started=False,worker_started=False,
             provider_key_verified=False,database_modified=False)
     def admit(binding):
+        require_key()
         if isolated:checked_runner()
         grant=grants.get(binding.get('task_id'))
         if (grant is None or binding.get('source_sha256')!=grant['source_sha256']
@@ -363,13 +367,24 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
         payload=json.dumps(receipt,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
         return dict(receipt,mac=hmac.new(key,payload,'sha256').hexdigest())
     authorize=make_hmac_review_authorizer(reviewer_keys={authority['reviewer_id']:key},request_receipt=issue)
-    if not os.getenv('OPENAI_API_KEY'):
-        raise ValueError('WORKER_REVIEW_PROVIDER_NOT_CONFIGURED')
-    generator=make_openai_generator(enabled='YES',database=str(db))
+    def require_key():
+        if not os.getenv('OPENAI_API_KEY'):
+            raise ValueError('WORKER_REVIEW_PROVIDER_NOT_CONFIGURED')
+    def ready():
+        if not os.getenv('OPENAI_API_KEY'):
+            summary=TaskStorage.review_status(str(db),tuple(jobs))
+            if summary['state']!='verified':require_key()
+    ready()  # No pending/blocked/uncertain work may start without credentials.
+    def generator(request):
+        require_key()
+        return make_openai_generator(enabled='YES',database=str(db))(request)
+    from central_ai.task_storage import OPENAI_GENERATOR_ID
+    generator.generator_id=OPENAI_GENERATOR_ID
     options={}
     if isolated:
         def verify(**kwargs):
             return run_functional_tests(**kwargs,run=checked_runner())
         options['verifier']=verify
     return make_worker_review_handler(enabled='YES',database=str(db),jobs=jobs,generator=generator,
-        generator_id=generator.generator_id,generation_authorization_check=admit,authorization_check=authorize,**options)
+        generator_id=generator.generator_id,generation_authorization_check=admit,authorization_check=authorize,
+        preflight=ready,**options)

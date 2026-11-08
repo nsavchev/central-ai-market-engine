@@ -2430,3 +2430,143 @@ def test_review_status_sees_global_intent_outside_grants_without_writes(monkeypa
     summary=build().review_status()
     assert summary['state']=='blocked' and summary['blocked']==1 and summary['pending']==1
     assert Path(params['database']).read_bytes()==before and calls==[]
+
+@pytest.mark.parametrize('isolated',[False,True])
+@pytest.mark.parametrize('outcome',['passed','failed','cleanup_unconfirmed'])
+def test_completed_runtime_idle_needs_no_provider_key_or_factory(monkeypatch,tmp_path,isolated,outcome):
+    import hashlib,json,httpx
+    from pathlib import Path
+    from central_ai.worker_supervised import run_supervised
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    import central_ai.isolated_functional_verifier as vf
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    observed=[]
+    if isolated:
+        config['schema']='worker-review-runtime-v2'
+        config['runner']=dict(uid=10001,socket='/synthetic/docker.sock',config_directory='/synthetic/config',daemon_id='synthetic-daemon',data_root='/synthetic/data')
+        for name in ('isolated_functional_verifier.py','task_queue.py'):
+            config['runtime_sha256'][name]=hashlib.sha256(Path(pipeline.__file__).with_name(name).read_bytes()).hexdigest()
+        save()
+        monkeypatch.setattr(vf,'make_isolated_docker_runner',lambda *a,**kw:observed.append('runner') or (lambda *a,**kw:None))
+    real=provider.make_openai_generator;calls=[]
+    def transport(request):
+        calls.append(request)
+        return httpx.Response(200,stream=httpx.ByteStream(json.dumps(dict(choices=[dict(message=dict(content='```python\ndef f(): return 2\n```'))])).encode()))
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:real(**kw,transport=httpx.MockTransport(transport)))
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-key')
+    def verify(**kw):
+        record_fixture_resources(kw)
+        if outcome=='cleanup_unconfirmed':
+            return valid_result(test_sha256=kw['expected_test_sha256'],status=outcome,passed=False,
+                snapshot_directory='/tmp/central-ai-input-ci-fixture',container_name='central-ai-verifier-'+'f'*32)
+        return valid_result(test_sha256=kw['expected_test_sha256'],status=outcome,passed=outcome=='passed',returncode=0 if outcome=='passed' else 1)
+    if isolated:monkeypatch.setattr(pipeline,'run_functional_tests',verify)
+    else:
+        factory=pipeline.make_worker_review_handler
+        monkeypatch.setattr(pipeline,'make_worker_review_handler',lambda **kw:factory(**kw,verifier=verify))
+    handler=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+    def cycle(handler):return run_supervised(enabled='YES',database=params['database'],agent='idle-test',
+        lock_path=str(Path(params['database']).parent/'idle.lock'),status_path=str(Path(params['database']).parent/'idle-status.json'),cycles=1,interval=1,max_tasks=1,review_handler=handler)
+    assert cycle(handler)['review_state']=={'passed':'verified','failed':'candidate_failed','cleanup_unconfirmed':'cleanup_uncertain'}[outcome] and len(calls)==1
+    database=Path(params['database']);before=database.read_bytes();key_before=key.read_bytes()
+    monkeypatch.delenv('OPENAI_API_KEY')
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('idle must not construct provider'))
+    if outcome!='passed':
+        with pytest.raises(ValueError,match='PROVIDER_NOT_CONFIGURED'):
+            pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+        assert database.read_bytes()==before and key.read_bytes()==key_before and len(calls)==1
+        return
+    loaded=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+    for _ in range(2):
+        result=cycle(loaded)
+        assert result['review_state']=='idle' and result['processed']==0
+    assert database.read_bytes()==before and key.read_bytes()==key_before and len(calls)==1
+    if isolated:assert len(observed)>=4  # Guard checks remain present on reload.
+    # An inconsistent completed-task queue must not be accepted as credential-free idle.
+    import sqlite3
+    with sqlite3.connect(database) as conn:
+        conn.execute("UPDATE task_queue SET status='pending' WHERE task_id=?",(params['task_id'],))
+    corrupted=database.read_bytes()
+    with pytest.raises(ValueError,match='INVALID_VERIFICATION_AUDIT'):
+        pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+    assert database.read_bytes()==corrupted and len(calls)==1
+
+
+@pytest.mark.parametrize('when',['load','cycle','direct'])
+def test_missing_key_before_eligible_work_never_mutates_or_builds_provider(monkeypatch,tmp_path,when):
+    from pathlib import Path
+    from central_ai.worker_batch import run_batch
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('must not construct provider'))
+    if when!='load':
+        monkeypatch.setenv('OPENAI_API_KEY','synthetic-key')
+        handler=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+    monkeypatch.delenv('OPENAI_API_KEY',raising=False)
+    before=Path(params['database']).read_bytes()
+    with pytest.raises(ValueError,match='PROVIDER_NOT_CONFIGURED'):
+        if when=='load':pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+        elif when=='cycle':run_batch(enabled='YES',database=params['database'],agent='missing-key',max_tasks=1,idle_checks=1,review_handler=handler)
+        else:handler(params['task_id'])
+    assert Path(params['database']).read_bytes()==before
+
+
+def test_key_loss_before_admission_builds_no_provider_or_reservation(monkeypatch,tmp_path):
+    from central_ai.task_storage import TaskStorage
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-only')
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('must not construct provider'))
+    handler=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+    original=TaskStorage.begin_generation
+    def begin(self,*args,**kwargs):
+        request=original(self,*args,**kwargs)
+        monkeypatch.delenv('OPENAI_API_KEY')
+        return request
+    monkeypatch.setattr(TaskStorage,'begin_generation',begin)
+    with pytest.raises(ValueError,match='PROVIDER_NOT_CONFIGURED'):handler(params['task_id'])
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert 'admission' not in saved['generation'] and 'dispatch' not in saved['generation']
+    assert saved['verification']['phase']=='blocked'
+
+
+def test_missing_key_preflight_precedes_coordinator_dependency_initialization(monkeypatch,tmp_path):
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    import central_ai.developer_worker_coordinator as coordinator
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-only')
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('must not construct provider'))
+    handler=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+    monkeypatch.delenv('OPENAI_API_KEY')
+    monkeypatch.setattr(coordinator,'PersistentTaskBridge',lambda *a,**kw:pytest.fail('must not initialize/migrate dependencies'))
+    with pytest.raises(ValueError,match='PROVIDER_NOT_CONFIGURED'):
+        coordinator.DeveloperWorkerCoordinator(params['database'],'missing-key',review_handler=handler)
+
+
+def test_coordinator_freezes_key_preflight_before_pending_analysis(monkeypatch,tmp_path):
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    from central_ai.developer_worker_coordinator import DeveloperWorkerCoordinator
+    from central_ai.verifier_gate import provision_reviewer_key
+    from scripts.openai_admitted_acceptance import prepare_runtime_files
+    authority=tmp_path/'authority';authority.mkdir(mode=0o700)
+    provision_reviewer_key(enabled='YES',path=authority/'reviewer.key')
+    state=tmp_path/'state';state.mkdir(mode=0o700)
+    prepare_runtime_files(state_directory=state,authority_directory=authority,
+        verifier_image='python@sha256:'+'a'*64,budget_limit_microusd=20000000)
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-only')
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:pytest.fail('must not construct provider'))
+    import json
+    path=authority/'runtime.json';config=json.loads(path.read_text());config['execution_authorized']=True
+    path.write_text(json.dumps(config));path.chmod(0o600)
+    handler=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=str(state/'tasks.sqlite'))
+    worker=DeveloperWorkerCoordinator(state/'tasks.sqlite','frozen-preflight',review_handler=handler)
+    handler.before_cycle=None
+    monkeypatch.delenv('OPENAI_API_KEY')
+    before=(state/'tasks.sqlite').read_bytes()
+    with pytest.raises(ValueError,match='PROVIDER_NOT_CONFIGURED'):worker.run_once()
+    assert (state/'tasks.sqlite').read_bytes()==before

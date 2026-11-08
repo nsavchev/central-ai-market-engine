@@ -1,6 +1,6 @@
 # Central AI / Market Engine — архитектура, решения и напредък
 
-**Основен жив регистър. Обновен: 2026-11-07 (Europe/Sofia).** Текущ source checkpoint: **P1-SCHEDULED-STATUS-01** (последният запис); следва **P1-SCHEDULED-IDLE-01**. Реалното приемане на v2 runner остава отделен отворен gate. Това е source checkpoint, не статус на внедрен worker. Предходните checkpoints и датираните одити остават доказателства за своите снимки. [Планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда; оперативните доказателства се съхраняват отделно.
+**Основен жив регистър. Обновен: 2026-11-08 (Europe/Sofia).** Текущ source checkpoint: **P1-SCHEDULED-IDLE-01** (последният запис); следва **P1-SCHEDULED-RUNNER-ACCEPTANCE-01**. Реалното приемане на v2 runner остава отделен отворен gate. Това е source checkpoint, не статус на внедрен worker. Предходните checkpoints и датираните одити остават доказателства за своите снимки. [Планът P0–P4](PROJECT_FOCUS_AND_COMPLETION_GATES_2026-11-02.md) определя реда; оперативните доказателства се съхраняват отделно.
 
 ## 1. Кой код и коя среда описваме
 
@@ -775,3 +775,19 @@ Supervisor writes honest state/cycle_status/review_counts and returns review_sta
 Checks: exact local DUP01 workflow command533passed/3Docker-dependent skipped/zero warnings. Earlier targeted set328passed/3skipped before final bad-loader guard; aggregate includes that final regression. New cases cover verified/idle, failed tests/provider errors/timeouts, quarantine/restart/global foreign intent, corrupt reports, DB read-only preservation, sanitized fields and nonzero CLI/startup failures. Exact-sourceCI pending. No VPS/OS/config/unit/provider/budget/ledger/migration change, paid request, retry, merge or trading.
 
 Next P1-SCHEDULED-IDLE-01: credential-free idle startup with missing-key rejection before eligible admission, preserving the existing ownership/ledger barriers. Real v2 runner acceptance and measured timeout/restart/cutover remain separate unverified gates. Do not infer standing activation, general Python execution or promotion from honest status metadata or sourceCI.
+
+
+### P1-SCHEDULED-STATUS-01 — exact-source CI accepted
+
+Sourcebfd999c105cab39666653ad93f82573856e37be7:33/33workflows successful. DUP01run42403597497/job128496436953 confirms533passed/3skipped and successful Docker config/image/SQLite replacement persistence. AI19run42403597480/job128496436320 confirms realDocker retained-state smoke; this does not attest real rootless v2 integration. Local exact-workflow533passed/3skipped/zero warnings; ownership scanner328definitions/80imports/no parse failures. PR#130body refreshed without bookkeeping-only source commit. No operational/private policy/VPS/source installation/provider/budget/ledger/unit change or paid project request. Next P1-SCHEDULED-IDLE-01; intended-runner integration and standing review activation remain open gates.
+
+
+### P1-SCHEDULED-IDLE-01 — credential-free verified idle (2026-11-08)
+
+Parentbfd999c105cab39666653ad93f82573856e37be7, PR#130/base7fd9c850f73edea70988b017d8dda2a4b70f3fc3. Existing owners load_worker_review_config/make_worker_review_handler, DeveloperWorkerCoordinator and TaskStorage.review_status. Changes only those owners, existingAI26tests and runbook/canonical/focus documentation; no new runtime module/schema/transport/provider/queue/status service.
+
+Retain full private authority, source/spec/harness/image/core/promotion and v2 runner checks. Missing model key is permitted only if the RO durable summary is verified for the scope and no stronger global barrier exists; completed reports must agree with done queue state/cleared lease/false promotion flags. Pending/failed/quarantined/missing/corrupt state does not become idle. Provider creation is lazy at the admitted callback. Optional trusted handler preflight is frozen by the coordinator and runs before dependency initialization, each cycle and direct review; key presence is checked again before admission and callback. Default analysis-only and immutable operator bundle pins remain unchanged. No call-budget increase, key provisioning, policy upgrade, execution-flag change or history reset.
+
+Checks: targetedAI26/supervised288passed/zero warnings; exact local DUP01 workflow545passed/3Docker-dependent skipped/zero warnings (includes final frozen-preflight regression). Cases cover v1/v2-synthetic reload plus two idle cycles without model credential/provider construction, unchanged DB/key bytes/call count, failed/quarantined/corrupt-queue rejection, pending load/cycle/direct-call rejection, pre-dependency gate and key disappearance after intent but before admission(no reservation/dispatch). A committed late-race admission is retained conservatively, not refunded. Initial positive-fixture status path was outside the database directory and was corrected to the existing safe-path contract without changing runtime path validation.
+
+Exact-sourceCI pending. No real model requests or VPS/OS/unit/private policy/budget/ledger change. V2 positive host/daemon observations are synthetic; intended rootless integration remains an open gate. Next P1-SCHEDULED-RUNNER-ACCEPTANCE-01: disposable intended nonroot/private-daemon integration with mocked provider and measured resource/cleanup/idle/restart/timeout evidence, reusing existing CI/verifier owners. No actual production runner installation or standing activation is authorized by source checks.

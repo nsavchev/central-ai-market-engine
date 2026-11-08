@@ -509,6 +509,10 @@ class TaskStorage:
                 elif audit['phase'] == 'blocked':
                     counts['blocked'] += 1
                 elif audit['phase'] == 'completed':
+                    queue = conn.execute('SELECT status,lease_until,lease_token,approved,deployment_allowed '
+                                         'FROM task_queue WHERE task_id=?',(task_id,)).fetchone()
+                    if queue != ('done',None,None,0,0):
+                        raise ValueError('INVALID_VERIFICATION_AUDIT')
                     outcome = audit.get('outcome')
                     TaskStorage._validated_verification_report(task_id, audit.get('nonce'), outcome)
                     if (outcome['verification_binding'] != audit.get('binding')

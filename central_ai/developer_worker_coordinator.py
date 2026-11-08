@@ -30,6 +30,13 @@ class DeveloperWorkerCoordinator:
                 raise ValueError('INVALID_WORKER_REVIEW_SCOPE')
             self.review_task_ids = tuple(task_ids)
         self.review_handler = review_handler
+        self.review_preflight = None
+        if review_handler is not None:
+            preflight = getattr(review_handler,'before_cycle',None)
+            if preflight is not None:
+                if not callable(preflight):raise ValueError('INVALID_REVIEW_PREFLIGHT')
+                self.review_preflight = preflight
+                preflight()
         self.bridge = PersistentTaskBridge(db_path)
         self.targets = TaskFileTargets(db_path)
         self.targets.initialize()
@@ -38,6 +45,8 @@ class DeveloperWorkerCoordinator:
 
     def run_once(self):
         if self.review_handler is not None:
+            if self.review_preflight is not None:
+                self.review_preflight()
             pending = self.review_handler.next_task_id()
             if pending is not None:
                 if pending not in self.review_task_ids:
