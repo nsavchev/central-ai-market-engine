@@ -407,6 +407,19 @@ jobs:
         run: |
           set -euo pipefail
           image=$(sudo cat /home/ci-review/image.txt)
+          # Record only nonsecret filesystem metadata for the strict private-runner guard.
+          # This is CI-only evidence; never print Docker config, environment or policy bytes.
+          sudo -u ci-review python3 - <<'PY'
+          import json, os, stat
+          from pathlib import Path
+          policy=json.loads(Path('/home/ci-review/runner.json').read_text())
+          for name in ('socket', 'config_directory', 'data_root'):
+              path=Path(policy[name]); metadata=path.stat()
+              print('ROOTLESS_PATH_MODE', name, 'owner', metadata.st_uid,
+                    'mode', oct(stat.S_IMODE(metadata.st_mode)),
+                    'directory', stat.S_ISDIR(metadata.st_mode),
+                    'socket', stat.S_ISSOCK(metadata.st_mode))
+          PY
           sudo -u ci-review env -i HOME=/home/ci-review PATH=/usr/bin:/bin \
             XDG_RUNTIME_DIR="/run/user/${REVIEW_CI_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${REVIEW_CI_UID}/bus" \
             CENTRAL_AI_ROOTLESS_CI_POLICY=/home/ci-review/runner.json CENTRAL_AI_ROOTLESS_CI_IMAGE="$image" \
