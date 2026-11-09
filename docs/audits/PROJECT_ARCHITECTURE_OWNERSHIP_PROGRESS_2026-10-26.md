@@ -986,3 +986,14 @@ Objective: prove new source-level cancellation regressions run on exact GitHub P
 - Evidence boundary: GitHub source/CI only; no verified VPS installed identity/service or real signal/restart recovery, no production integration/privilege change. Issue #90 remains open. No paid model requests, PR merge, worker activation, staging timer change, real orders, or production deploy.
 
 **One next action:** inspect AI-19 job on `37bb730...`, confirm the new targeted AI-18 tests explicitly pass and the original 3 real-rootless scenarios still pass; if so prepare separate real interruption/quarantine acceptance (with independent daemon absence proof) and service-time-budget measurement, preserving existing journal and fail-closed rules.
+
+
+### P1-SCHEDULED-CANCEL-CLEANUP-01 — AI-18 fixture permissions block targeted CI (2026-11-09)
+
+Task and owner: continue the established PR #130 cancellation/cleanup acceptance under `tests/test_ai18_isolated_functional_verifier.py` and the existing AI-19 workflow. No runtime verifier, authorization policy, queue, worker or architecture change.
+
+- Exact-source `37bb7307609d8f62660b59e6bc896b8cc08fe596`: [AI-19 run 42567012714](https://github.com/nsavchev/central-ai-market-engine/actions/runs/42567012714) **FAILURE**. The ordinary `functional-smoke` job succeeded; rootless job's newly chained AI-18 pytest command selected four cases and reported **4 failed, 65 deselected**. All failed with `UNSAFE_INPUT` on source-file inspection **before** synthetic interruption was invoked; CI did not reach the AI-26 real-rootless cases because of the explicit `&&` chain. This is a fixture permission/umask precondition, not evidence of broken cleanup or service logic.
+- Minimal existing-fixture-only fix `673b4bf6b8dbfee81f07bc2316501f5c4089aca3`: `setup_files` explicitly sets candidate and trusted Python test files to `0600`, matching the existing `_read_input` policy that rejects group/world-writable files. No checker/daemon guard relaxation, secrets, runtime feature or new test subsystem. **Exact-source CI result pending**; do not mark the new interruption tests accepted without their execution logs.
+- Evidence is from GitHub CI/source, not the VPS. P1-SCHEDULED-CANCEL-CLEANUP-01 still requires real interruption/recovery and independent cleanup proof; P1-SCHEDULED-SERVICE-BOUND-01 and Issue #90 remain open. No paid provider requests, production deployment, PR merge, worker activation or live trading.
+
+**One next action:** inspect exact-source AI-19 job on `673b4bf...`; require targeted four AI-18 cases and three real-rootless AI-26 cases to pass on the same source, then plan a separate real-process interruption/quarantine exercise without altering production services.
