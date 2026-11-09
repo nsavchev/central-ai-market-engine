@@ -2730,3 +2730,103 @@ else:
     assert Path(params['database']).read_bytes() == db_before and len(calls) == 1
     print(json.dumps(dict(rootless_case=outcome, provider='mock', elapsed_seconds=round(elapsed, 3),
                          cleanup_confirmed=True, promotion_allowed=False), sort_keys=True))
+
+
+def test_real_rootless_docker_cli_sigterm_cleanup(tmp_path):
+    """Opt-in real SIGTERM to Docker *client*; verifier must prove daemon-side cleanup.
+
+    Does not simulate SIGKILL of the worker or prove production recovery.
+    """
+    import hashlib
+    import json
+    import os
+    import signal
+    import subprocess
+    import time
+    from pathlib import Path
+    from central_ai.isolated_functional_verifier import (
+        make_isolated_docker_runner, run_functional_tests,
+    )
+
+    policy_file = os.environ.get('CENTRAL_AI_ROOTLESS_CI_POLICY')
+    if not policy_file:
+        pytest.skip('requires disposable nonroot/private rootless CI daemon')
+    policy = json.loads(Path(policy_file).read_text())
+    image = os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE']
+    candidate = tmp_path / 'candidate.py'
+    trusted = tmp_path / 'test_candidate.py'
+    candidate.write_text('def f():\n    return 2\n')
+    trusted.write_text('import time\nfrom candidate import f\nassert f() == 2\ntime.sleep(40)\n')
+    candidate.chmod(0o600)
+    trusted.chmod(0o600)
+    journal = tmp_path / 'resource-intent.json'
+    recorded = []
+    witnessed = []
+
+    def record_resources(resources):
+        recorded.append(dict(resources))
+        # Disposable CI fixture journal: persist exact resource identity before launch.
+        fd = os.open(journal, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(resources, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def interrupting_run(command, **options):
+        # The *real* rootless verifier still chooses all runtime security flags.
+        if 'run' not in command or command[0] != '/usr/bin/docker':
+            return subprocess.run(command, **options)
+        index = command.index('run')
+        assert command[index + 1] == '--name'
+        container_name = command[index + 2]
+        assert recorded and recorded[0]['container_name'] == container_name
+        assert journal.is_file()
+        prefix = command[:index]
+        proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            # Observe an actual daemon-side container before terminating the client.
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                check = subprocess.run(
+                    prefix + ['container', 'inspect', container_name, '--format', '{{.Id}}'],
+                    capture_output=True, text=True, timeout=5, check=False)
+                if check.returncode == 0:
+                    witnessed.append('daemon_container_observed')
+                    break
+                if proc.poll() is not None:
+                    raise AssertionError('Docker client ended before SIGTERM rehearsal')
+                time.sleep(0.15)
+            else:
+                raise AssertionError('Docker container was not observed before SIGTERM')
+            proc.send_signal(signal.SIGTERM)
+            witnessed.append('sigterm_sent')
+            code = proc.wait(timeout=10)
+            assert code != 0, 'terminated Docker client unexpectedly succeeded'
+            return subprocess.CompletedProcess(command, code, '', '')
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+
+    # Host/daemon/image identity pins remain the production verifier's existing ones.
+    runner = make_isolated_docker_runner(policy, [image], run=interrupting_run)
+    report = run_functional_tests(
+        enabled='YES', candidate=str(candidate),
+        expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        test_file=str(trusted),
+        expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),
+        image=image, run=runner, record_resources=record_resources,
+    )
+    assert witnessed == ['daemon_container_observed', 'sigterm_sent']
+    assert report['status'] == 'failed' and report['passed'] is False
+    assert report['completion_confirmed'] is False
+    assert report['returncode'] != 0
+    assert len(recorded) == 1
+    assert json.loads(journal.read_text()) == recorded[0]
+    assert not Path(recorded[0]['snapshot_directory']).exists()
+    final = runner(['docker', 'container', 'ls', '--all',
+                    '--filter', 'name=^/' + recorded[0]['container_name'] + '$',
+                    '--format', '{{.Names}}'],
+                   capture_output=True, text=True, timeout=10, check=False)
+    assert final.returncode == 0 and not final.stdout.strip()
+    print('REAL_ROOTLESS_DOCKER_CLIENT_SIGTERM_CLEANUP_PROVED')
