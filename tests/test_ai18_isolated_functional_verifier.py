@@ -27,6 +27,10 @@ def setup_files(tmp_path):
     candidate.write_text("def add(a,b):\n    return a+b\n")
     trusted=tmp_path/"test_candidate.py"
     trusted.write_text("assert 1+1==2\n")
+    # CI runners may use a permissive umask; trusted source/test fixture files
+    # must satisfy the existing verifier's no-group/world-write contract.
+    candidate.chmod(0o600)
+    trusted.chmod(0o600)
     return candidate,trusted
 
 
