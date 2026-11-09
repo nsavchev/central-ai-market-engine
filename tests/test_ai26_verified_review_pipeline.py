@@ -2586,6 +2586,18 @@ def test_real_rootless_private_runner_lifecycle(monkeypatch, tmp_path, outcome):
         pytest.skip('requires disposable nonroot/private rootless CI daemon')
     # Never replace host/daemon guards, candidate preparation or the verifier.
     prepare = pipeline.prepare_review_pipeline
+    # Observe original verifier results before the durable audit projection strips
+    # optional subprocess fields; never modify its status or print stdout/stderr.
+    original_verify = pipeline.run_functional_tests
+    def observed_verify(**kwargs):
+        report = original_verify(**kwargs)
+        print('ROOTLESS_VERIFIER_METADATA', dict(
+            status=report.get('status'), returncode=report.get('returncode'),
+            executed_candidate=report.get('executed_candidate'),
+            completion_confirmed=report.get('completion_confirmed'),
+            cleanup_uncertain=report.get('status') == 'cleanup_unconfirmed'))
+        return report
+    monkeypatch.setattr(pipeline, 'run_functional_tests', observed_verify)
     params, config, path, key, save = runtime_policy_fixture(monkeypatch, tmp_path)
     monkeypatch.setattr(pipeline, 'prepare_review_pipeline', prepare)
     config['schema'] = 'worker-review-runtime-v2'
