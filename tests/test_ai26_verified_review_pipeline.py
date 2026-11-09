@@ -2830,3 +2830,92 @@ def test_real_rootless_docker_cli_sigterm_cleanup(tmp_path):
                    capture_output=True, text=True, timeout=10, check=False)
     assert final.returncode == 0 and not final.stdout.strip()
     print('REAL_ROOTLESS_DOCKER_CLIENT_SIGTERM_CLEANUP_PROVED')
+
+
+def test_real_rootless_cleanup_probe_failure_quarantines_snapshot(tmp_path):
+    """Real rootless container + synthetic daemon-query outage must fail closed.
+
+    This tests uncertainty when the cleanup *probe* fails; it does not kill
+    dockerd or the supervised worker. Recovery here is CI-only external cleanup.
+    """
+    import hashlib
+    import json
+    import os
+    import shutil
+    import subprocess
+    from pathlib import Path
+    from central_ai.isolated_functional_verifier import (
+        make_isolated_docker_runner, run_functional_tests,
+    )
+
+    policy_file = os.environ.get('CENTRAL_AI_ROOTLESS_CI_POLICY')
+    if not policy_file:
+        pytest.skip('requires disposable nonroot/private rootless CI daemon')
+    policy = json.loads(Path(policy_file).read_text())
+    image = os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE']
+    candidate = tmp_path / 'candidate.py'
+    trusted = tmp_path / 'test_candidate.py'
+    candidate.write_text('def f():\n    return 2\n')
+    trusted.write_text('import sys\nsys.path.insert(0, "/sandbox")\nfrom candidate import f\nassert f() == 2\n')
+    candidate.chmod(0o600)
+    trusted.chmod(0o600)
+    bound = make_isolated_docker_runner(policy, [image])
+    recorded = []
+    launched = []
+    uncertain_probes = []
+
+    def recorded_resources(resources):
+        assert not recorded
+        recorded.append(dict(resources))
+        intent = tmp_path / 'uncertain-resource-intent.json'
+        with intent.open('x') as output:
+            json.dump(resources, output)
+            output.flush()
+            os.fsync(output.fileno())
+
+    def unreliable_probe(args, **kwargs):
+        if args[1:3] == ['container', 'ls']:
+            uncertain_probes.append(True)
+            return subprocess.CompletedProcess(args, 1, '', '')
+        result = bound(args, **kwargs)
+        if args[1] == 'run':
+            launched.append(result.returncode)
+        return result
+
+    try:
+        report = run_functional_tests(
+            enabled='YES', candidate=str(candidate),
+            expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            test_file=str(trusted),
+            expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),
+            image=image, run=unreliable_probe, record_resources=recorded_resources,
+        )
+        assert launched == [0], 'the real Docker candidate must finish normally first'
+        assert uncertain_probes == [True]
+        assert report['status'] == 'cleanup_unconfirmed'
+        assert report['passed'] is False and report['completion_confirmed'] is False
+        assert report['executed_candidate'] is True
+        assert recorded and report['container_name'] == recorded[0]['container_name']
+        assert report['snapshot_directory'] == recorded[0]['snapshot_directory']
+        assert Path(report['snapshot_directory']).is_dir(), 'retain input evidence on uncertainty'
+        assert json.loads((tmp_path / 'uncertain-resource-intent.json').read_text()) == recorded[0]
+        print('REAL_ROOTLESS_PROBE_UNCERTAINTY_QUARANTINE_PROVED')
+    finally:
+        # Disposable CI recovery is out-of-band; never use this bypass in the verifier.
+        if recorded:
+            name = recorded[0]['container_name']
+            def probe():
+                return bound(['docker', 'container', 'ls', '--all',
+                              '--filter', 'name=^/' + name + '$', '--format', '{{.Names}}'],
+                             capture_output=True, text=True, timeout=10, check=False)
+            first = probe()
+            assert first.returncode == 0, 'no daemon proof: preserve snapshot'
+            if first.stdout.strip() == name:
+                removed = bound(['docker', 'rm', '-f', name],
+                                capture_output=True, text=True, timeout=10, check=False)
+                assert removed.returncode == 0
+            elif first.stdout.strip():
+                raise AssertionError('unexpected container identity: preserve snapshot')
+            last = probe()
+            assert last.returncode == 0 and not last.stdout.strip(), 'retain snapshot'
+            shutil.rmtree(recorded[0]['snapshot_directory'])
