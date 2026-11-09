@@ -2589,6 +2589,7 @@ def test_real_rootless_private_runner_lifecycle(monkeypatch, tmp_path, outcome):
     # Observe original verifier results before the durable audit projection strips
     # optional subprocess fields; never modify its status or print stdout/stderr.
     original_verify = pipeline.run_functional_tests
+    actual_verifier_reports = []
     def observed_verify(**kwargs):
         trusted_run = kwargs['run']
         def diagnostics_run(args, **options):
@@ -2604,6 +2605,7 @@ def test_real_rootless_private_runner_lifecycle(monkeypatch, tmp_path, outcome):
                       [name for name in classes if name in detail] or ['unclassified'])
             return result
         report = original_verify(**dict(kwargs, run=diagnostics_run))
+        actual_verifier_reports.append(dict(report))
         print('ROOTLESS_VERIFIER_METADATA', dict(
             status=report.get('status'), returncode=report.get('returncode'),
             executed_candidate=report.get('executed_candidate'),
@@ -2693,6 +2695,18 @@ else:
         execution_policy=audit['outcome'].get('execution_policy'),
         completion_confirmed=audit['outcome'].get('completion_confirmed'))
     assert audit['outcome']['tests_passed'] is (outcome == 'passed')
+    # A Docker launch refusal (125) must never count as the trusted negative case.
+    assert len(actual_verifier_reports) == 1
+    verified = actual_verifier_reports[0]
+    assert verified['status'] == outcome
+    assert verified['executed_candidate'] is True
+    assert verified['completion_confirmed'] is (outcome == 'passed')
+    if outcome == 'passed':
+        assert verified['returncode'] == 0
+    elif outcome == 'failed':
+        assert verified['returncode'] == 1
+    else:
+        assert verified.get('returncode') is None
     assert not Path(audit['resources']['snapshot_directory']).exists()
     from central_ai.isolated_functional_verifier import make_isolated_docker_runner
     run = make_isolated_docker_runner(config['runner'], [image])
