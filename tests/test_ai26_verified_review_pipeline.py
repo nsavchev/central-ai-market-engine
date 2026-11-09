@@ -1596,6 +1596,72 @@ def test_worker_review_uncertain_dispatch_blocks_restart_without_retry(monkeypat
     assert not calls
 
 
+@pytest.mark.skipif(not hasattr(__import__('signal'), 'SIGKILL'), reason='requires POSIX SIGKILL')
+def test_supervisor_real_sigkill_during_generator_blocks_restart_without_retry(monkeypatch,tmp_path):
+    """Kill the actual supervised Python worker after durable admission, not Docker."""
+    import json
+    import multiprocessing
+    import os
+    import signal
+    from pathlib import Path
+    import pytest
+    from central_ai.worker_supervised import run_supervised
+    from central_ai.task_storage import TaskStorage
+
+    params, jobs, calls, build = worker_review_fixture(monkeypatch, tmp_path)
+    context = multiprocessing.get_context('fork')
+    entered = context.Event()
+    release = context.Event()
+    status_file = tmp_path / 'sigkill-supervisor-status.json'
+    lock = tmp_path / 'sigkill-supervisor.lock'
+
+    def child():
+        def hanging_generator(request):
+            # This boundary is reached after generation intent and admission are
+            # durably committed, but before the mocked provider could reply.
+            entered.set()
+            release.wait(60)
+            raise AssertionError('blocked generator must never be released')
+        run_supervised(enabled='YES', database=params['database'],
+            agent='sigkill-supervisor', lock_path=str(lock),
+            status_path=str(status_file), cycles=1, interval=1,
+            max_tasks=1, review_handler=build(generator=hanging_generator))
+
+    process = context.Process(target=child)
+    process.start()
+    try:
+        assert entered.wait(15), 'supervisor did not reach durable generation admission'
+        assert process.is_alive()
+        os.kill(process.pid, signal.SIGKILL)
+        process.join(10)
+        assert process.exitcode == -signal.SIGKILL
+    finally:
+        release.set()
+        if process.is_alive():
+            process.kill()
+        process.join(10)
+
+    store = TaskStorage(params['database'])
+    saved = store.get(params['task_id'])
+    assert saved['verification']['phase'] == 'preparing'
+    assert saved['generation']['admission']['receipt']['generation_authorized'] is True
+    assert saved['approved'] is saved['deployment_allowed'] is False
+    assert TaskStorage.review_status(params['database'],(params['task_id'],))['state'] == 'blocked'
+
+    def must_not_retry(request):
+        pytest.fail('restarted supervisor dispatched a duplicate model request')
+    with pytest.raises(ValueError, match='DATABASE_BLOCKED'):
+        run_supervised(enabled='YES',database=params['database'],
+            agent='sigkill-restart',lock_path=str(lock),status_path=str(status_file),
+            cycles=1,interval=1,max_tasks=1,
+            review_handler=build(generator=must_not_retry))
+    state = json.loads(status_file.read_text())
+    assert state['state'] == 'blocked'
+    assert params['task_id'] not in status_file.read_text()
+    assert not calls and TaskStorage(params['database']).get(params['task_id']) == saved
+    print('SUPERVISOR_REAL_SIGKILL_DURABLE_BLOCK_NO_RETRY_PASSED')
+
+
 def test_worker_review_concurrent_selection_cannot_double_dispatch(monkeypatch,tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
