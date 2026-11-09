@@ -399,6 +399,9 @@ jobs:
           subprocess.run(command+['pull','python:3.12-alpine'],check=True,timeout=180,stdout=subprocess.DEVNULL)
           image=subprocess.check_output(command+['image','inspect','python:3.12-alpine','--format','{{index .RepoDigests 0}}'],text=True).strip()
           root=Path('/home/ci-review')
+          # Rootless dockerd may create its data root with mode 0710; the trusted
+          # runner requires a user-only 0700 directory before any test admission.
+          (root/'data').chmod(0o700)
           (root/'image.txt').write_text(image)
           policy=dict(uid=os.getuid(),socket=socket,config_directory=str(root/'empty-config'),daemon_id=info['ID'],data_root=str(root/'data'))
           (root/'runner.json').write_text(json.dumps(policy));(root/'runner.json').chmod(0o600)
