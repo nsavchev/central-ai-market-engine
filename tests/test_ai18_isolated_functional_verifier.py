@@ -272,6 +272,39 @@ def test_cancellation_preserves_unknown_resources(tmp_path, interrupt_at):
         shutil.rmtree(root)
 
 
+@pytest.mark.parametrize('cleanup', ['absent', 'removed'])
+def test_cancellation_with_independent_daemon_absence_cleans_snapshot(tmp_path, cleanup):
+    """Client interruption cannot count as success; clean only after daemon proof."""
+    candidate, trusted = setup_files(tmp_path)
+    resources = []
+    calls = []
+    probes = 0
+    def runner(args, **kwargs):
+        nonlocal probes
+        calls.append(args)
+        if args[1] == 'run':
+            raise KeyboardInterrupt('synthetic client interruption')
+        if args[1:3] == ['container', 'ls']:
+            probes += 1
+            assert 'name=^/' + resources[0]['container_name'] + '$' in args
+            present = cleanup == 'removed' and probes == 1
+            return SimpleNamespace(returncode=0,
+                                   stdout=resources[0]['container_name'] + '\n' if present else '')
+        assert args == ['docker', 'rm', '-f', resources[0]['container_name']]
+        return SimpleNamespace(returncode=0, stdout='')
+    with pytest.raises(KeyboardInterrupt, match='synthetic client interruption'):
+        run_functional_tests(enabled='YES', candidate=str(candidate),
+            expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+            test_file=str(trusted),
+            expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),
+            image=IMAGE, record_resources=lambda value: resources.append(value), run=runner)
+    assert len(resources) == 1
+    assert probes == (2 if cleanup == 'removed' else 1)
+    assert not Path(resources[0]['snapshot_directory']).exists()
+    assert (len([args for args in calls if args[1:3] == ['rm', '-f']]) ==
+            (1 if cleanup == 'removed' else 0))
+
+
 @pytest.mark.parametrize('body', [
     'import os\nos._exit(0)\n',
     'def f():\n    return __import__("os")._exit(0)\n',
