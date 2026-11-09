@@ -928,3 +928,14 @@ Task: continue the existing PR #130 CI-only rootless acceptance, reusing AI-19 w
 - Evidence classification is GitHub CI/source only; Issue #90 VPS/DB/backup/production attestation remains open. No VPS changes, paid provider API calls, worker activation, production migration, PR merge, ledger reset or real trades.
 
 **One next action:** inspect exact-source AI-19 job for `0c31f61...`, identify the Docker 125 category and apply a minimal, evidence-based fix to the existing CI runner setup without relaxing isolation, cgroup or verification requirements; then rerun all three real lifecycle scenarios.
+
+
+### P1-SCHEDULED-RUNNER-ACCEPTANCE-01 — Docker rootless overlay storage blocker (2026-11-09)
+
+Objective and ownership: advance the established PR #130 disposable CI runner acceptance using the existing `AI-19` workflow and `AI-26` tests; no added runner/verifier/queue/manager or application runtime change. PR #130 branch `audit/architecture-progress-20261104`, base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`.
+
+- At source SHA `0c31f61b80723b38da608318971fb077a2adb7ac`, [AI-19 run 42563567331](https://github.com/nsavchev/central-ai-market-engine/actions/runs/42563567331) **failed** overall: ordinary `functional-smoke` succeeded, while all three real-rootless Docker `run` attempts returned exit **125**; fixed-category stderr diagnosis identified `overlay` and `invalid argument`. This indicates a Docker storage/startup problem **before any candidate/harness result can count**. The test's negative case still matched `failed` without proving the trusted negative harness actually ran. Thus the complete real-rootless acceptance remains OPEN.
+- Narrow CI-only candidate SHA `736db69d45155adfa78b810343853771fd188c1c`: change the disposable user daemon's explicit storage driver from `fuse-overlayfs` to `vfs` in the *existing* AI-19 workflow to test compatibility with this GitHub runner. Keep the same isolated unprivileged identity, private daemon socket and data root, cgroup driver, no production mounts/secrets, pinned image, read-only/no-network/cap/resource test assertions, bounded verifier, cleanup and strict result checks. This is **not an accepted fix until exact-source CI confirms**. The less efficient `vfs` setting is scoped strictly to disposable CI; it does not prescribe a production VPS storage migration.
+- Provenance: GitHub source/CI only. No VPS inspection/change, paid provider request, worker activation, ledger reset, migration, merge, deployment or real trades. Issue #90 remains open for independently reconciled operator/VPS evidence.
+
+**One next action:** inspect the exact-source AI-19 run for `736db69...` and verify actual candidate success, trusted negative test execution, measured timeout, cleanup, resource-limit assertions and idle/restart behavior. If Docker still returns 125, diagnose the precise category before altering another setting; do not infer acceptance from a matching `failed` status alone.
