@@ -917,3 +917,14 @@ Task: continue PR #130 (`audit/architecture-progress-20261104`, base `7fd9c850f7
 - Exact-source GitHub CI on `5c10878...` is **pending**. Architecture/trust boundary unchanged. Issue #90 remains open for independently verified VPS/service/DB/backup evidence; no VPS/worker activation, paid model request, budget/ledger reset, release merge, production migration or real trade.
 
 **One next action:** inspect new AI-19 real-rootless CI for direct verifier status and return code and diagnose the earliest concrete failure in the existing CI fixture or verifier, retaining strict isolation and durable audit rules. Keep pass/fail/timeout/cleanup/restart acceptance OPEN until proven.
+
+
+### P1-SCHEDULED-RUNNER-ACCEPTANCE-01 — Docker exit 125 before candidate execution (2026-11-09)
+
+Task: continue the existing PR #130 CI-only rootless acceptance, reusing AI-19 workflow, AI-26 tests, `run_functional_tests` and the v2 trusted runner. PR branch `audit/architecture-progress-20261104`, base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`. No architecture owner, runtime module or production service added.
+
+- Exact source `5c1087802fdd43076357b0d2792cd8a4a96add7e`: [AI-19 run 42563283226](https://github.com/nsavchev/central-ai-market-engine/actions/runs/42563283226), `functional-smoke` success; rootless job failure. All three scenario invocations returned **Docker exit code 125** in the original pre-audit `run_functional_tests` report, with `completion_confirmed=False` and cleanup not uncertain. The negative case's pytest pass therefore reflects expected `failed` status from Docker launch refusal, **not proof of a properly executed failing trusted harness**. Positive and timeout cases still fail. This is a concrete pre-candidate Docker launch blocker; no resource-limit, harness, timeout or restart acceptance can be claimed.
+- Diagnostic test-only change `0c31f61b80723b38da608318971fb077a2adb7ac`: preserve the same private runner, original verifier, exact run arguments and return object. Only when the trusted runner reports Docker `run` exit 125, classify stderr by fixed, non-sensitive categories such as `cgroup`, `mount`, `permission denied`, `network`, `apparmor`, `seccomp`, or `invalid argument`; output labels only, never raw stderr, paths, environment, IDs, source or credentials. The verifier's status and cleanup behavior remain unchanged. Exact-SHA CI outcome **pending**.
+- Evidence classification is GitHub CI/source only; Issue #90 VPS/DB/backup/production attestation remains open. No VPS changes, paid provider API calls, worker activation, production migration, PR merge, ledger reset or real trades.
+
+**One next action:** inspect exact-source AI-19 job for `0c31f61...`, identify the Docker 125 category and apply a minimal, evidence-based fix to the existing CI runner setup without relaxing isolation, cgroup or verification requirements; then rerun all three real lifecycle scenarios.
