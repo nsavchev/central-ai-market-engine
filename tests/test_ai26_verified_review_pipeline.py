@@ -2590,7 +2590,20 @@ def test_real_rootless_private_runner_lifecycle(monkeypatch, tmp_path, outcome):
     # optional subprocess fields; never modify its status or print stdout/stderr.
     original_verify = pipeline.run_functional_tests
     def observed_verify(**kwargs):
-        report = original_verify(**kwargs)
+        trusted_run = kwargs['run']
+        def diagnostics_run(args, **options):
+            result = trusted_run(args, **options)
+            if len(args) > 1 and args[:2] == ['docker', 'run'] and result.returncode == 125:
+                # Classify rootless Docker launch failure without leaking stderr,
+                # private paths, container IDs, environment or task content.
+                detail = (result.stderr or '').lower()
+                classes = ('cgroup', 'mount', 'permission denied', 'operation not permitted',
+                           'network', 'overlay', 'apparmor', 'seccomp', 'executable',
+                           'invalid argument', 'not found', 'read-only')
+                print('ROOTLESS_DOCKER_125_CLASS',
+                      [name for name in classes if name in detail] or ['unclassified'])
+            return result
+        report = original_verify(**dict(kwargs, run=diagnostics_run))
         print('ROOTLESS_VERIFIER_METADATA', dict(
             status=report.get('status'), returncode=report.get('returncode'),
             executed_candidate=report.get('executed_candidate'),
