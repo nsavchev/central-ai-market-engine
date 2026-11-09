@@ -426,7 +426,7 @@ jobs:
           sudo -u ci-review env -i HOME=/home/ci-review PATH=/usr/bin:/bin \
             XDG_RUNTIME_DIR="/run/user/${REVIEW_CI_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${REVIEW_CI_UID}/bus" \
             CENTRAL_AI_ROOTLESS_CI_POLICY=/home/ci-review/runner.json CENTRAL_AI_ROOTLESS_CI_IMAGE="$image" \
-            /bin/sh -c 'cd /home/ci-review/source && /home/ci-review/venv/bin/python -m pytest -q -s --basetemp=/home/ci-review/test-cancel-state tests/test_ai18_isolated_functional_verifier.py -k "cancellation_preserves_unknown_resources or cancellation_with_independent_daemon_absence_cleans_snapshot" && exec /home/ci-review/venv/bin/python -m pytest -q -s --basetemp=/home/ci-review/test-state tests/test_ai26_verified_review_pipeline.py -k "test_real_rootless_private_runner_lifecycle or test_real_rootless_docker_cli_sigterm_cleanup"'
+            /bin/sh -c 'cd /home/ci-review/source && /home/ci-review/venv/bin/python -m pytest -q -s --basetemp=/home/ci-review/test-cancel-state tests/test_ai18_isolated_functional_verifier.py -k "cancellation_preserves_unknown_resources or cancellation_with_independent_daemon_absence_cleans_snapshot" && exec /home/ci-review/venv/bin/python -m pytest -q -s --basetemp=/home/ci-review/test-state tests/test_ai26_verified_review_pipeline.py -k "test_real_rootless_private_runner_lifecycle or test_real_rootless_docker_cli_sigterm_cleanup or test_real_rootless_cleanup_probe_failure_quarantines_snapshot"'
       - name: Diagnose disposable daemon startup failure
         if: failure()
         run: |
