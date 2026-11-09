@@ -2661,7 +2661,12 @@ else:
     elapsed = time.monotonic() - started
     record = TaskStorage(params['database']).get(params['task_id'])
     audit = record['verification']
-    assert audit['phase'] == 'completed' and audit['outcome']['test_status'] == outcome
+    # CI-only: expose bounded result metadata, never candidate output or secrets.
+    assert audit['phase'] == 'completed' and audit['outcome']['test_status'] == outcome, dict(
+        expected=outcome, actual=audit['outcome'].get('test_status'),
+        returncode=audit['outcome'].get('returncode'),
+        execution_policy=audit['outcome'].get('execution_policy'),
+        completion_confirmed=audit['outcome'].get('completion_confirmed'))
     assert audit['outcome']['tests_passed'] is (outcome == 'passed')
     assert not Path(audit['resources']['snapshot_directory']).exists()
     from central_ai.isolated_functional_verifier import make_isolated_docker_runner
