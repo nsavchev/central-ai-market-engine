@@ -1603,6 +1603,7 @@ def test_supervisor_real_sigkill_during_generator_blocks_restart_without_retry(m
     import multiprocessing
     import os
     import signal
+    import time
     from pathlib import Path
     import pytest
     from central_ai.worker_supervised import run_supervised
@@ -1611,7 +1612,6 @@ def test_supervisor_real_sigkill_during_generator_blocks_restart_without_retry(m
     params, jobs, calls, build = worker_review_fixture(monkeypatch, tmp_path)
     context = multiprocessing.get_context('fork')
     entered = context.Event()
-    release = context.Event()
     status_file = tmp_path / 'sigkill-supervisor-status.json'
     lock = tmp_path / 'sigkill-supervisor.lock'
 
@@ -1620,7 +1620,10 @@ def test_supervisor_real_sigkill_during_generator_blocks_restart_without_retry(m
             # This boundary is reached after generation intent and admission are
             # durably committed, but before the mocked provider could reply.
             entered.set()
-            release.wait(60)
+            # A killed process can strand a multiprocessing Event condition lock.
+            # Sleep without shared release state: the parent must never call set()
+            # on a condition that the SIGKILL victim may have held.
+            time.sleep(60)
             raise AssertionError('blocked generator must never be released')
         run_supervised(enabled='YES', database=params['database'],
             agent='sigkill-supervisor', lock_path=str(lock),
@@ -1636,7 +1639,6 @@ def test_supervisor_real_sigkill_during_generator_blocks_restart_without_retry(m
         process.join(10)
         assert process.exitcode == -signal.SIGKILL
     finally:
-        release.set()
         if process.is_alive():
             process.kill()
         process.join(10)
