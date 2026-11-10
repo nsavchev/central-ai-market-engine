@@ -1,0 +1,16 @@
+{
+  "events": [
+    {
+      "event_id": "synthetic-noon-cpi",
+      "indicator": "CPI_YOY",
+      "country": "US",
+      "released_at": "2026-11-10T10:30:00+00:00",
+      "actual": 3.2,
+      "consensus": 3,
+      "historical_surprise_std": 0.2,
+      "unit": "percent_yoy",
+      "source_url": "https://example.org/synthetic-not-real",
+      "consensus_asof": "2026-11-09T10:00:00+00:00"
+    }
+  ]
+}
