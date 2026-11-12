@@ -49,3 +49,11 @@ def test_retrieval_metadata_requires_an_aware_timestamp(retrieved_at):
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         Financials(**BASE, retrieved_at=retrieved_at)
+
+
+@pytest.mark.parametrize('enabled,permission', [(False, True), (True, False)])
+def test_manual_permission_revocation_is_enforced(monkeypatch, enabled, permission):
+    from dataclasses import replace
+    monkeypatch.setitem(SOURCES, 'manual', replace(SOURCES['manual'], enabled=enabled, permission_verified=permission))
+    with pytest.raises(PermissionError):
+        validate_source('manual', automated=False)

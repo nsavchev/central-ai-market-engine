@@ -208,3 +208,76 @@ def test_scan_cli_rejects_stale_input_without_output(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='STALE_MARKET_DATA'):
         scanner_cli_main()
     assert not output.exists()
+
+
+def manual_market_input():
+    return {'schema': 'market-manual-input-v1', 'provenance': {
+        'source': 'manual', 'origin': 'Synthetic test export, not real vendor data',
+        'retrieved_at': '2025-08-01T12:00:00+00:00', 'usage_rights_confirmed': True},
+        'market': {'benchmark': {'symbol': 'SPY', 'bars': bars(0, 210, 100)}, 'assets': []}}
+
+
+def test_manual_import_binds_provenance_and_prices():
+    from app.scan_cli import manual_scan
+    data = manual_market_input()
+    result = manual_scan(data, report_day=date(2025, 8, 1), max_age_calendar_days=5)
+    assert result['relative_strength'] == scan(data['market'])
+    assert result['provenance'] == data['provenance']
+    assert not result['real_market_data_verified']
+    assert not result['automated_acquisition']
+    assert not result['paper_trades_executed']
+    digest = result['market_sha256']
+    data['market']['benchmark']['bars'][0]['close'] += 1
+    assert manual_scan(data, report_day=date(2025, 8, 1), max_age_calendar_days=5)['market_sha256'] != digest
+
+
+@pytest.mark.parametrize('field,value', [('usage_rights_confirmed', False), ('usage_rights_confirmed', 1),
+    ('origin', ''), ('origin', 'a\nb'), ('retrieved_at', '2025-08-01'),
+    ('retrieved_at', '2025-08-02T00:00:00Z'), ('retrieved_at', 'invalid')])
+def test_manual_import_rejects_invalid_provenance(field, value):
+    from app.scan_cli import manual_scan
+    data = manual_market_input()
+    data['provenance'][field] = value
+    with pytest.raises(ValueError):
+        manual_scan(data, report_day=date(2025, 8, 1), max_age_calendar_days=5)
+
+
+def test_manual_import_requires_freshness_and_rejects_old_export():
+    from app.scan_cli import manual_scan
+    for day, limit in [(None, None), (date(2026, 11, 12), 3)]:
+        with pytest.raises(ValueError):
+            manual_scan(manual_market_input(), report_day=day, max_age_calendar_days=limit)
+
+
+def test_manual_import_rejects_unauthorized_source():
+    from app.scan_cli import manual_scan
+    data = manual_market_input()
+    data['provenance']['source'] = 'finviz'
+    with pytest.raises(PermissionError):
+        manual_scan(data, report_day=date(2025, 8, 1), max_age_calendar_days=5)
+
+
+def test_manual_cli_writes_provenance_report(tmp_path, monkeypatch):
+    source = tmp_path / 'export.json'; source.write_text(json.dumps(manual_market_input()))
+    output = tmp_path / 'report.json'
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(source), '--manual-import', '--report-day', '2025-08-01',
+                                   '--max-age-calendar-days', '5', '--output', str(output)])
+    scanner_cli_main()
+    result = json.loads(output.read_text())
+    assert result['schema'] == 'market-manual-report-v1'
+    assert len(result['market_sha256']) == 64
+
+
+def test_manual_import_rejects_prices_after_retrieval():
+    from app.scan_cli import manual_scan
+    data = manual_market_input()
+    data['provenance']['retrieved_at'] = '2025-01-02T12:00:00Z'
+    with pytest.raises(ValueError, match='FUTURE_BAR_IN_REPORT'):
+        manual_scan(data, report_day=date(2025, 8, 1), max_age_calendar_days=5)
+
+
+@pytest.mark.parametrize('payload', [{}, {'schema': 'market-manual-input-v1', 'provenance': {}, 'market': {}, 'extra': True}])
+def test_manual_import_rejects_incomplete_or_unknown_envelope(payload):
+    from app.scan_cli import manual_scan
+    with pytest.raises(ValueError, match='MANUAL_MARKET_ENVELOPE_REQUIRED'):
+        manual_scan(payload, report_day=date(2025, 8, 1), max_age_calendar_days=5)
