@@ -131,7 +131,7 @@ def test_analysis_and_valuation_http_routes_require_auth(market_api, method, pat
     assert request(method, path, headers={}).status_code == 401
 
 
-def test_http_ibkr_failure_redacts_client_and_log_details(market_api, monkeypatch, caplog):
+def test_http_ibkr_failure_redacts_client_and_log_details(market_api, monkeypatch, caplog, authorized_ibkr):
     import re
     from unittest.mock import MagicMock
 
@@ -154,7 +154,7 @@ def test_http_ibkr_failure_redacts_client_and_log_details(market_api, monkeypatc
     database.begin.assert_not_called()
 
 
-def test_http_ibkr_errors_have_distinct_correlation_ids(market_api, monkeypatch):
+def test_http_ibkr_errors_have_distinct_correlation_ids(market_api, monkeypatch, authorized_ibkr):
     from unittest.mock import MagicMock
 
     request, _ = market_api
@@ -165,7 +165,7 @@ def test_http_ibkr_errors_have_distinct_correlation_ids(market_api, monkeypatch)
     assert ids[0] != ids[1]
 
 
-def test_http_ibkr_success_preserves_import_and_update(market_api, monkeypatch):
+def test_http_ibkr_success_preserves_import_and_update(market_api, monkeypatch, authorized_ibkr):
     request, sessions = market_api
     bar = {'day': '2026-10-30', 'open': 100, 'high': 102,
            'low': 99, 'close': 101, 'volume': 1000}
@@ -276,3 +276,28 @@ def test_http_financial_history_requires_auth_before_database_access(market_api,
                        json=[financial_history_payload()])
     assert response.status_code == 401
     assert not database.mock_calls
+
+
+@pytest.fixture
+def authorized_ibkr(monkeypatch):
+    from dataclasses import replace
+    from app.sources import SOURCES
+    monkeypatch.setitem(SOURCES, 'ibkr', replace(SOURCES['ibkr'], enabled=True, permission_verified=True))
+
+
+@pytest.mark.parametrize('enabled,permission', [(False, False), (True, False), (False, True)])
+def test_ibkr_source_denied_before_network_or_database(market_api, monkeypatch, enabled, permission):
+    from dataclasses import replace
+    from unittest.mock import MagicMock
+    from app.sources import SOURCES
+    request, _ = market_api
+    monkeypatch.setitem(SOURCES, 'ibkr', replace(SOURCES['ibkr'], enabled=enabled, permission_verified=permission))
+    fetch = MagicMock()
+    database = MagicMock()
+    monkeypatch.setattr(main, 'fetch_daily', fetch)
+    monkeypatch.setattr(main, 'SessionLocal', database)
+    response = request('POST', '/ingest/ibkr', json={'symbol': 'SPY'})
+    assert response.status_code == 403
+    assert response.json()['detail']['code'] == 'IBKR_SOURCE_NOT_AUTHORIZED'
+    fetch.assert_not_called()
+    database.begin.assert_not_called()

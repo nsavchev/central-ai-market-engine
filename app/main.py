@@ -52,6 +52,10 @@ def health(): return {'status':'ok'}
 @app.post('/ingest/ibkr',dependencies=[Depends(auth)])
 def ingest(req:ImportRequest):
     try:
+        validate_source('ibkr', automated=True)
+    except PermissionError:
+        raise HTTPException(403, detail={'code': 'IBKR_SOURCE_NOT_AUTHORIZED'}) from None
+    try:
         bars=fetch_daily(req.symbol,req.exchange,req.currency,req.primary_exchange,req.sec_type,req.duration,settings.ibkr_host,settings.ibkr_port,settings.ibkr_client_id)
     except Exception:
         error_id = secrets.token_hex(12)
