@@ -115,10 +115,15 @@ def main():
     parser.add_argument('input', help='Dated closes JSON, or synthetic two-report manifest')
     parser.add_argument('--output', default='scan_report.json')
     parser.add_argument('--two-daily-demo', action='store_true', help='Opt-in synthetic offline rehearsal only')
+    parser.add_argument('--report-day', type=date.fromisoformat, help='Explicit as-of date for offline freshness validation')
+    parser.add_argument('--max-age-calendar-days', type=int, help='Maximum calendar-day age; includes weekends and holidays')
     args = parser.parse_args()
+    if args.two_daily_demo and (args.report_day is not None or args.max_age_calendar_days is not None):
+        parser.error('Freshness options apply only to the offline scanner, not synthetic demos')
     input_path = Path(args.input)
     payload = json.loads(input_path.read_text(encoding='utf-8'))
-    result = two_daily_demo(payload, input_path.parent) if args.two_daily_demo else scan(payload)
+    result = two_daily_demo(payload, input_path.parent) if args.two_daily_demo else scan(
+        payload, report_day=args.report_day, max_age_calendar_days=args.max_age_calendar_days)
     Path(args.output).write_text(json.dumps(result, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
     print('Saved', args.output)
 

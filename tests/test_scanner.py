@@ -167,3 +167,44 @@ def test_two_daily_cli_explicitly_opted_in(tmp_path, monkeypatch):
     result = json.loads(output.read_text())
     assert len(result['reports']) == 2
     assert result['scheduler_executed'] is False
+
+
+@pytest.mark.parametrize('age,limit,accepted', [(2, 2, True), (3, 2, False), (0, 0, True)])
+def test_explicit_market_freshness_boundary(age, limit, accepted):
+    data = {'benchmark': {'symbol': 'SPY', 'bars': bars(0, 210, 100)}, 'assets': []}
+    report_day = date.fromisoformat(data['benchmark']['bars'][-1]['date']) + timedelta(days=age)
+    if accepted:
+        assert scan(data, report_day=report_day, max_age_calendar_days=limit) == scan(data)
+    else:
+        with pytest.raises(ValueError, match='STALE_MARKET_DATA'):
+            scan(data, report_day=report_day, max_age_calendar_days=limit)
+
+
+@pytest.mark.parametrize('day,limit', [(date(2025, 8, 1), None), (None, 2),
+                                     (date(2025, 8, 1), True), (date(2025, 8, 1), -1)])
+def test_reject_incomplete_or_invalid_freshness_policy(day, limit):
+    with pytest.raises(ValueError, match='FRESHNESS'):
+        scan({}, report_day=day, max_age_calendar_days=limit)
+
+
+@pytest.mark.parametrize('stream', ['benchmark', 'asset', 'sector'])
+def test_freshness_rejects_future_bars_in_any_stream(stream):
+    data = {'benchmark': {'symbol': 'SPY', 'bars': bars(0, 210, 100)},
+            'assets': [{'symbol': 'A', 'bars': bars(0, 210, 100)}],
+            'sectors': {'tech': {'bars': bars(0, 210, 100)}}}
+    rows = (data['benchmark']['bars'] if stream == 'benchmark' else
+            data['assets'][0]['bars'] if stream == 'asset' else data['sectors']['tech']['bars'])
+    rows.append({'date': '2025-08-02', 'close': 100})
+    with pytest.raises(ValueError, match='FUTURE_MARKET_BAR'):
+        scan(data, report_day=date(2025, 8, 1), max_age_calendar_days=5)
+
+
+def test_scan_cli_rejects_stale_input_without_output(tmp_path, monkeypatch):
+    source = tmp_path / 'market.json'
+    source.write_text(json.dumps({'benchmark': {'symbol': 'SPY', 'bars': bars(0, 210, 100)}, 'assets': []}))
+    output = tmp_path / 'report.json'
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(source), '--output', str(output),
+                                   '--report-day', '2026-11-12', '--max-age-calendar-days', '3'])
+    with pytest.raises(ValueError, match='STALE_MARKET_DATA'):
+        scanner_cli_main()
+    assert not output.exists()
