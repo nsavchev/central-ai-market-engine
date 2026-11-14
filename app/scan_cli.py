@@ -3,12 +3,15 @@
 No scheduler, network acquisition, database access, order execution or deployment.
 """
 import argparse
+import csv
+import io
 import hashlib
 import json
 import os
 import tempfile
 import re
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from app.sources import validate_source
@@ -297,6 +300,103 @@ def _write_report(path: Path, result: dict):
             temporary.unlink(missing_ok=True)
 
 
+def _nasdaq_csv(path: Path, report_day: date):
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 5_000_000:
+        raise ValueError('NASDAQ_REGULAR_CSV_REQUIRED')
+    raw = path.read_bytes()
+    reader = csv.DictReader(io.StringIO(raw.decode('utf-8-sig')))
+    columns = {'Date', 'Close/Last', 'Open', 'High', 'Low', 'Volume'}
+    if reader.fieldnames is None or len(reader.fieldnames) != 6 or set(reader.fieldnames) != columns:
+        raise ValueError('NASDAQ_COLUMNS_REQUIRED')
+    prices = {}
+    missing_volume = 0
+    for row in reader:
+        if len(prices) >= 20_000 or set(row) != columns or any(v is None for v in row.values()):
+            raise ValueError('INVALID_NASDAQ_ROW')
+        day = datetime.strptime(row['Date'], '%m/%d/%Y').date()
+        if day in prices or day > report_day:
+            raise ValueError('DUPLICATE_OR_FUTURE_NASDAQ_DATE')
+        values = {}
+        for name in ('Close/Last', 'Open', 'High', 'Low', 'Volume'):
+            text = row[name].strip()
+            if name == 'Volume' and text in ('N/A', ''):
+                values[name] = None
+                missing_volume += 1
+                continue
+            if name != 'Volume' and text.startswith('$'):
+                text = text[1:]
+            if re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?', text) is None:
+                raise ValueError('INVALID_NASDAQ_NUMBER')
+            value = Decimal(text.replace(',', ''))
+            if not value.is_finite() or value < 0 or (name != 'Volume' and value == 0):
+                raise ValueError('INVALID_NASDAQ_NUMBER')
+            values[name] = value
+        if ((values['Volume'] is not None and values['Volume'] != values['Volume'].to_integral_value())
+                or not values['Low'] <= values['Open'] <= values['High']
+                or not values['Low'] <= values['Close/Last'] <= values['High']):
+            raise ValueError('INCONSISTENT_NASDAQ_OHLCV')
+        prices[day] = float(values['Close/Last'])
+    if not prices:
+        raise ValueError('EMPTY_NASDAQ_CSV')
+    return prices, hashlib.sha256(raw).hexdigest(), missing_volume
+
+
+def prepare_nasdaq_input(benchmark_file: Path, asset_file: Path, *, benchmark_symbol: str,
+                         asset_symbol: str, max_age_calendar_days: int, confirmed: bool) -> dict:
+    """Prepare a new staged manual envelope; never install it or touch a service."""
+    if confirmed is not True:
+        raise ValueError('CONFIRM_MANUAL_USE_REQUIRED')
+    for symbol in (benchmark_symbol, asset_symbol):
+        if type(symbol) is not str or re.fullmatch(r'[A-Za-z0-9._-]{1,32}', symbol) is None:
+            raise ValueError('EXPLICIT_SYMBOL_REQUIRED')
+    if benchmark_symbol.upper() == asset_symbol.upper() or benchmark_file.resolve() == asset_file.resolve():
+        raise ValueError('DISTINCT_BENCHMARK_AND_ASSET_REQUIRED')
+    now = _utc_now()
+    benchmark, benchmark_hash, benchmark_missing_volume = _nasdaq_csv(benchmark_file, now.date())
+    asset, asset_hash, asset_missing_volume = _nasdaq_csv(asset_file, now.date())
+    if benchmark.keys() != asset.keys():
+        raise ValueError('NASDAQ_SESSION_SETS_MUST_MATCH')
+    def stream(symbol, values):
+        return {'symbol': symbol.upper(), 'bars': [
+            {'date': str(day), 'close': value} for day, value in sorted(values.items())]}
+    payload = {'schema': 'market-combined-input-v1', 'report_asof': now.isoformat(),
+        'market_input': {'schema': 'market-manual-input-v1', 'provenance': {
+            'source': 'manual', 'usage_rights_confirmed': True,
+            'retrieved_at': now.isoformat(),
+            'origin': 'Operator-supplied Nasdaq CSV; benchmark SHA256=' + benchmark_hash
+                + '; asset SHA256=' + asset_hash
+                + '; retrieved_at is local receipt/conversion time; vendor download time and adjustment basis unverified.'
+                + f'; missing volume rows (unused by price scanner): benchmark={benchmark_missing_volume}, asset={asset_missing_volume}.'},
+            'market': {'benchmark': stream(benchmark_symbol, benchmark),
+                       'assets': [stream(asset_symbol, asset)]}}}
+    combined_report(payload, max_age_calendar_days=max_age_calendar_days)
+    return payload
+
+
+def report_summary(report: dict) -> str:
+    """Read-only view; file contents never establish service/timer health."""
+    if not isinstance(report, dict) or report.get('schema') != 'market-combined-report-v1':
+        raise ValueError('COMBINED_REPORT_REQUIRED')
+    market = report['relative_strength']
+    age = (_utc_now().date() - date.fromisoformat(market['as_of'])).days
+    limit = report['max_age_calendar_days']
+    if age < 0 or type(limit) is not int or limit < 0:
+        raise ValueError('INVALID_REPORT_FRESHNESS')
+    lines = ['Generated: ' + report['report_asof'], 'Prices as of: ' + market['as_of'],
+             f'Current price age: {age} calendar days; allowed: {limit}',
+             'STALE MARKET DATA' if age > limit else 'Within declared calendar-day age limit',
+             'Completeness: ' + report['completeness'],
+             'Benchmark: ' + market['benchmark'] + ' / ' + market['benchmark_trend']]
+    for item in market['rankings']:
+        lines.append(item['symbol'] + ': ' + item['status'] + ' / ' + item.get('trend', 'unavailable'))
+        for period, value in item.get('relative_performance_pp', {}).items():
+            lines.append(f'  {period} sessions vs benchmark: ' + ('unavailable' if value is None else f'{value:+.4f} pp'))
+    for name in ('macro', 'valuation', 'catalysts'):
+        lines.append(name + ': ' + report['sections'][name]['status'])
+    lines.append('File view only; service/timer state and vendor data are not independently verified.')
+    return '\n'.join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Offline market scanner or synthetic two-report demo')
     parser.add_argument('input', help='Dated closes JSON, or synthetic two-report manifest')
@@ -308,7 +408,19 @@ def main():
     parser.add_argument('--two-daily-manual', action='store_true', help='Assemble two operator-supplied snapshots; does not schedule execution')
     parser.add_argument('--combined-report', action='store_true', help='Compose supplied manual market/macro/valuation inputs; missing sections remain unavailable')
     parser.add_argument('--report-asof-now', action='store_true', help='Combined reports only: use actual UTC execution time for freshness checks')
+    parser.add_argument('--prepare-nasdaq-input', action='store_true', help='Prepare a new staged input from operator-supplied Nasdaq CSVs; no installation')
+    parser.add_argument('--asset-csv', type=Path)
+    parser.add_argument('--asset-symbol')
+    parser.add_argument('--benchmark-symbol')
+    parser.add_argument('--confirm-manual-use', action='store_true')
+    parser.add_argument('--show-report', action='store_true', help='Read-only summary of an existing combined report')
     args = parser.parse_args()
+    if sum((args.prepare_nasdaq_input, args.show_report, args.combined_report, args.manual_import, args.two_daily_demo, args.two_daily_manual)) > 1:
+        parser.error('Choose exactly one report/input mode')
+    if (args.asset_csv or args.asset_symbol or args.benchmark_symbol or args.confirm_manual_use) and not args.prepare_nasdaq_input:
+        parser.error('CSV options require prepare-nasdaq-input mode')
+    if args.prepare_nasdaq_input and (args.report_day is not None or args.report_asof_now):
+        parser.error('CSV preparation uses actual receipt time')
     if args.report_asof_now and not args.combined_report:
         parser.error('Current-time execution requires combined-report mode')
     if args.combined_report and (args.manual_import or args.two_daily_demo or args.two_daily_manual or args.report_day is not None):
@@ -320,7 +432,21 @@ def main():
     if args.two_daily_demo and (args.report_day is not None or args.max_age_calendar_days is not None):
         parser.error('Freshness options apply only to the offline scanner, not synthetic demos')
     input_path = Path(args.input)
+    if args.prepare_nasdaq_input:
+        if args.asset_csv is None or args.asset_symbol is None:
+            parser.error('Both asset-csv and asset-symbol are required')
+        output = Path(args.output)
+        if output.exists() or output.is_symlink():
+            raise ValueError('STAGED_OUTPUT_MUST_BE_NEW')
+        payload = prepare_nasdaq_input(input_path, args.asset_csv, benchmark_symbol=args.benchmark_symbol or 'SPY',
+            asset_symbol=args.asset_symbol, max_age_calendar_days=args.max_age_calendar_days, confirmed=args.confirm_manual_use)
+        _write_report(output, payload)
+        print('Staged input saved; not installed:', args.output)
+        return
     payload = json.loads(input_path.read_text(encoding='utf-8'))
+    if args.show_report:
+        print(report_summary(payload))
+        return
     if args.combined_report:
         original_asof = None
         if args.report_asof_now:

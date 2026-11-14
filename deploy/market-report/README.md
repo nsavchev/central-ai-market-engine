@@ -73,3 +73,52 @@ inputs/outputs/journals and remove the enable sentinel if withdrawing authority.
 Do not reset AI ledgers, revert databases, replay paid work or alter unrelated
 services. Restore only the reviewed unit/config/source version after compatibility
 review; a previous file's presence is not proof of a new successful run.
+
+## Prepare a refreshed manual CSV input
+
+The reviewed candidate CLI has a preparation-only path; it does not replace the
+installed input, change its ownership/permissions, restart a service or alter a
+timer. Run from that reviewed checkout using a compatible Python environment:
+
+```bash
+python -B -m app.scan_cli /private/SPY.csv \
+  --prepare-nasdaq-input --asset-csv /private/NVDA.csv \
+  --benchmark-symbol SPY --asset-symbol NVDA \
+  --confirm-manual-use --max-age-calendar-days 3 \
+  --output /private/new-input.json
+```
+
+Symbol mapping is an explicit operator assertion: these exports do not contain a
+symbol column. Confirm rights for manual use; this flag is not an independent
+vendor licence check. Original files remain unchanged. Header/date/OHLCV,
+positive finite prices, duplicate/future dates, matching session sets and existing
+source/freshness permissions are validated before a new staged file is written.
+`N/A`/blank volume is recorded in provenance, never filled with zero; price-only
+scanner calculations do not use volume. Missing prices are rejected. The two
+original byte hashes are retained in provenance. Receipt time is local conversion
+time, not a claimed vendor download/publication time or evidence of fresh prices.
+
+The staged file uses the existing `market-combined-input-v1` contract. Preserve
+missing macro/valuation/catalyst states; do not silently carry old company context
+into a different symbol or overwrite it with invented values. Preparation refuses
+an existing output path. Do not copy the private staged file directly over the
+installed input: installation must retain an audited prior version, preserve root
+ownership/service-group read access and atomically replace the complete file.
+This operator installation step is separate from preparation. Do not run the
+converter as a downloader or add vendor credentials to the service environment.
+
+## Read an existing report
+
+The reviewed candidate CLI can display compatible reports without writing files:
+
+```bash
+python -B -m app.scan_cli /var/lib/market-report/latest-report.json --show-report
+```
+
+Run this from a checkout containing the new mode; an older installed runtime may
+not contain it. Reading an old report does not require upgrading the active
+service. The view shows report time, price date, current calendar-day age,
+benchmark/relative performance and unavailable sections. It recalculates the age
+at viewing time; it never refreshes prices or treats file existence as service
+health. Query the actual service/timer separately. No raw CSVs, generated reports,
+private deployment metadata or provider credentials belong in the repository.

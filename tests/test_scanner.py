@@ -487,3 +487,130 @@ def test_cli_refuses_overwriting_its_input(tmp_path, monkeypatch):
     monkeypatch.setattr('sys.argv', ['scan_cli', str(source), '--combined-report', '--max-age-calendar-days', '5', '--output', str(source)])
     with pytest.raises(ValueError, match='OUTPUT_MUST_NOT_REPLACE_INPUT'): scanner_cli_main()
     assert source.read_bytes() == before
+
+
+def nasdaq_test_exports(tmp_path):
+    import csv
+    paths = []
+    for symbol, price in [('SPY', '100.00'), ('NVDA', '10.00')]:
+        path = tmp_path/(symbol+'.csv')
+        with path.open('w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['Date', 'Close/Last', 'Volume', 'Open', 'High', 'Low'])
+            writer.writeheader()
+            for bar in reversed(bars(0, 210, 100)):
+                writer.writerow({'Date': date.fromisoformat(bar['date']).strftime('%m/%d/%Y'),
+                    'Close/Last': '$'+price, 'Volume': '1,000', 'Open': price, 'High': price, 'Low': price})
+        paths.append(path)
+    return paths
+
+
+def test_nasdaq_staging_reuses_combined_validation_and_binds_original_bytes(tmp_path, monkeypatch):
+    from app import scan_cli
+    import hashlib
+    benchmark, asset = nasdaq_test_exports(tmp_path)
+    before = [p.read_bytes() for p in (benchmark, asset)]
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2025-08-01T13:00:00Z'))
+    data = scan_cli.prepare_nasdaq_input(benchmark, asset, benchmark_symbol='SPY', asset_symbol='NVDA', max_age_calendar_days=5, confirmed=True)
+    report = scan_cli.combined_report(data, max_age_calendar_days=5)
+    assert report['relative_strength']['rankings'][0]['symbol'] == 'NVDA'
+    assert data['market_input']['market']['benchmark']['bars'][0]['date'] == '2025-01-01'
+    for original in before:
+        assert hashlib.sha256(original).hexdigest() in data['market_input']['provenance']['origin']
+    assert before == [p.read_bytes() for p in (benchmark, asset)]
+
+
+@pytest.mark.parametrize('field,value', [('Close/Last', 'NaN'), ('Close/Last', '-1'),
+    ('Close/Last', '1$2'), ('Volume', '1.5'), ('High', '1'), ('Date', '08/02/2025')])
+def test_nasdaq_staging_rejects_bad_rows(tmp_path, monkeypatch, field, value):
+    import csv
+    from app import scan_cli
+    benchmark, asset = nasdaq_test_exports(tmp_path)
+    with asset.open(encoding='utf-8-sig', newline='') as f: rows = list(csv.DictReader(f))
+    rows[0][field] = value
+    with asset.open('w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys()); writer.writeheader(); writer.writerows(rows)
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2025-08-01T13:00:00Z'))
+    with pytest.raises(ValueError):
+        scan_cli.prepare_nasdaq_input(benchmark, asset, benchmark_symbol='SPY', asset_symbol='NVDA', max_age_calendar_days=5, confirmed=True)
+
+
+@pytest.mark.parametrize('case', ['duplicate', 'different_sessions', 'wrong_columns', 'unconfirmed', 'stale', 'same_symbol', 'symlink'])
+def test_nasdaq_staging_rejects_unusable_pair(tmp_path, monkeypatch, case):
+    import csv
+    from app import scan_cli
+    benchmark, asset = nasdaq_test_exports(tmp_path)
+    with asset.open(encoding='utf-8-sig', newline='') as f: rows = list(csv.DictReader(f))
+    if case == 'duplicate': rows.append(rows[0])
+    elif case == 'different_sessions': rows.pop()
+    if case in ('duplicate', 'different_sessions'):
+        with asset.open('w', newline='') as f:
+            writer=csv.DictWriter(f, fieldnames=rows[0].keys());writer.writeheader();writer.writerows(rows)
+    elif case == 'wrong_columns': asset.write_text('Date,Close\n01/01/2025,10\n')
+    elif case == 'symlink':
+        original = tmp_path/'original.csv';asset.rename(original);asset.symlink_to(original)
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2026-11-14T13:00:00Z' if case == 'stale' else '2025-08-01T13:00:00Z'))
+    with pytest.raises(ValueError):
+        scan_cli.prepare_nasdaq_input(benchmark, asset, benchmark_symbol='SPY',
+            asset_symbol='SPY' if case == 'same_symbol' else 'NVDA', max_age_calendar_days=5, confirmed=case != 'unconfirmed')
+
+
+def test_nasdaq_cli_only_creates_new_staged_file(tmp_path, monkeypatch):
+    from app import scan_cli
+    benchmark, asset = nasdaq_test_exports(tmp_path)
+    output = tmp_path/'staged.json'
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2025-08-01T13:00:00Z'))
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(benchmark), '--prepare-nasdaq-input', '--asset-csv', str(asset),
+        '--asset-symbol', 'NVDA', '--confirm-manual-use', '--max-age-calendar-days', '5', '--output', str(output)])
+    scanner_cli_main(); original=output.read_bytes()
+    assert json.loads(original)['schema'] == 'market-combined-input-v1'
+    with pytest.raises(ValueError, match='STAGED_OUTPUT_MUST_BE_NEW'): scanner_cli_main()
+    assert output.read_bytes() == original
+
+
+def test_report_summary_recomputes_current_age_without_changing_report(monkeypatch):
+    from app import scan_cli
+    data = scan_cli.combined_report(combined_input(), max_age_calendar_days=5)
+    original = json.dumps(data, sort_keys=True)
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2025-08-08T13:00:00Z'))
+    text = scan_cli.report_summary(data)
+    assert 'STALE MARKET DATA' in text
+    assert 'macro: unavailable' in text and 'catalysts: unavailable' in text
+    assert 'service/timer state' in text
+    assert json.dumps(data, sort_keys=True) == original
+
+
+def test_show_report_cli_is_read_only(tmp_path, monkeypatch, capsys):
+    from app import scan_cli
+    data = scan_cli.combined_report(combined_input(), max_age_calendar_days=5)
+    source=tmp_path/'report.json';source.write_text(json.dumps(data));before=source.read_bytes()
+    output=tmp_path/'must-not-exist.json'
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2025-08-01T13:00:00Z'))
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(source), '--show-report', '--output', str(output)])
+    scanner_cli_main()
+    assert 'Prices as of: 2025-07-29' in capsys.readouterr().out
+    assert source.read_bytes() == before and not output.exists()
+
+
+def test_nasdaq_staging_honors_revoked_manual_permission(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from app import scan_cli
+    from app.sources import SOURCES
+    benchmark, asset = nasdaq_test_exports(tmp_path)
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2025-08-01T13:00:00Z'))
+    monkeypatch.setitem(SOURCES, 'manual', replace(SOURCES['manual'], permission_verified=False))
+    with pytest.raises(PermissionError):
+        scan_cli.prepare_nasdaq_input(benchmark, asset, benchmark_symbol='SPY', asset_symbol='NVDA', max_age_calendar_days=5, confirmed=True)
+
+
+def test_nasdaq_missing_volume_is_recorded_without_zero_fill(tmp_path, monkeypatch):
+    import csv
+    from app import scan_cli
+    benchmark, asset = nasdaq_test_exports(tmp_path)
+    with benchmark.open(encoding='utf-8-sig', newline='') as f: rows=list(csv.DictReader(f))
+    rows[0]['Volume']='N/A'
+    with benchmark.open('w', newline='') as f:
+        writer=csv.DictWriter(f,fieldnames=rows[0].keys());writer.writeheader();writer.writerows(rows)
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2025-08-01T13:00:00Z'))
+    data=scan_cli.prepare_nasdaq_input(benchmark,asset,benchmark_symbol='SPY',asset_symbol='NVDA',max_age_calendar_days=5,confirmed=True)
+    assert 'benchmark=1, asset=0' in data['market_input']['provenance']['origin']
+    assert all(set(bar)=={'date','close'} for bar in data['market_input']['market']['benchmark']['bars'])
