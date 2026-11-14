@@ -1,0 +1,20 @@
+[Unit]
+Description=Market Engine supplied-input report (disabled example)
+ConditionPathExists=%h/market-report-runtime/execution.authorized
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/market-report-runtime/source
+ExecStart=/usr/bin/env -i HOME=%h PATH=/usr/bin:/bin %h/market-report-runtime/venv/bin/python -B -m app.scan_cli %h/market-report-runtime/input.json --combined-report --report-asof-now --max-age-calendar-days 3 --output %h/market-report-state/latest-report.json
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/market-report-state
+TimeoutStartSec=60
+TimeoutStopSec=15
+KillMode=control-group
+Restart=no

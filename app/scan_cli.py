@@ -5,8 +5,10 @@ No scheduler, network acquisition, database access, order execution or deploymen
 import argparse
 import hashlib
 import json
+import os
+import tempfile
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from app.sources import validate_source
@@ -274,6 +276,27 @@ def two_daily_manual(manifest: dict, *, max_age_calendar_days: int) -> dict:
     }
 
 
+def _utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _write_report(path: Path, result: dict):
+    """Replace a complete JSON report atomically, keeping old output on failure."""
+    content = json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False) + '\n'
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix='.' + path.name + '-', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Offline market scanner or synthetic two-report demo')
     parser.add_argument('input', help='Dated closes JSON, or synthetic two-report manifest')
@@ -284,7 +307,10 @@ def main():
     parser.add_argument('--manual-import', action='store_true', help='Operator-declared market export with provenance and mandatory freshness policy')
     parser.add_argument('--two-daily-manual', action='store_true', help='Assemble two operator-supplied snapshots; does not schedule execution')
     parser.add_argument('--combined-report', action='store_true', help='Compose supplied manual market/macro/valuation inputs; missing sections remain unavailable')
+    parser.add_argument('--report-asof-now', action='store_true', help='Combined reports only: use actual UTC execution time for freshness checks')
     args = parser.parse_args()
+    if args.report_asof_now and not args.combined_report:
+        parser.error('Current-time execution requires combined-report mode')
     if args.combined_report and (args.manual_import or args.two_daily_demo or args.two_daily_manual or args.report_day is not None):
         parser.error('Combined report uses its own timestamp and cannot combine with other modes')
     if args.two_daily_manual and (args.manual_import or args.two_daily_demo or args.report_day is not None):
@@ -296,7 +322,19 @@ def main():
     input_path = Path(args.input)
     payload = json.loads(input_path.read_text(encoding='utf-8'))
     if args.combined_report:
+        original_asof = None
+        if args.report_asof_now:
+            original_asof = payload['report_asof']
+            declared = datetime.fromisoformat(original_asof)
+            now = _utc_now()
+            if declared.tzinfo is None or declared.utcoffset() is None or declared > now:
+                raise ValueError('INVALID_DECLARED_REPORT_TIME')
+            payload = dict(payload, report_asof=now.isoformat())
         result = combined_report(payload, max_age_calendar_days=args.max_age_calendar_days)
+        if args.report_asof_now:
+            result['input_report_asof'] = original_asof
+            result['execution_clock_mode'] = 'current_utc'
+            result['market_data_age_calendar_days'] = (now.date() - date.fromisoformat(result['relative_strength']['as_of'])).days
     elif args.two_daily_manual:
         result = two_daily_manual(payload, max_age_calendar_days=args.max_age_calendar_days)
     elif args.manual_import:
@@ -304,7 +342,9 @@ def main():
     else:
         result = two_daily_demo(payload, input_path.parent) if args.two_daily_demo else scan(
             payload, report_day=args.report_day, max_age_calendar_days=args.max_age_calendar_days)
-    Path(args.output).write_text(json.dumps(result, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    if Path(args.output).resolve() == input_path.resolve():
+        raise ValueError('OUTPUT_MUST_NOT_REPLACE_INPUT')
+    _write_report(Path(args.output), result)
     print('Saved', args.output)
 
 

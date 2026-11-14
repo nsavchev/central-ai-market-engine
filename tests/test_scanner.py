@@ -437,3 +437,53 @@ def test_combined_cli_writes_explicit_partial_report(tmp_path, monkeypatch):
     assert result['schema'] == 'market-combined-report-v1'
     assert result['completeness'] == 'partial'
     assert result['sections']['catalysts']['status'] == 'unavailable'
+
+
+def test_current_time_report_rechecks_age_instead_of_replaying_old_asof(tmp_path, monkeypatch):
+    from app import scan_cli
+    source = tmp_path / 'input.json'; source.write_text(json.dumps(combined_input()))
+    output = tmp_path / 'report.json'; output.write_text('prior accepted report')
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2026-11-14T08:00:00Z'))
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(source), '--combined-report', '--report-asof-now',
+                                   '--max-age-calendar-days', '3', '--output', str(output)])
+    with pytest.raises(ValueError, match='STALE_MARKET_DATA'):
+        scanner_cli_main()
+    assert output.read_text() == 'prior accepted report'
+
+
+def test_current_time_report_records_actual_time_and_original_asof(tmp_path, monkeypatch):
+    from app import scan_cli
+    source = tmp_path / 'input.json'; source.write_text(json.dumps(combined_input()))
+    output = tmp_path / 'report.json'
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2025-08-01T18:00:00Z'))
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(source), '--combined-report', '--report-asof-now',
+                                   '--max-age-calendar-days', '5', '--output', str(output)])
+    scanner_cli_main()
+    report = json.loads(output.read_text())
+    assert report['report_asof'] == '2025-08-01T18:00:00+00:00'
+    assert report['input_report_asof'] == '2025-08-01T13:00:00Z'
+    assert report['execution_clock_mode'] == 'current_utc'
+    assert report['market_data_age_calendar_days'] == 3
+    assert list(tmp_path.glob('.report.json-*')) == []
+
+
+def test_atomic_report_failure_preserves_previous_file(tmp_path, monkeypatch):
+    from app import scan_cli
+    output = tmp_path / 'report.json'; output.write_text('previous')
+    def fail(*args): raise OSError('synthetic replace failure')
+    monkeypatch.setattr(scan_cli.os, 'replace', fail)
+    with pytest.raises(OSError): scan_cli._write_report(output, {'status': 'partial'})
+    assert output.read_text() == 'previous'
+    assert list(tmp_path.glob('.report.json-*')) == []
+
+
+def test_current_time_flag_cannot_silently_change_demo_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(tmp_path/'absent.json'), '--report-asof-now'])
+    with pytest.raises(SystemExit): scanner_cli_main()
+
+
+def test_cli_refuses_overwriting_its_input(tmp_path, monkeypatch):
+    source = tmp_path / 'input.json'; source.write_text(json.dumps(combined_input())); before=source.read_bytes()
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(source), '--combined-report', '--max-age-calendar-days', '5', '--output', str(source)])
+    with pytest.raises(ValueError, match='OUTPUT_MUST_NOT_REPLACE_INPUT'): scanner_cli_main()
+    assert source.read_bytes() == before
