@@ -8,10 +8,25 @@ from sqlalchemy.orm import Session
 from .db import FinancialSnapshot
 from .fundamentals import Financials, calculate
 from .sources import validate_source
+from .data_quality import check_snapshot
+
+
+def validate_history_snapshot(item: Financials):
+    """Shared permission/quality boundary before history writes or metrics."""
+    validate_source(item.source, automated=False)
+    if item.units is not None and item.units != 'ones':
+        raise ValueError('FINANCIAL_UNITS_REQUIRE_NORMALIZATION')
+    data = item.model_dump(mode='json')
+    report = check_snapshot(data)
+    if report['status'] == 'blocked':
+        codes = ','.join(sorted({issue['code'] for issue in report['issues']
+                                 if issue['severity'] == 'block'}))
+        raise ValueError('FINANCIAL_QUALITY_BLOCKED:' + codes)
+    return data, report
 
 
 def store_snapshot(db: Session, item: Financials) -> FinancialSnapshot:
-    validate_source(item.source, automated=False)
+    data, _ = validate_history_snapshot(item)
     period = date.fromisoformat(item.period_end)
     stmt = select(FinancialSnapshot).where(
         FinancialSnapshot.symbol == item.symbol.upper(),
@@ -20,7 +35,7 @@ def store_snapshot(db: Session, item: Financials) -> FinancialSnapshot:
         FinancialSnapshot.currency == item.currency,
         FinancialSnapshot.source == item.source)
     record = db.scalar(stmt)
-    data = item.model_dump(mode='json')  # Decimal -> string; no floating-point storage loss
+    # JSON-mode validation data preserves Decimal text and explicit metadata.
     data['symbol'] = item.symbol.upper()
     if record is None:
         record = FinancialSnapshot(symbol=item.symbol.upper(), period_end=period,
@@ -55,10 +70,21 @@ def history_report(db: Session, symbol: str, currency: str, source: str, max_yea
         raise ValueError('Multiple fiscal year-end records in a calendar year; manual reconciliation required')
     records = records[-max_years:]
     entries = [Financials.model_validate(r.payload) for r in records]
+    quality_reports = []
+    for record, entry in zip(records, entries):
+        if (entry.symbol.upper(), date.fromisoformat(entry.period_end), entry.period_type,
+                entry.currency, entry.source) != (record.symbol, record.period_end,
+                record.period_type, record.currency, record.source):
+            raise ValueError('FINANCIAL_SNAPSHOT_IDENTITY_MISMATCH')
+        _, quality = validate_history_snapshot(entry)
+        quality_reports.append(quality)
     metrics = [calculate(f)['metrics'] for f in entries]
     warnings = ['Historical ROIC/ROE/ROA use ending balance sheet values, not average balances.',
                 'Financial records must use consistent accounting basis, units, fiscal year-end, and currency.',
                 'No inflation/FX/corporate-action adjustments; no point-in-time filing history.']
+    warnings.extend(f"{report['period_end']}: {issue['code']} - {issue['message']}"
+                    for report in quality_reports for issue in report['issues']
+                    if issue['severity'] == 'warning')
     if len(entries) >= 2:
         gaps = [entries[i].period_end[:4] for i in range(1,len(entries))
                 if int(entries[i].period_end[:4]) - int(entries[i-1].period_end[:4]) != 1]
@@ -82,6 +108,7 @@ def history_report(db: Session, symbol: str, currency: str, source: str, max_yea
                         'latest_fcf':latest_metrics['free_cash_flow'] if latest_metrics else None,
                         'latest_fcf_positive':(latest_metrics['free_cash_flow']>0) if latest_metrics and latest_metrics['free_cash_flow'] is not None else None}
     return {'symbol':symbol.upper(),'currency':currency,'source':source,
+            'units':'ones' if entries else None,
             'years':[f.period_end for f in entries],'records':len(entries),
             'trends':trends,'financial_health':financial_health,
             'warnings':warnings,'assessment':'DESCRIPTIVE_ONLY_NOT_INVESTMENT_ADVICE'}

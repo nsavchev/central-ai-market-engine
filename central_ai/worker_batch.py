@@ -5,7 +5,7 @@ from pathlib import Path
 from central_ai.developer_worker_coordinator import DeveloperWorkerCoordinator
 
 
-def run_batch(*, enabled, database, agent, max_tasks=10, idle_checks=3, idle_seconds=1, sleep=time.sleep, coordinator=None):
+def run_batch(*, enabled, database, agent, max_tasks=10, idle_checks=3, idle_seconds=1, sleep=time.sleep, coordinator=None, review_handler=None):
     if enabled != "YES":
         raise ValueError("WORKER_DISABLED")
     path = Path(database)
@@ -19,7 +19,10 @@ def run_batch(*, enabled, database, agent, max_tasks=10, idle_checks=3, idle_sec
         raise ValueError("INVALID_IDLE_CHECKS")
     if type(idle_seconds) is not int or not 1 <= idle_seconds <= 30:
         raise ValueError("INVALID_IDLE_SECONDS")
-    worker = coordinator or DeveloperWorkerCoordinator(path, agent)
+    if coordinator is not None and review_handler is not None:
+        raise ValueError('AMBIGUOUS_REVIEW_COORDINATOR')
+    worker = coordinator or (DeveloperWorkerCoordinator(path, agent) if review_handler is None else
+                            DeveloperWorkerCoordinator(path, agent, review_handler=review_handler))
     processed = 0
     idle = 0
     while processed < max_tasks and idle < idle_checks:

@@ -50,5 +50,399 @@ jobs:
               test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import multiply\nassert multiply(3, 4) == 99\n")
               bad = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest, test_file=str(test), expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image)
               assert bad["status"] == "failed", bad
-              print("AI19_REAL_FUNCTIONAL_DOCKER_PASSED")
+              test.write_text("raise SystemExit(0)\n")
+              early = run_functional_tests(enabled="YES", candidate=str(candidate), expected_sha256=digest,
+                  test_file=str(test), expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image)
+              assert early['status'] == 'completion_unconfirmed' and early['passed'] is False, early
+              candidate.write_text("import os\nos._exit(0)\n")
+              def forbidden(*args, **kwargs):
+                  raise AssertionError('unsupported candidate must not reach Docker')
+              try:
+                  run_functional_tests(enabled="YES", candidate=str(candidate),
+                      expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), test_file=str(test),
+                      expected_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(), image=image, run=forbidden)
+              except ValueError as error:
+                  assert str(error) == 'CANDIDATE_OUTSIDE_EXECUTION_POLICY'
+              else:
+                  raise AssertionError('candidate early-exit code accepted')
+              print("AI19_REAL_FUNCTIONAL_AND_EARLY_EXIT_GATES_PASSED")
           PY
+      - name: Real bounded pipeline with synthetic authorization and durable outcome
+        run: |
+          python -m pip install -r requirements.txt
+          python - <<'PY'
+          import hashlib
+          import hmac
+          import json
+          import secrets
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          from central_ai.persistent_bridge import PersistentTaskBridge
+          from central_ai.task_file_targets import TaskFileTargets
+          from central_ai.task_storage import TaskStorage
+          from central_ai.worker_batch import run_batch
+          from central_ai.verifier_gate import make_hmac_review_authorizer
+          from central_ai.verified_review_pipeline import prepare_and_verify
+          from datetime import datetime, timezone, timedelta
+          def authorize_generation(binding):
+              # Synthetic allowance, not real provider prices or production authority.
+              now = datetime.now(timezone.utc)
+              return dict(schema='generation-admission-v1', generation_authorized=True,
+                  binding=dict(binding), scope='generate_only', disclosure='task_description_only',
+                  authorization_id='ci-'+binding['nonce'], budget_period=now.strftime('%Y-%m'),
+                  budget_limit_microuros=1000000, budget_call_limit=100, reserved_microuros=1000,
+                  model='ci-fixture-model', max_output_tokens=100,
+                  expires_at=(now+timedelta(minutes=1)).isoformat(), approved=False, deployment_allowed=False)
+          image = Path('/tmp/ai19-image.txt').read_text().strip()
+          # Ephemeral synthetic CI authority only; no production reviewer provisioning.
+          key = secrets.token_bytes(32)
+          def issue_receipt(binding):
+              receipt = dict(schema='review-hmac-sha256-v1', binding=dict(binding),
+                  reviewer_id='ci-synthetic-reviewer', authorization_id='ci-fixture-only',
+                  issued_at=1000, expires_at=1100, verification_authorized=True,
+                  approved=False, deployment_allowed=False)
+              payload = json.dumps(receipt, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+              return dict(receipt, mac=hmac.new(key, payload, 'sha256').hexdigest())
+          authorize = make_hmac_review_authorizer(reviewer_keys={'ci-synthetic-reviewer':key},
+              request_receipt=issue_receipt, clock=lambda:1050)
+          def containers():
+              return {name for name in subprocess.check_output(
+                  ['docker', 'container', 'ls', '--all', '--format', '{{.Names}}'], text=True).splitlines()
+                  if name.startswith('central-ai-verifier-')}
+          before = containers()
+          with tempfile.TemporaryDirectory() as directory:
+              root = Path(directory)
+              database = root/'tasks.sqlite'
+              source = root/'source'; source.mkdir()
+              original = source/'sample.py'; original.write_text('def f(): return 1\n')
+              original_bytes = original.read_bytes()
+              bridge = PersistentTaskBridge(database)
+              targets = TaskFileTargets(database); targets.initialize()
+              for expected, expression in [('passed', '== 2'), ('failed', '== 99'), ('completion_unconfirmed', None)]:
+                  task_id = bridge.submit('Synthetic real Docker lifecycle '+expected)['task_id']
+                  targets.register(task_id, str(source), 'sample.py')
+                  assert run_batch(enabled='YES', database=str(database), agent='ci-lifecycle',
+                      max_tasks=1, idle_checks=1, sleep=lambda _:None)['processed'] == 1
+                  paths = []
+                  for name in ('handoffs', 'proposals', 'candidates'):
+                      path = root/(expected+'-'+name); path.mkdir(mode=0o700); paths.append(str(path))
+                  test = root/(expected+'_test.py')
+                  test.write_text("raise SystemExit(0)\n" if expression is None else
+                      "import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import f\nassert f() "+expression+"\n")
+                  params = dict(enabled='YES', database=str(database), task_id=task_id,
+                      handoffs=paths[0], proposals=paths[1], candidates=paths[2],
+                      recommendation='```python\ndef f(): return 2\n```', trusted_test_file=str(test),
+                      trusted_test_sha256=hashlib.sha256(test.read_bytes()).hexdigest(),
+                      image=image, authorization_check=authorize)
+                  report = prepare_and_verify(**params)
+                  audit = TaskStorage(database).get(task_id)['verification']
+                  assert report['test_status'] == expected
+                  assert report['tests_passed'] is (expected == 'passed')
+                  assert report['completion_confirmed'] is (expected == 'passed')
+                  assert report['execution_policy'] == 'bounded-arithmetic-v1'
+                  assert report['audit_recorded'] and audit['phase'] == 'completed'
+                  assert audit['outcome']['verification_binding'] == report['verification_binding']
+                  assert audit['resources']['container_name'].startswith('central-ai-verifier-')
+                  assert not Path(audit['resources']['snapshot_directory']).exists()
+                  assert report['approved'] is report['deployment_allowed'] is False
+                  assert bridge.status(task_id)['status'] == 'analyzed'
+                  assert original.read_bytes() == original_bytes
+                  try:
+                      prepare_and_verify(**params)
+                  except ValueError as error:
+                      assert str(error) == 'VERIFICATION_ALREADY_STARTED'
+                  else:
+                      raise AssertionError('replay accepted')
+                  assert containers() == before
+              # One fixed independent test across generated root and linked correction.
+              task_id = bridge.submit('Synthetic generated arithmetic correction')['task_id']
+              targets.register(task_id, str(source), 'sample.py')
+              frozen_test = root/'revision_test.py'
+              frozen_test.write_text("import sys\nsys.path.insert(0, '/sandbox')\nfrom candidate import f\nassert f() == 2\n")
+              test_digest = hashlib.sha256(frozen_test.read_bytes()).hexdigest()
+              root_id = task_id
+              for ordinal in (1, 2):
+                  assert run_batch(enabled='YES', database=str(database), agent='ci-generated-revision',
+                      max_tasks=1, idle_checks=1, sleep=lambda _:None)['processed'] == 1
+                  paths=[]
+                  for name in ('handoffs','proposals','candidates'):
+                      path=root/('revision-'+str(ordinal)+'-'+name);path.mkdir(mode=0o700);paths.append(str(path))
+                  import os, httpx
+                  from central_ai.app import make_openai_generator
+                  os.environ['OPENAI_API_KEY']='synthetic-ci-only'
+                  os.environ['OPENAI_MODEL']='unapproved-environment-model'
+                  def mock_provider(request):
+                      persisted = TaskStorage(database).get(task_id)['generation']
+                      assert persisted['binding']['root_task_id'] == root_id
+                      assert persisted['binding']['ordinal'] == ordinal
+                      assert persisted['admission']['receipt']['generation_authorized'] is True
+                      body=json.loads(request.content)
+                      assert body['model']=='ci-fixture-model' and body['max_tokens']==100
+                      assert body['messages']==[dict(role='user',content='Synthetic generated arithmetic correction')]
+                      assert persisted['dispatch']['admission_sha256']==persisted['admission_sha256']
+                      answer='```python\ndef f(): return '+str(ordinal)+'\n```'
+                      return httpx.Response(200,stream=httpx.ByteStream(json.dumps(
+                          dict(choices=[dict(message=dict(content=answer))])).encode()))
+                  generate=make_openai_generator(enabled='YES',database=str(database),
+                      transport=httpx.MockTransport(mock_provider))
+                  report=prepare_and_verify(enabled='YES', database=str(database),task_id=task_id,
+                      handoffs=paths[0],proposals=paths[1],candidates=paths[2],
+                      trusted_test_file=str(frozen_test),trusted_test_sha256=test_digest,image=image,
+                      authorization_check=authorize,generator=generate,generator_id=generate.generator_id,
+                      generation_authorization_check=authorize_generation)
+                  audit=TaskStorage(database).get(task_id)
+                  assert audit['generation']['phase']=='completed'
+                  assert report['test_status']==('failed' if ordinal==1 else 'passed')
+                  assert report['approved'] is report['deployment_allowed'] is False
+                  assert original.read_bytes()==original_bytes and containers()==before
+                  if ordinal==1:
+                      task_id=bridge.submit_revision(task_id,report['verification_nonce'])['task_id']
+              assert len(TaskStorage(database).get(root_id)['revision_family']['members'])==2
+              print('MOCK_OPENAI_ADAPTER_REAL_DOCKER_FAILED_ROOT_LINKED_CORRECTION_PASSED')
+              print('SYNTHETIC_AUTH_REAL_DOCKER_DURABLE_COMPLETION_AND_REPLAY_PASSED')
+              from scripts.openai_admitted_acceptance import run_e2e_case
+              e2e_case=root/'operator-e2e'; e2e_case.mkdir(mode=0o700)
+              def e2e_factory(database):
+                  def response(request):
+                      payload=json.loads(request.content)
+                      assert payload['model']=='gpt-4.1-mini' and payload['max_tokens']==128
+                      answer='```python\ndef f(a, b):\n    return a * b\n```'
+                      return httpx.Response(200,stream=httpx.ByteStream(json.dumps(
+                          dict(choices=[dict(message=dict(content=answer))])).encode()))
+                  return make_openai_generator(enabled='YES',database=database,transport=httpx.MockTransport(response))
+              accepted=run_e2e_case(e2e_case,image,generator_factory=e2e_factory)
+              assert accepted['acceptance']=='passed',accepted
+              assert accepted['provider_mode']=='mock' and accepted['verifier_mode']=='docker'
+              assert accepted['source_unchanged'] and accepted['trusted_tests_unchanged'] and accepted['snapshot_removed']
+              assert accepted['generation_completed'] and accepted['verification_journal_completed']
+              assert not accepted['worker_activated'] and not accepted['approved'] and not accepted['deployment_allowed']
+              assert containers()==before
+              print('MOCK_OPENAI_OPERATOR_E2E_REAL_DOCKER_PASSED')
+              case=root/'review-worker'; case.mkdir(mode=0o700)
+              worker_result=run_e2e_case(case,image,generator_factory=e2e_factory,worker_cycles=3)
+              assert worker_result['acceptance']=='passed',worker_result
+              assert worker_result['provider_mode']=='mock' and worker_result['verifier_mode']=='docker'
+              assert worker_result['scope']=='isolated_worker_generation_and_verification'
+              assert worker_result['worker_cycles_completed']==3 and worker_result['worker_processed']==1
+              assert worker_result['generator_invocations']==1 and worker_result['post_completion_idle_cycles']==2
+              assert worker_result['generation_completed'] and worker_result['verification_journal_completed']
+              assert worker_result['source_unchanged'] and worker_result['trusted_tests_unchanged'] and worker_result['snapshot_removed']
+              assert not worker_result['persistent_worker_enabled_by_check'] and not worker_result['approved'] and not worker_result['deployment_allowed']
+              assert containers()==before
+              print('EXPLICIT_WORKER_REVIEW_THREE_CYCLES_ONE_GENERATION_REAL_DOCKER_PASSED')
+              from central_ai.verified_review_pipeline import load_worker_review_config
+              from central_ai.verifier_gate import provision_reviewer_key
+              from central_ai.worker_supervised import run_supervised
+              from central_ai.worker_scheduler import scheduled_cycles
+              import central_ai.app as provider_module
+              state=root/'configured-state';state.mkdir(mode=0o700)
+              authority=root/'configured-authority';authority.mkdir(mode=0o700)
+              key_file=authority/'reviewer.key'
+              assert provision_reviewer_key(enabled='YES',path=key_file)['reviewer_key_created']
+              key_before=key_file.read_bytes()
+              configured_db=state/'tasks.sqlite'
+              source_dir=state/'source';source_dir.mkdir()
+              source_file=source_dir/'sample.py';source_file.write_text('def f(a,b): return a+b\n')
+              original_source=source_file.read_bytes()
+              description='Implement def f(a,b) to return a*b as one fenced python block.'
+              bridge_configured=PersistentTaskBridge(configured_db)
+              configured_id=bridge_configured.submit(description)['task_id']
+              targets_configured=TaskFileTargets(configured_db);targets_configured.initialize()
+              targets_configured.register(configured_id,str(source_dir),'sample.py')
+              test_file=state/'trusted_test.py';test_file.write_bytes((e2e_case/'trusted_test.py').read_bytes())
+              grant=dict(source_file=str(source_file),source_sha256=hashlib.sha256(original_source).hexdigest(),
+                  spec_sha256=hashlib.sha256(description.encode()).hexdigest(),trusted_test_file=str(test_file),
+                  trusted_test_sha256=hashlib.sha256(test_file.read_bytes()).hexdigest(),image=image)
+              for name in ('handoffs','proposals','candidates'):
+                  path=state/name;path.mkdir(mode=0o700);grant[name]=str(path)
+              core=['app.py','task_storage.py','verified_review_pipeline.py','verifier_gate.py',
+                    'developer_worker_coordinator.py','worker_batch.py','worker_scheduler.py','worker_supervised.py']
+              policy=dict(schema='worker-review-runtime-v1',scope='isolated_only',execution_policy='bounded-arithmetic-v1',
+                  execution_authorized=True,approved=False,deployment_allowed=False,database=str(configured_db),
+                  policy_id='ci-file-policy',model='gpt-4.1-mini',max_output_tokens=128,
+                  budget=dict(currency='USD',limit_microusd=10000,reserved_microusd=1000,call_limit=1),
+                  authority=dict(generation_id='ci-file-generation',reviewer_id='ci-file-reviewer',reviewer_key_file=str(key_file)),
+                  runtime_sha256={name:hashlib.sha256((Path('central_ai')/name).read_bytes()).hexdigest() for name in core},
+                  jobs={configured_id:grant})
+              policy_file=authority/'runtime.json';policy_file.write_text(json.dumps(policy));policy_file.chmod(0o600)
+              original_factory=provider_module.make_openai_generator
+              provider_module.make_openai_generator=lambda **kw:e2e_factory(kw['database'])
+              try:
+                  for restart in (0,1):
+                      configured=load_worker_review_config(enabled='YES',config_path=policy_file,database=str(configured_db))
+                      def batch(**kwargs):return run_batch(**kwargs,idle_checks=1,sleep=lambda _:None)
+                      def schedule(**kwargs):return scheduled_cycles(**kwargs,batch=batch,sleep=lambda _:None)
+                      result=run_supervised(enabled='YES',database=str(configured_db),agent='ci-file-configured',
+                          lock_path=str(state/'worker.lock'),status_path=str(state/'status.json'),cycles=2,interval=1,
+                          max_tasks=1,scheduler=schedule,review_handler=configured)
+                      assert result['processed']==(1 if restart==0 else 0)
+              finally:
+                  provider_module.make_openai_generator=original_factory
+              accepted_configured=TaskStorage(configured_db).get(configured_id)
+              assert accepted_configured['generation']['admission']['receipt']['schema']=='generation-admission-usd-v2'
+              assert accepted_configured['verification']['phase']=='completed'
+              assert accepted_configured['verification']['outcome']['reviewer_id']=='ci-file-reviewer'
+              assert accepted_configured['verification']['outcome']['tests_passed']
+              assert not accepted_configured['approved'] and not accepted_configured['deployment_allowed']
+              assert key_file.read_bytes()==key_before and source_file.read_bytes()==original_source
+              assert containers()==before
+              print('PRIVATE_RUNTIME_POLICY_PERSISTENT_KEY_USD_REAL_DOCKER_RESTART_PASSED')
+              from scripts.openai_admitted_acceptance import prepare_runtime_files
+              prep_state=root/'prepared-only-state';prep_state.mkdir(mode=0o700)
+              prep_authority=root/'prepared-only-authority';prep_authority.mkdir(mode=0o700)
+              prep_key=prep_authority/'reviewer.key'
+              provision_reviewer_key(enabled='YES',path=prep_key)
+              retained_key=prep_key.read_bytes()
+              def forbid_provider(**kwargs):
+                  raise AssertionError('validation must not construct a provider')
+              provider_module.make_openai_generator=forbid_provider
+              try:
+                  dry=prepare_runtime_files(state_directory=prep_state,authority_directory=prep_authority,
+                      verifier_image=image,budget_limit_microusd=1000000)
+              finally:
+                  provider_module.make_openai_generator=original_factory
+              assert dry['runtime_config_prepared'] and dry['runtime_config_validated']
+              assert dry['reviewer_key_loaded'] and prep_key.read_bytes()==retained_key
+              assert not dry['execution_authorized'] and not dry['generation_started'] and not dry['worker_started']
+              assert dry['planned_tasks']==1 and containers()==before
+              print('DISABLED_RUNTIME_PROFILE_PREPARED_AND_VALIDATED_NO_DISPATCH_PASSED')
+              from scripts.openai_admitted_acceptance import run_prepared_pilot
+              from types import SimpleNamespace
+              pilot_state=root/'retained-pilot-state';pilot_state.mkdir(mode=0o700)
+              pilot_authority=root/'retained-pilot-authority';pilot_authority.mkdir(mode=0o700)
+              provision_reviewer_key(enabled='YES',path=pilot_authority/'reviewer.key')
+              prepare_runtime_files(state_directory=pilot_state,authority_directory=pilot_authority,
+                  verifier_image=image,budget_limit_microusd=20000000)
+              real_run=subprocess.run
+              def pilot_run(args,**kwargs):
+                  if args[:3]==['docker','exec','ci-provider-key-source']:
+                      return SimpleNamespace(returncode=0,stdout=json.dumps('synthetic-ci-provider-key-only'))
+                  return real_run(args,**kwargs)
+              provider_module.make_openai_generator=lambda **kw:e2e_factory(kw['database'])
+              subprocess.run=pilot_run
+              try:
+                  pilot=run_prepared_pilot(state_directory=pilot_state,authority_directory=pilot_authority,
+                      key_container='ci-provider-key-source')
+              finally:
+                  subprocess.run=real_run
+                  provider_module.make_openai_generator=original_factory
+              assert pilot['acceptance']=='passed',pilot
+              assert pilot['worker_cycles_completed']==1 and pilot['worker_processed']==1
+              assert pilot['standing_disabled_policy_and_key_unchanged'] and pilot['snapshot_removed']
+              assert not pilot['persistent_worker_enabled'] and not pilot['timer_modified']
+              assert not list(pilot_authority.glob('pilot-grant-*.json')) and containers()==before
+              print('RETAINED_STATE_ONE_SHOT_USD_PILOT_REAL_DOCKER_PASSED')
+          PY
+  rootless-private-runner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare disposable rootless identity and delegated cgroups
+        run: |
+          set -euo pipefail
+          sudo install -m 0755 -d /etc/apt/keyrings
+          sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          sudo chmod a+r /etc/apt/keyrings/docker.asc
+          printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable\n' | sudo tee /etc/apt/sources.list.d/ci-docker.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y uidmap slirp4netns fuse-overlayfs dbus-user-session docker-ce-rootless-extras python3-venv procps
+          test -x /usr/bin/dockerd-rootless.sh
+          sudo useradd --create-home --shell /bin/bash ci-review
+          review_uid=$(id -u ci-review)
+          sudo chmod 700 /home/ci-review
+          sudo install -d -m 755 "/run/systemd/system/user@${review_uid}.service.d"
+          printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee "/run/systemd/system/user@${review_uid}.service.d/delegate.conf" >/dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl start "user@${review_uid}.service"
+          sudo install -d -o ci-review -g ci-review -m 700 /home/ci-review/source /home/ci-review/data /home/ci-review/empty-config /home/ci-review/.config/systemd/user
+          # Copy reviewed source only; never copy the checkout credential directory.
+          tar --exclude=.git -cf - . | sudo -u ci-review tar -xf - -C /home/ci-review/source
+          sudo -u ci-review python3 -m venv /home/ci-review/venv
+          sudo -u ci-review /home/ci-review/venv/bin/pip install -r /home/ci-review/source/requirements-test.txt pytest
+          sudo -u ci-review tee /home/ci-review/.config/systemd/user/ci-rootless.service >/dev/null <<EOF
+          [Unit]
+          Description=Disposable CI-only private Docker daemon
+          [Service]
+          Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+          Environment=HOME=/home/ci-review
+          Environment=XDG_CONFIG_HOME=/home/ci-review/.config
+          Environment=DOCKER_CONFIG=/home/ci-review/empty-config
+          Environment=XDG_RUNTIME_DIR=/run/user/${review_uid}
+          ExecStart=/usr/bin/dockerd-rootless.sh --host=unix:///run/user/${review_uid}/docker.sock --data-root=/home/ci-review/data --exec-root=/run/user/${review_uid}/docker-exec --pidfile=/run/user/${review_uid}/docker.pid --storage-driver=vfs --exec-opt native.cgroupdriver=systemd
+          Delegate=yes
+          KillMode=mixed
+          TimeoutStopSec=30
+          EOF
+          sudo -u ci-review env XDG_RUNTIME_DIR="/run/user/${review_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${review_uid}/bus" systemctl --user daemon-reload
+          sudo -u ci-review env XDG_RUNTIME_DIR="/run/user/${review_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${review_uid}/bus" systemctl --user start ci-rootless.service
+          echo "REVIEW_CI_UID=${review_uid}" >> "$GITHUB_ENV"
+      - name: Pin private daemon and image without inherited Docker context
+        run: |
+          set -euo pipefail
+          sudo -u ci-review env -i HOME=/home/ci-review PATH=/usr/bin:/bin REVIEW_CI_UID="$REVIEW_CI_UID" python3 - <<'PY'
+          import json, os, subprocess, time
+          from pathlib import Path
+          socket='/run/user/'+os.environ['REVIEW_CI_UID']+'/docker.sock'
+          command=['/usr/bin/docker','--host','unix://'+socket,'--config','/home/ci-review/empty-config']
+          for attempt in range(45):
+              result=subprocess.run(command+['info','--format','{{json .}}'],capture_output=True,text=True,timeout=10)
+              if result.returncode==0:break
+              time.sleep(1)
+          assert result.returncode==0, 'ROOTLESS_DAEMON_UNAVAILABLE'
+          info=json.loads(result.stdout)
+          assert info['CgroupDriver']=='systemd' and str(info['CgroupVersion'])=='2'
+          assert any('name=rootless' in s.split(',') for s in info['SecurityOptions'])
+          subprocess.run(command+['pull','python:3.12-alpine'],check=True,timeout=180,stdout=subprocess.DEVNULL)
+          image=subprocess.check_output(command+['image','inspect','python:3.12-alpine','--format','{{index .RepoDigests 0}}'],text=True).strip()
+          root=Path('/home/ci-review')
+          # Rootless dockerd may create its data root with mode 0710; the trusted
+          # runner requires a user-only 0700 directory before any test admission.
+          (root/'data').chmod(0o700)
+          (root/'image.txt').write_text(image)
+          policy=dict(uid=os.getuid(),socket=socket,config_directory=str(root/'empty-config'),daemon_id=info['ID'],data_root=str(root/'data'))
+          (root/'runner.json').write_text(json.dumps(policy));(root/'runner.json').chmod(0o600)
+          PY
+      - name: Real rootless limits, verification, timeout, cleanup and restart
+        run: |
+          set -euo pipefail
+          image=$(sudo cat /home/ci-review/image.txt)
+          # Record only nonsecret filesystem metadata for the strict private-runner guard.
+          # This is CI-only evidence; never print Docker config, environment or policy bytes.
+          sudo -u ci-review python3 - <<'PY'
+          import json, os, stat
+          from pathlib import Path
+          policy=json.loads(Path('/home/ci-review/runner.json').read_text())
+          for name in ('socket', 'config_directory', 'data_root'):
+              path=Path(policy[name]); metadata=path.stat()
+              print('ROOTLESS_PATH_MODE', name, 'owner', metadata.st_uid,
+                    'mode', oct(stat.S_IMODE(metadata.st_mode)),
+                    'directory', stat.S_ISDIR(metadata.st_mode),
+                    'socket', stat.S_ISSOCK(metadata.st_mode))
+          PY
+          sudo -u ci-review env -i HOME=/home/ci-review PATH=/usr/bin:/bin \
+            XDG_RUNTIME_DIR="/run/user/${REVIEW_CI_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${REVIEW_CI_UID}/bus" \
+            CENTRAL_AI_ROOTLESS_CI_POLICY=/home/ci-review/runner.json CENTRAL_AI_ROOTLESS_CI_IMAGE="$image" \
+            /bin/sh -c 'cd /home/ci-review/source && /home/ci-review/venv/bin/python -m pytest -q -s --basetemp=/home/ci-review/test-cancel-state tests/test_ai18_isolated_functional_verifier.py -k "cancellation_preserves_unknown_resources or cancellation_with_independent_daemon_absence_cleans_snapshot" && exec /home/ci-review/venv/bin/python -m pytest -q -s --basetemp=/home/ci-review/test-state tests/test_ai26_verified_review_pipeline.py -k "test_supervisor_real_sigkill_during_generator_blocks_restart_without_retry or test_real_rootless_private_runner_lifecycle or test_real_rootless_docker_cli_sigterm_cleanup or test_real_rootless_cleanup_probe_failure_quarantines_snapshot"'
+      - name: Diagnose disposable daemon startup failure
+        if: failure()
+        run: |
+          if id ci-review >/dev/null 2>&1; then
+            review_uid=$(id -u ci-review)
+            sudo journalctl _UID="$review_uid" _SYSTEMD_USER_UNIT=ci-rootless.service --no-pager -n 80
+          fi
+      - name: Remove disposable daemon and identity
+        if: always()
+        run: |
+          set -euo pipefail
+          if id ci-review >/dev/null 2>&1; then
+            review_uid=$(id -u ci-review)
+            sudo systemctl stop "user@${review_uid}.service"
+            test "$(sudo systemctl is-active "user@${review_uid}.service" || true)" = inactive
+            sudo userdel --remove ci-review
+            sudo rm -rf "/run/systemd/system/user@${review_uid}.service.d"
+            sudo systemctl daemon-reload
+          fi

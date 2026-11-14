@@ -1,6 +1,14 @@
 """True Alembic CLI chain on disposable PostgreSQL (no VPS access)."""
 import os, subprocess
+import pytest
 from sqlalchemy import create_engine,text
+
+# Local aggregate runs may omit PostgreSQL; CI must still supply its test URL.
+pytestmark = pytest.mark.skipif(
+    not os.getenv("TEST_POSTGRES_URL") and not os.getenv("CI"),
+    reason="Disposable PostgreSQL required for local execution",
+)
+
 def test_populated_linked_alembic_upgrade():
     url=os.environ["TEST_POSTGRES_URL"]
     assert url.endswith("/test") and "127.0.0.1" in url

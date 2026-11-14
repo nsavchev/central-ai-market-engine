@@ -1,0 +1,12 @@
+[Unit]
+Description=Market Engine two daily supplied-input reports (disabled example)
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Europe/Sofia
+OnCalendar=*-*-* 23:15:00 Europe/Sofia
+AccuracySec=30s
+Persistent=false
+Unit=market-report.service
+
+[Install]
+WantedBy=timers.target

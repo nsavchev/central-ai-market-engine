@@ -15,15 +15,27 @@ def _series(rows):
         result[day] = price
     return result
 
-def scan(payload: dict) -> dict:
+def scan(payload: dict, *, report_day: date | None = None,
+         max_age_calendar_days: int | None = None) -> dict:
     """Input: benchmark, sectors, assets, each with dated daily closes.
     All candidates must share benchmark's latest date. No implicit forward fills.
     Scores are heuristics, not probabilities or trading signals.
     """
+    if (report_day is None) != (max_age_calendar_days is None):
+        raise ValueError('FRESHNESS_DATE_AND_LIMIT_REQUIRED')
+    if report_day is not None:
+        if type(report_day) is not date or type(max_age_calendar_days) is not int or max_age_calendar_days < 0:
+            raise ValueError('INVALID_FRESHNESS_POLICY')
     bench = _series(payload['benchmark']['bars'])
     if not bench: raise ValueError('Empty benchmark')
     asof = max(bench)
     sector_data = {key: _series(value['bars']) for key, value in payload.get('sectors', {}).items()}
+    if report_day is not None:
+        streams = [bench, *sector_data.values(), *(_series(a['bars']) for a in payload['assets'])]
+        if any(day > report_day for stream in streams for day in stream):
+            raise ValueError('FUTURE_MARKET_BAR')
+        if (report_day - asof).days > max_age_calendar_days:
+            raise ValueError('STALE_MARKET_DATA')
     result = []
     for asset in payload['assets']:
         prices = _series(asset['bars'])
