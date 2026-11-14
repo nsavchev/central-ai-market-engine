@@ -337,3 +337,103 @@ def test_manual_two_report_cli(tmp_path, monkeypatch):
                                    '--max-age-calendar-days', '5', '--output', str(out)])
     scanner_cli_main()
     assert json.loads(out.read_text())['schema'] == 'market-two-daily-manual-report-v1'
+
+
+def combined_input():
+    market = manual_market_input()
+    market['market']['assets'] = [{'symbol': 'DEMO', 'bars': bars(0, 210, 10)}]
+    return {'schema': 'market-combined-input-v1', 'report_asof': '2025-08-01T13:00:00Z', 'market_input': market}
+
+
+def combined_context(data):
+    return {'provenance': dict(manual_market_input()['provenance']), 'data': data}
+
+
+def valuation_context():
+    data = json.loads((Path(__file__).resolve().parents[1] / 'data/demo_valuation.json').read_text())
+    data.update(current_price=10, price_asof=bars(0, 210, 10)[-1]['date'])
+    return combined_context(data)
+
+
+def test_combined_report_marks_missing_inputs_without_fabrication():
+    from app.scan_cli import combined_report
+    result = combined_report(combined_input(), max_age_calendar_days=5)
+    assert result['completeness'] == 'partial'
+    assert result['sections']['prices']['status'] == 'calculated_from_supplied_inputs'
+    for name in ('macro', 'valuation', 'catalysts'):
+        assert result['sections'][name]['status'] == 'unavailable'
+        assert 'result' not in result['sections'][name]
+    assert not result['paper_trades_executed'] and not result['deployment_allowed']
+
+
+def test_combined_report_reuses_valuation_with_matched_price():
+    from app.scan_cli import combined_report
+    from app.valuation import ValuationRequest, evaluate
+    data = combined_input(); data['valuation'] = valuation_context()
+    result = combined_report(data, max_age_calendar_days=5)
+    assert result['sections']['valuation']['result'] == evaluate(ValuationRequest.model_validate(data['valuation']['data']))
+    assert result['sections']['macro']['status'] == 'unavailable'
+
+
+def test_combined_report_upcoming_macro_has_no_actual_or_surprise():
+    from app.scan_cli import combined_report
+    data = combined_input()
+    data['macro'] = combined_context({'events': [{'event_id': 'synthetic', 'indicator': 'CPI_YOY',
+        'country': 'US', 'released_at': '2025-08-01T14:00:00Z', 'actual': None, 'consensus': 3.0,
+        'unit': 'percent', 'source_url': 'https://example.org/synthetic'}]})
+    result = combined_report(data, max_age_calendar_days=5)['sections']['macro']['result']['events'][0]
+    assert result['status'] == 'upcoming' and result['actual'] is None and result['surprise'] is None
+    data['macro']['data']['events'][0]['actual'] = 3.2
+    with pytest.raises(ValueError, match='MACRO_ACTUAL_AFTER_RETRIEVAL'):
+        combined_report(data, max_age_calendar_days=5)
+
+
+@pytest.mark.parametrize('change', ['symbol', 'price', 'price_date', 'scenarios', 'rights', 'retrieved', 'malformed'])
+def test_combined_report_rejects_inconsistent_context(change):
+    from app.scan_cli import combined_report
+    data = combined_input(); data['valuation'] = valuation_context()
+    ctx = data['valuation']
+    if change == 'symbol': ctx['data']['symbol'] = 'OTHER'
+    elif change == 'price': ctx['data']['current_price'] = 999
+    elif change == 'price_date': ctx['data']['price_asof'] = '2030-01-01'
+    elif change == 'scenarios': ctx['data']['scenarios'].pop()
+    elif change == 'rights': ctx['provenance']['usage_rights_confirmed'] = False
+    elif change == 'retrieved': ctx['provenance']['retrieved_at'] = '2025-08-01T14:00:00Z'
+    elif change == 'malformed': del ctx['provenance']
+    with pytest.raises((ValueError, PermissionError)):
+        combined_report(data, max_age_calendar_days=5)
+
+
+def test_combined_report_in_two_daily_flow_keeps_sections():
+    from app.scan_cli import two_daily_manual
+    data = manual_two_report_input()
+    for item in data['sessions']:
+        item['input'] = combined_input()
+        item['input']['report_asof'] = item['report_asof']
+    result = two_daily_manual(data, max_age_calendar_days=5)
+    assert result['analysis_scope'] == 'supplied_sections'
+    assert all(r['sections']['valuation']['status'] == 'unavailable' for r in result['reports'])
+    data['sessions'][1]['input']['report_asof'] = '2025-08-01T17:00:00Z'
+    with pytest.raises(ValueError, match='COMBINED_REPORT_TIME_MISMATCH'):
+        two_daily_manual(data, max_age_calendar_days=5)
+
+
+def test_combined_cli_rejects_invalid_data_before_new_output(tmp_path, monkeypatch):
+    data = combined_input(); data['macro'] = combined_context({'events': 'invalid'})
+    source = tmp_path / 'combined.json'; source.write_text(json.dumps(data))
+    output = tmp_path / 'report.json'
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(source), '--combined-report', '--max-age-calendar-days', '5', '--output', str(output)])
+    with pytest.raises(ValueError, match='MACRO_EVENTS_REQUIRED'):
+        scanner_cli_main()
+    assert not output.exists()
+
+
+def test_combined_cli_writes_explicit_partial_report(tmp_path, monkeypatch):
+    source = tmp_path / 'combined.json'; source.write_text(json.dumps(combined_input()))
+    output = tmp_path / 'report.json'
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(source), '--combined-report', '--max-age-calendar-days', '5', '--output', str(output)])
+    scanner_cli_main()
+    result = json.loads(output.read_text())
+    assert result['schema'] == 'market-combined-report-v1'
+    assert result['completeness'] == 'partial'
+    assert result['sections']['catalysts']['status'] == 'unavailable'

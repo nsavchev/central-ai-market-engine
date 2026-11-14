@@ -111,12 +111,7 @@ def two_daily_demo(manifest: dict, directory: Path) -> dict:
     }
 
 
-def manual_scan(payload: dict, *, report_day: date, max_age_calendar_days: int) -> dict:
-    """Validate operator-declared provenance; never fetch or certify vendor rights."""
-    if (not isinstance(payload, dict) or set(payload) != {'schema', 'provenance', 'market'}
-            or payload['schema'] != 'market-manual-input-v1'):
-        raise ValueError('MANUAL_MARKET_ENVELOPE_REQUIRED')
-    provenance = payload['provenance']
+def _manual_provenance(provenance):
     if (not isinstance(provenance, dict) or set(provenance) !=
             {'source', 'origin', 'retrieved_at', 'usage_rights_confirmed'}):
         raise ValueError('MANUAL_PROVENANCE_REQUIRED')
@@ -126,13 +121,25 @@ def manual_scan(payload: dict, *, report_day: date, max_age_calendar_days: int) 
             or not 1 <= len(provenance['origin'].strip()) <= 500
             or any(ord(c) < 32 for c in provenance['origin'])):
         raise ValueError('MANUAL_USAGE_RIGHTS_AND_ORIGIN_REQUIRED')
-    if type(report_day) is not date or type(max_age_calendar_days) is not int or max_age_calendar_days < 0:
-        raise ValueError('EXPLICIT_MANUAL_FRESHNESS_POLICY_REQUIRED')
     try:
         retrieved = datetime.fromisoformat(provenance['retrieved_at'])
     except (TypeError, ValueError) as exc:
         raise ValueError('INVALID_RETRIEVAL_TIMESTAMP') from exc
-    if retrieved.tzinfo is None or retrieved.utcoffset() is None or retrieved.date() > report_day:
+    if retrieved.tzinfo is None or retrieved.utcoffset() is None:
+        raise ValueError('INVALID_RETRIEVAL_TIMESTAMP')
+    return retrieved
+
+
+def manual_scan(payload: dict, *, report_day: date, max_age_calendar_days: int) -> dict:
+    """Validate operator-declared provenance; never fetch or certify vendor rights."""
+    if (not isinstance(payload, dict) or set(payload) != {'schema', 'provenance', 'market'}
+            or payload['schema'] != 'market-manual-input-v1'):
+        raise ValueError('MANUAL_MARKET_ENVELOPE_REQUIRED')
+    provenance = payload['provenance']
+    retrieved = _manual_provenance(provenance)
+    if type(report_day) is not date or type(max_age_calendar_days) is not int or max_age_calendar_days < 0:
+        raise ValueError('EXPLICIT_MANUAL_FRESHNESS_POLICY_REQUIRED')
+    if retrieved.date() > report_day:
         raise ValueError('INVALID_RETRIEVAL_TIMESTAMP')
     market = payload['market']
     # Retrieval must not predate any daily close claimed in this export.
@@ -150,6 +157,68 @@ def manual_scan(payload: dict, *, report_day: date, max_age_calendar_days: int) 
         'limitations': ['Origin and usage rights are operator declarations, not independent verification.',
                         'Calendar-day freshness does not implement an exchange holiday calendar.'],
     }
+
+
+def combined_report(payload: dict, *, max_age_calendar_days: int) -> dict:
+    """Compose existing calculators; missing context remains explicitly unavailable."""
+    required = {'schema', 'report_asof', 'market_input'}
+    if (not isinstance(payload, dict) or not required <= set(payload)
+            or set(payload) - required - {'macro', 'valuation'}
+            or payload['schema'] != 'market-combined-input-v1'):
+        raise ValueError('COMBINED_REPORT_ENVELOPE_REQUIRED')
+    try:
+        asof = datetime.fromisoformat(payload['report_asof'])
+    except (TypeError, ValueError) as exc:
+        raise ValueError('INVALID_REPORT_TIMESTAMP') from exc
+    if asof.tzinfo is None or asof.utcoffset() is None:
+        raise ValueError('REPORT_TIMEZONE_REQUIRED')
+    prices = manual_scan(payload['market_input'], report_day=asof.date(),
+                         max_age_calendar_days=max_age_calendar_days)
+    if datetime.fromisoformat(prices['provenance']['retrieved_at']) > asof:
+        raise ValueError('INPUT_RETRIEVED_AFTER_REPORT')
+    sections = {'prices': {'status': 'calculated_from_supplied_inputs'},
+                'macro': {'status': 'unavailable', 'reason': 'NO_MACRO_INPUT'},
+                'valuation': {'status': 'unavailable', 'reason': 'NO_VALUATION_INPUT'},
+                'catalysts': {'status': 'unavailable', 'reason': 'NO_CATALYST_INTEGRATION'}}
+    for name in ('macro', 'valuation'):
+        context = payload.get(name)
+        if context is None:
+            continue
+        if not isinstance(context, dict) or set(context) != {'provenance', 'data'}:
+            raise ValueError('CONTEXT_PROVENANCE_REQUIRED')
+        retrieved = _manual_provenance(context['provenance'])
+        if retrieved > asof:
+            raise ValueError('INPUT_RETRIEVED_AFTER_REPORT')
+        if name == 'macro':
+            data = context['data']
+            if not isinstance(data, dict) or set(data) != {'events'} or not isinstance(data['events'], list):
+                raise ValueError('MACRO_EVENTS_REQUIRED')
+            events = [Event.model_validate(e) for e in data['events']]
+            if any(e.actual is not None and e.released_at > retrieved for e in events):
+                raise ValueError('MACRO_ACTUAL_AFTER_RETRIEVAL')
+            value = evaluate_macro(events, asof)
+        else:
+            request = ValuationRequest.model_validate(context['data'])
+            if {scenario.name.lower() for scenario in request.scenarios} != {'bear', 'base', 'bull'}:
+                raise ValueError('THREE_SCENARIOS_REQUIRED')
+            price_day = date.fromisoformat(request.price_asof)
+            assets = payload['market_input']['market']['assets']
+            matching = [a for a in assets if a['symbol'] == request.symbol]
+            if len(matching) != 1:
+                raise ValueError('VALUATION_SYMBOL_MISMATCH')
+            bars = matching[0]['bars']
+            latest = max(bars, key=lambda bar: date.fromisoformat(bar['date']))
+            if price_day != date.fromisoformat(latest['date']) or request.current_price != float(latest['close']):
+                raise ValueError('VALUATION_PRICE_MISMATCH')
+            value = evaluate_valuation(request)
+        sections[name] = {'status': 'calculated_from_supplied_inputs', 'provenance': dict(context['provenance']),
+                          'input_sha256': hashlib.sha256(json.dumps(context['data'], sort_keys=True,
+                          separators=(',', ':'), allow_nan=False).encode()).hexdigest(), 'result': value}
+    return dict(prices, schema='market-combined-report-v1', report_asof=asof.isoformat(),
+                sections=sections, completeness='partial',
+                limitations=prices['limitations'] + [
+                    'No company news/catalyst integration; the report is partial.',
+                    'Valuation financial units, assumptions and price currency are operator-supplied, not independently verified.'])
 
 
 def two_daily_manual(manifest: dict, *, max_age_calendar_days: int) -> dict:
@@ -171,8 +240,13 @@ def two_daily_manual(manifest: dict, *, max_age_calendar_days: int) -> dict:
             raise ValueError('INVALID_REPORT_TIMESTAMP') from exc
         if asof.tzinfo is None or asof.utcoffset() is None:
             raise ValueError('REPORT_TIMEZONE_REQUIRED')
-        report = manual_scan(item['input'], report_day=asof.date(),
-                             max_age_calendar_days=max_age_calendar_days)
+        if isinstance(item['input'], dict) and item['input'].get('schema') == 'market-combined-input-v1':
+            report = combined_report(item['input'], max_age_calendar_days=max_age_calendar_days)
+            if datetime.fromisoformat(report['report_asof']) != asof:
+                raise ValueError('COMBINED_REPORT_TIME_MISMATCH')
+        else:
+            report = manual_scan(item['input'], report_day=asof.date(),
+                                 max_age_calendar_days=max_age_calendar_days)
         retrieved = datetime.fromisoformat(report['provenance']['retrieved_at'])
         if retrieved > asof:
             raise ValueError('INPUT_RETRIEVED_AFTER_REPORT')
@@ -188,7 +262,8 @@ def two_daily_manual(manifest: dict, *, max_age_calendar_days: int) -> dict:
         raise ValueError('TWO_DAILY_UNIVERSE_MISMATCH')
     return {
         'schema': 'market-two-daily-manual-report-v1', 'data_mode': 'MANUAL_IMPORT',
-        'analysis_scope': 'relative_strength_only', 'reports': reports,
+        'analysis_scope': 'supplied_sections' if any('sections' in r for r in reports) else 'relative_strength_only',
+        'reports': reports,
         'same_market_snapshot': first['market_sha256'] == second['market_sha256'],
         'scheduler_executed': False, 'automated_acquisition': False,
         'real_market_data_verified': False, 'paper_trades_executed': False,
@@ -208,7 +283,10 @@ def main():
     parser.add_argument('--max-age-calendar-days', type=int, help='Maximum calendar-day age; includes weekends and holidays')
     parser.add_argument('--manual-import', action='store_true', help='Operator-declared market export with provenance and mandatory freshness policy')
     parser.add_argument('--two-daily-manual', action='store_true', help='Assemble two operator-supplied snapshots; does not schedule execution')
+    parser.add_argument('--combined-report', action='store_true', help='Compose supplied manual market/macro/valuation inputs; missing sections remain unavailable')
     args = parser.parse_args()
+    if args.combined_report and (args.manual_import or args.two_daily_demo or args.two_daily_manual or args.report_day is not None):
+        parser.error('Combined report uses its own timestamp and cannot combine with other modes')
     if args.two_daily_manual and (args.manual_import or args.two_daily_demo or args.report_day is not None):
         parser.error('Two-daily manual mode uses its own report timestamps and cannot be combined with other modes')
     if args.manual_import and args.two_daily_demo:
@@ -217,7 +295,9 @@ def main():
         parser.error('Freshness options apply only to the offline scanner, not synthetic demos')
     input_path = Path(args.input)
     payload = json.loads(input_path.read_text(encoding='utf-8'))
-    if args.two_daily_manual:
+    if args.combined_report:
+        result = combined_report(payload, max_age_calendar_days=args.max_age_calendar_days)
+    elif args.two_daily_manual:
         result = two_daily_manual(payload, max_age_calendar_days=args.max_age_calendar_days)
     elif args.manual_import:
         result = manual_scan(payload, report_day=args.report_day, max_age_calendar_days=args.max_age_calendar_days)
