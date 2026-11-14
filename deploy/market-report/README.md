@@ -10,14 +10,19 @@ close; its hash, source retrieval time and actual report time must be inspected.
 ## Required layout and acceptance
 
 Review an exact source SHA and compatible existing Python environment under the
-intended nonroot service account. The paths below are example account-relative
-locations, not observations of an installed host:
+intended nonroot service account. This is a system-manager unit with explicit
+`User=market-report` and `Group=market-report`, not a `systemctl` unit.
+The generic account is a proposal, not an existing-account assertion; deliberately
+select a reviewed nonroot identity before installation. No account is created.
+Systemd prepares the sandbox before dropping to that identity; the report process
+must still prove nonroot UID and zero effective/permitted/ambient capabilities.
+The paths below are generic proposed locations, not installed-host observations:
 
-- `~/market-report-runtime/source`: reviewed source, not generated code.
-- `~/market-report-runtime/venv`: reviewed dependencies; no installation at startup.
-- `~/market-report-runtime/input.json`: operator-managed `market-combined-input-v1`.
-- `~/market-report-state`: private writable output directory.
-- `~/market-report-runtime/execution.authorized`: explicit enable sentinel, absent by default.
+- `/opt/market-report/source`: reviewed source, not generated code.
+- `/opt/market-report/venv`: reviewed dependencies; no installation at startup.
+- `/etc/market-report/input.json`: operator-managed `market-combined-input-v1`.
+- `/var/lib/market-report`: private writable output directory.
+- `/etc/market-report/execution.authorized`: explicit enable sentinel, absent by default.
 
 Inputs require declared manual provenance/usage rights and aware retrieval times;
 publish each complete input atomically. Never backdate retrieval metadata to make
@@ -26,8 +31,13 @@ the input's declared time, then applies freshness to the actual day. The draft
 three-calendar-day age limit is an explicit proposal; it does not prove that the
 latest exchange session is included. Review weekends/long closures separately.
 No inputs, sentinel, virtualenv, units or directories are created by these files.
+Keep source, environment and enable sentinel administrator-controlled; grant the
+selected service identity read access to required inputs and write access only
+to its private output directory. Do not grant sudo or change Docker groups.
+Do not use `%h` for this system-unit layout: system-manager home specifiers are
+not a reliable substitution for the selected service account's private paths.
 
-Before any installation, validate user-manager sandbox support and read/write
+Before any installation, validate system-manager sandbox support and read/write
 paths under the intended identity, run one approved foreground report, measure
 runtime/termination and inspect its output/hash. Proposed 60/15-second service
 bounds are not operational acceptance. `RestrictAddressFamilies=AF_UNIX` blocks
@@ -53,12 +63,12 @@ The report remains partial while unsupported/missing context is unavailable.
 First inspect the exact installed unit/config diff and retain the previous
 versions. Do not replace the existing Central AI service or staging timer.
 After the approved sentinel and units are deliberately installed, a manual run
-is `systemctl --user start market-report.service`; inspect its result and output
+is `systemctl start market-report.service`; inspect its result and output
 before separately enabling any timer. No timer is enabled by manual service start.
 
 For rollback, stop future triggers with
-`systemctl --user disable --now market-report.timer`, then stop any active report
-with `systemctl --user stop market-report.service`. Verify both states, retain
+`systemctl disable --now market-report.timer`, then stop any active report
+with `systemctl stop market-report.service`. Verify both states, retain
 inputs/outputs/journals and remove the enable sentinel if withdrawing authority.
 Do not reset AI ledgers, revert databases, replay paid work or alter unrelated
 services. Restore only the reviewed unit/config/source version after compatibility
