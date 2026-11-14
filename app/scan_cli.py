@@ -152,6 +152,53 @@ def manual_scan(payload: dict, *, report_day: date, max_age_calendar_days: int) 
     }
 
 
+def two_daily_manual(manifest: dict, *, max_age_calendar_days: int) -> dict:
+    """Assemble two supplied snapshots, without implying either was scheduled."""
+    if (not isinstance(manifest, dict) or set(manifest) != {'schema', 'sessions'}
+            or manifest['schema'] != 'market-two-daily-manual-input-v1'):
+        raise ValueError('TWO_DAILY_MANUAL_ENVELOPE_REQUIRED')
+    sessions = manifest['sessions']
+    if not isinstance(sessions, list) or len(sessions) != 2:
+        raise ValueError('EXACTLY_TWO_SESSIONS_REQUIRED')
+    reports, times = [], []
+    for slot, item in zip(('morning', 'evening'), sessions):
+        if (not isinstance(item, dict) or set(item) != {'slot', 'report_asof', 'input'}
+                or item['slot'] != slot):
+            raise ValueError('ORDERED_MORNING_EVENING_REQUIRED')
+        try:
+            asof = datetime.fromisoformat(item['report_asof'])
+        except (TypeError, ValueError) as exc:
+            raise ValueError('INVALID_REPORT_TIMESTAMP') from exc
+        if asof.tzinfo is None or asof.utcoffset() is None:
+            raise ValueError('REPORT_TIMEZONE_REQUIRED')
+        report = manual_scan(item['input'], report_day=asof.date(),
+                             max_age_calendar_days=max_age_calendar_days)
+        retrieved = datetime.fromisoformat(report['provenance']['retrieved_at'])
+        if retrieved > asof:
+            raise ValueError('INPUT_RETRIEVED_AFTER_REPORT')
+        times.append(asof)
+        reports.append(dict(report, slot=slot, report_asof=asof.isoformat()))
+    if (times[0].date() != times[1].date() or times[0] >= times[1]
+            or times[0].utcoffset() != times[1].utcoffset()):
+        raise ValueError('INVALID_TWO_DAILY_ORDER')
+    first, second = reports
+    if (first['relative_strength']['benchmark'] != second['relative_strength']['benchmark']
+            or {r['symbol'] for r in first['relative_strength']['rankings']} !=
+               {r['symbol'] for r in second['relative_strength']['rankings']}):
+        raise ValueError('TWO_DAILY_UNIVERSE_MISMATCH')
+    return {
+        'schema': 'market-two-daily-manual-report-v1', 'data_mode': 'MANUAL_IMPORT',
+        'analysis_scope': 'relative_strength_only', 'reports': reports,
+        'same_market_snapshot': first['market_sha256'] == second['market_sha256'],
+        'scheduler_executed': False, 'automated_acquisition': False,
+        'real_market_data_verified': False, 'paper_trades_executed': False,
+        'deployment_allowed': False,
+        'limitations': ['Report times and provenance are supplied, not proof of actual scheduled execution.',
+                        'Repeated price snapshots do not demonstrate an intraday market update.',
+                        'Macro events, catalysts and valuation scenarios are not supplied by this path.'],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description='Offline market scanner or synthetic two-report demo')
     parser.add_argument('input', help='Dated closes JSON, or synthetic two-report manifest')
@@ -160,14 +207,19 @@ def main():
     parser.add_argument('--report-day', type=date.fromisoformat, help='Explicit as-of date for offline freshness validation')
     parser.add_argument('--max-age-calendar-days', type=int, help='Maximum calendar-day age; includes weekends and holidays')
     parser.add_argument('--manual-import', action='store_true', help='Operator-declared market export with provenance and mandatory freshness policy')
+    parser.add_argument('--two-daily-manual', action='store_true', help='Assemble two operator-supplied snapshots; does not schedule execution')
     args = parser.parse_args()
+    if args.two_daily_manual and (args.manual_import or args.two_daily_demo or args.report_day is not None):
+        parser.error('Two-daily manual mode uses its own report timestamps and cannot be combined with other modes')
     if args.manual_import and args.two_daily_demo:
         parser.error('Choose manual import or synthetic demo')
     if args.two_daily_demo and (args.report_day is not None or args.max_age_calendar_days is not None):
         parser.error('Freshness options apply only to the offline scanner, not synthetic demos')
     input_path = Path(args.input)
     payload = json.loads(input_path.read_text(encoding='utf-8'))
-    if args.manual_import:
+    if args.two_daily_manual:
+        result = two_daily_manual(payload, max_age_calendar_days=args.max_age_calendar_days)
+    elif args.manual_import:
         result = manual_scan(payload, report_day=args.report_day, max_age_calendar_days=args.max_age_calendar_days)
     else:
         result = two_daily_demo(payload, input_path.parent) if args.two_daily_demo else scan(

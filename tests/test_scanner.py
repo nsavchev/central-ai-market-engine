@@ -281,3 +281,59 @@ def test_manual_import_rejects_incomplete_or_unknown_envelope(payload):
     from app.scan_cli import manual_scan
     with pytest.raises(ValueError, match='MANUAL_MARKET_ENVELOPE_REQUIRED'):
         manual_scan(payload, report_day=date(2025, 8, 1), max_age_calendar_days=5)
+
+
+def manual_two_report_input():
+    return {'schema': 'market-two-daily-manual-input-v1', 'sessions': [
+        {'slot': 'morning', 'report_asof': '2025-08-01T13:00:00Z', 'input': manual_market_input()},
+        {'slot': 'evening', 'report_asof': '2025-08-01T18:00:00Z', 'input': manual_market_input()}]}
+
+
+def test_manual_two_reports_reuse_scanner_and_mark_same_prices():
+    from app.scan_cli import two_daily_manual
+    result = two_daily_manual(manual_two_report_input(), max_age_calendar_days=5)
+    assert result['same_market_snapshot'] is True
+    assert [r['slot'] for r in result['reports']] == ['morning', 'evening']
+    assert result['reports'][0]['relative_strength'] == scan(manual_market_input()['market'])
+    assert result['scheduler_executed'] is result['automated_acquisition'] is False
+    assert result['analysis_scope'] == 'relative_strength_only'
+
+
+def test_manual_two_reports_distinguish_new_snapshot():
+    from app.scan_cli import two_daily_manual
+    data = manual_two_report_input()
+    data['sessions'][1]['input']['market']['benchmark']['bars'][-1]['close'] += 1
+    assert not two_daily_manual(data, max_age_calendar_days=5)['same_market_snapshot']
+
+
+@pytest.mark.parametrize('timestamp', ['2025-08-01T11:00:00Z', '2025-08-01T11:00:00'])
+def test_manual_two_reports_prevent_lookahead_or_naive_time(timestamp):
+    from app.scan_cli import two_daily_manual
+    data = manual_two_report_input(); data['sessions'][0]['report_asof'] = timestamp
+    with pytest.raises(ValueError):
+        two_daily_manual(data, max_age_calendar_days=5)
+
+
+@pytest.mark.parametrize('change', ['missing', 'reversed', 'other_day', 'other_offset', 'other_universe', 'old', 'rights'])
+def test_manual_two_reports_reject_invalid_combination(change):
+    from app.scan_cli import two_daily_manual
+    data = manual_two_report_input()
+    if change == 'missing': data['sessions'].pop()
+    elif change == 'reversed': data['sessions'].reverse()
+    elif change == 'other_day': data['sessions'][1]['report_asof'] = '2025-08-02T18:00:00Z'
+    elif change == 'other_offset': data['sessions'][1]['report_asof'] = '2025-08-01T20:00:00+02:00'
+    elif change == 'other_universe': data['sessions'][1]['input']['market']['benchmark']['symbol'] = 'OTHER'
+    elif change == 'old':
+        for item in data['sessions']: item['report_asof'] = item['report_asof'].replace('2025-08-01', '2026-11-14')
+    elif change == 'rights': data['sessions'][1]['input']['provenance']['usage_rights_confirmed'] = False
+    with pytest.raises((ValueError, PermissionError)):
+        two_daily_manual(data, max_age_calendar_days=5)
+
+
+def test_manual_two_report_cli(tmp_path, monkeypatch):
+    data = tmp_path / 'two.json'; data.write_text(json.dumps(manual_two_report_input()))
+    out = tmp_path / 'reports.json'
+    monkeypatch.setattr('sys.argv', ['scan_cli', str(data), '--two-daily-manual',
+                                   '--max-age-calendar-days', '5', '--output', str(out)])
+    scanner_cli_main()
+    assert json.loads(out.read_text())['schema'] == 'market-two-daily-manual-report-v1'
