@@ -122,3 +122,52 @@ benchmark/relative performance and unavailable sections. It recalculates the age
 at viewing time; it never refreshes prices or treats file existence as service
 health. Query the actual service/timer separately. No raw CSVs, generated reports,
 private deployment metadata or provider credentials belong in the repository.
+
+
+## Stage official API daily prices (explicitly disabled by default)
+
+The candidate CLI can prepare a complete SPY/NVDA snapshot from Twelve Data's
+fixed official HTTPS endpoint. It makes at most two requests per invocation,
+without redirects or retries. It does not install input or manage services.
+The positional `-` is unused in this preparation mode:
+
+```bash
+MARKET_TWELVE_DATA_ENABLED=1 MARKET_TWELVE_DATA_PRIVATE_USE_CONFIRMED=1 \
+python -B -m app.scan_cli - --prepare-twelve-data-input \
+  --api-key-file /private/provider.key --max-age-calendar-days 3 \
+  --output /private/new-provider-input.json
+```
+
+The key must be a regular non-symlink file owned by the invoking UID, mode0400
+or0600. Never pass credentials in command-line arguments, logs, reports or git.
+Both environment declarations are required by `validate_source` before reading
+the key or connecting; an account's private-use entitlement is an operator
+assertion, not inferred from registration or successful authentication. Other
+sources retain their existing permissions. Do not enable redistribution.
+
+The pair uses200 daily bars per symbol, USD, regular sessions and explicit
+`adjust=splits`, not dividend-inclusive total returns. No cross-provider splicing
+or implicit session dropping occurs. Validate exact symbols/timezone/interval,
+OHLC, positive finite closes, duplicate/future dates, history length, matching
+sessions and the declared calendar-day freshness limit. Before16:10 New York,
+exclude that date; afterwards allow that date, with no promise the provider has
+published it. This buffer does not implement an exchange holiday/early-close
+calendar or independently prove the latest completed-session close is available.
+The freshest returned date remains visible; freshness failures preserve old files.
+
+Output uses `market-provider-input-v1` inside the existing combined envelope.
+Combined reports label `PROVIDER_API`, `automated_acquisition=true`, source and
+retrieval completion time; original response hashes are retained. This is not a
+manual import or independent quote verification. Macro, valuation and catalysts
+remain unavailable unless separately supplied and validated.
+
+The installed runtime must contain this provider-envelope support and receive
+both source policy declarations before it can consume such input. An older
+manual-only runtime must retain its old input. Keep the report process network
+restricted and credential-free; acquisition and root-controlled audited atomic
+installation are a separate operational step. Candidate preparation is not a
+standing automatic updater, deployment or change to an existing timer.
+
+References: [official API documentation](https://twelvedata.com/docs),
+[historical request parameters](https://support.twelvedata.com/en/articles/5656039-how-to-get-historical-prices),
+[personal plans](https://twelvedata.com/pricing).

@@ -1,6 +1,7 @@
 """Offline relative-strength CLI and explicitly synthetic two-report rehearsal.
 
-No scheduler, network acquisition, database access, order execution or deployment.
+Network acquisition requires a separate explicit preparation mode and source policy.
+No scheduler, database access, order execution or deployment.
 """
 import argparse
 import csv
@@ -10,7 +11,11 @@ import json
 import os
 import tempfile
 import re
-from datetime import date, datetime, timezone
+import stat
+import http.client
+from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
+from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -116,11 +121,13 @@ def two_daily_demo(manifest: dict, directory: Path) -> dict:
     }
 
 
-def _manual_provenance(provenance):
+def _manual_provenance(provenance, *, automated=False):
     if (not isinstance(provenance, dict) or set(provenance) !=
             {'source', 'origin', 'retrieved_at', 'usage_rights_confirmed'}):
         raise ValueError('MANUAL_PROVENANCE_REQUIRED')
-    validate_source(provenance['source'], automated=False)
+    validate_source(provenance['source'], automated=automated)
+    if automated and provenance['source'] != 'twelve_data':
+        raise ValueError('UNSUPPORTED_PRICE_PROVIDER')
     if (provenance['usage_rights_confirmed'] is not True
             or type(provenance['origin']) is not str
             or not 1 <= len(provenance['origin'].strip()) <= 500
@@ -135,13 +142,13 @@ def _manual_provenance(provenance):
     return retrieved
 
 
-def manual_scan(payload: dict, *, report_day: date, max_age_calendar_days: int) -> dict:
-    """Validate operator-declared provenance; never fetch or certify vendor rights."""
+def manual_scan(payload: dict, *, report_day: date, max_age_calendar_days: int, automated=False) -> dict:
+    """Validate an explicit price envelope; never fetch or certify vendor rights."""
     if (not isinstance(payload, dict) or set(payload) != {'schema', 'provenance', 'market'}
-            or payload['schema'] != 'market-manual-input-v1'):
+            or payload['schema'] != ('market-provider-input-v1' if automated else 'market-manual-input-v1')):
         raise ValueError('MANUAL_MARKET_ENVELOPE_REQUIRED')
     provenance = payload['provenance']
-    retrieved = _manual_provenance(provenance)
+    retrieved = _manual_provenance(provenance, automated=automated)
     if type(report_day) is not date or type(max_age_calendar_days) is not int or max_age_calendar_days < 0:
         raise ValueError('EXPLICIT_MANUAL_FRESHNESS_POLICY_REQUIRED')
     if retrieved.date() > report_day:
@@ -151,15 +158,16 @@ def manual_scan(payload: dict, *, report_day: date, max_age_calendar_days: int) 
     _reject_future_bars(market, retrieved.date())
     result = scan(market, report_day=report_day, max_age_calendar_days=max_age_calendar_days)
     return {
-        'schema': 'market-manual-report-v1', 'data_mode': 'MANUAL_IMPORT',
+        'schema': 'market-provider-report-v1' if automated else 'market-manual-report-v1',
+        'data_mode': 'PROVIDER_API' if automated else 'MANUAL_IMPORT',
         'report_day': report_day.isoformat(), 'max_age_calendar_days': max_age_calendar_days,
         'provenance': dict(provenance),
         'market_sha256': hashlib.sha256(json.dumps(market, sort_keys=True, separators=(',', ':'),
                                                   allow_nan=False).encode()).hexdigest(),
         'relative_strength': result,
-        'real_market_data_verified': False, 'automated_acquisition': False,
+        'real_market_data_verified': False, 'automated_acquisition': automated,
         'paper_trades_executed': False, 'deployment_allowed': False,
-        'limitations': ['Origin and usage rights are operator declarations, not independent verification.',
+        'limitations': ['Usage rights are operator declarations; provider data is not independently verified.',
                         'Calendar-day freshness does not implement an exchange holiday calendar.'],
     }
 
@@ -178,7 +186,8 @@ def combined_report(payload: dict, *, max_age_calendar_days: int) -> dict:
     if asof.tzinfo is None or asof.utcoffset() is None:
         raise ValueError('REPORT_TIMEZONE_REQUIRED')
     prices = manual_scan(payload['market_input'], report_day=asof.date(),
-                         max_age_calendar_days=max_age_calendar_days)
+                         max_age_calendar_days=max_age_calendar_days,
+                         automated=payload['market_input'].get('schema') == 'market-provider-input-v1')
     if datetime.fromisoformat(prices['provenance']['retrieved_at']) > asof:
         raise ValueError('INPUT_RETRIEVED_AFTER_REPORT')
     sections = {'prices': {'status': 'calculated_from_supplied_inputs'},
@@ -373,6 +382,93 @@ def prepare_nasdaq_input(benchmark_file: Path, asset_file: Path, *, benchmark_sy
     return payload
 
 
+def prepare_twelve_data_input(key_file: Path, *, max_age_calendar_days: int) -> dict:
+    """Two bounded official-API requests; return a complete new provider snapshot.
+
+    No retries, manual-history splicing, active input replacement or service control.
+    Credentials and provider exception strings are never included in diagnostics.
+    """
+    validate_source('twelve_data', automated=True)
+    if type(max_age_calendar_days) is not int or max_age_calendar_days < 0:
+        raise ValueError('EXPLICIT_FRESHNESS_POLICY_REQUIRED')
+    descriptor = os.open(key_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as stream:
+        metadata = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) not in (0o400, 0o600)
+                or metadata.st_size > 512):
+            raise ValueError('PRIVATE_OWNED_KEY_FILE_REQUIRED')
+        key = stream.read(513).decode('ascii').strip()
+    if re.fullmatch(r'[A-Za-z0-9_-]{16,256}', key) is None:
+        raise ValueError('INVALID_PROVIDER_KEY_FORMAT')
+    now = _utc_now()
+    local = now.astimezone(ZoneInfo('America/New_York'))
+    # Exclude an open regular session, with a ten-minute publication buffer.
+    cutoff = local.date() if (local.hour, local.minute) >= (16, 10) else local.date() - timedelta(days=1)
+    streams, hashes, session_sets = [], [], []
+    for symbol in ('SPY', 'NVDA'):
+        query = urlencode(dict(symbol=symbol, interval='1day', outputsize=200,
+            end_date=str(cutoff), adjust='splits', prepost='false', apikey=key))
+        connection = http.client.HTTPSConnection('api.twelvedata.com', timeout=20)
+        try:
+            connection.request('GET', '/time_series?' + query, headers={'Accept': 'application/json'})
+            response = connection.getresponse()
+            raw = response.read(2_000_001)
+            if response.status != 200 or len(raw) > 2_000_000:
+                raise ValueError('PROVIDER_RESPONSE_REJECTED')
+            data = json.loads(raw)
+            if not isinstance(data, dict) or data.get('status') == 'error':
+                raise ValueError('PROVIDER_RESPONSE_REJECTED')
+        except Exception:
+            raise ValueError('TWELVE_DATA_REQUEST_FAILED') from None
+        finally:
+            connection.close()
+        meta = data.get('meta', {})
+        if (not isinstance(meta, dict) or meta.get('symbol') != symbol
+                or meta.get('currency') != 'USD' or meta.get('interval') != '1day'
+                or meta.get('exchange_timezone') != 'America/New_York'):
+            raise ValueError('PROVIDER_INSTRUMENT_MISMATCH')
+        values = data.get('values')
+        if not isinstance(values, list) or not 121 <= len(values) <= 200:
+            raise ValueError('PROVIDER_HISTORY_REQUIRED')
+        prices = {}
+        try:
+            for row in values:
+                day = date.fromisoformat(row['datetime'])
+                if day > cutoff or day in prices:
+                    raise ValueError('INVALID_PROVIDER_SESSION')
+                ohlc = {field: Decimal(row[field]) for field in ('open', 'high', 'low', 'close')}
+                if (not all(value.is_finite() and value > 0 for value in ohlc.values())
+                        or not ohlc['low'] <= ohlc['open'] <= ohlc['high']
+                        or not ohlc['low'] <= ohlc['close'] <= ohlc['high']):
+                    raise ValueError('INVALID_PROVIDER_PRICE')
+                close = float(ohlc['close'])
+                if not 0 < close < float('inf'):
+                    raise ValueError('INVALID_PROVIDER_PRICE')
+                prices[day] = close
+        except Exception:
+            raise ValueError('INVALID_PROVIDER_BARS') from None
+        if (now.date() - max(prices)).days > max_age_calendar_days:
+            raise ValueError('STALE_PROVIDER_SNAPSHOT')
+        streams.append({'symbol': symbol, 'bars': [
+            {'date': str(day), 'close': prices[day]} for day in sorted(prices)]})
+        session_sets.append(set(prices))
+        hashes.append(symbol + '=' + hashlib.sha256(raw).hexdigest())
+    if session_sets[0] != session_sets[1]:
+        raise ValueError('PROVIDER_SESSION_SETS_MUST_MATCH')
+    # Retrieval completion, rather than request start, is the provenance time.
+    completed = _utc_now()
+    payload = {'schema': 'market-combined-input-v1', 'report_asof': completed.isoformat(),
+        'market_input': {'schema': 'market-provider-input-v1', 'provenance': {
+            'source': 'twelve_data', 'usage_rights_confirmed': True,
+            'retrieved_at': completed.isoformat(),
+            'origin': 'Twelve Data official time_series API; 1day; USD; adjust=splits; prepost=false; '
+                'not dividend total return; response SHA256 ' + '; '.join(hashes)},
+            'market': {'benchmark': streams[0], 'assets': [streams[1]]}}}
+    combined_report(payload, max_age_calendar_days=max_age_calendar_days)
+    return payload
+
+
 def report_summary(report: dict) -> str:
     """Read-only view; file contents never establish service/timer health."""
     if not isinstance(report, dict) or report.get('schema') != 'market-combined-report-v1':
@@ -382,7 +478,9 @@ def report_summary(report: dict) -> str:
     limit = report['max_age_calendar_days']
     if age < 0 or type(limit) is not int or limit < 0:
         raise ValueError('INVALID_REPORT_FRESHNESS')
-    lines = ['Generated: ' + report['report_asof'], 'Prices as of: ' + market['as_of'],
+    lines = ['Generated: ' + report['report_asof'],
+             'Data mode: ' + report['data_mode'] + ' / source: ' + report['provenance']['source'],
+             'Prices as of: ' + market['as_of'],
              f'Current price age: {age} calendar days; allowed: {limit}',
              'STALE MARKET DATA' if age > limit else 'Within declared calendar-day age limit',
              'Completeness: ' + report['completeness'],
@@ -414,8 +512,10 @@ def main():
     parser.add_argument('--benchmark-symbol')
     parser.add_argument('--confirm-manual-use', action='store_true')
     parser.add_argument('--show-report', action='store_true', help='Read-only summary of an existing combined report')
+    parser.add_argument('--prepare-twelve-data-input', action='store_true', help='Stage a fresh paired official-API snapshot; explicit source policy required')
+    parser.add_argument('--api-key-file', type=Path)
     args = parser.parse_args()
-    if sum((args.prepare_nasdaq_input, args.show_report, args.combined_report, args.manual_import, args.two_daily_demo, args.two_daily_manual)) > 1:
+    if sum((args.prepare_twelve_data_input, args.prepare_nasdaq_input, args.show_report, args.combined_report, args.manual_import, args.two_daily_demo, args.two_daily_manual)) > 1:
         parser.error('Choose exactly one report/input mode')
     if (args.asset_csv or args.asset_symbol or args.benchmark_symbol or args.confirm_manual_use) and not args.prepare_nasdaq_input:
         parser.error('CSV options require prepare-nasdaq-input mode')
@@ -432,6 +532,18 @@ def main():
     if args.two_daily_demo and (args.report_day is not None or args.max_age_calendar_days is not None):
         parser.error('Freshness options apply only to the offline scanner, not synthetic demos')
     input_path = Path(args.input)
+    if args.api_key_file is not None and not args.prepare_twelve_data_input:
+        parser.error('api-key-file requires provider preparation mode')
+    if args.prepare_twelve_data_input:
+        if args.api_key_file is None or args.report_day is not None or args.report_asof_now:
+            parser.error('Provider preparation requires a private key file and actual receipt time')
+        output = Path(args.output)
+        if output.exists() or output.is_symlink():
+            raise ValueError('STAGED_OUTPUT_MUST_BE_NEW')
+        payload = prepare_twelve_data_input(args.api_key_file, max_age_calendar_days=args.max_age_calendar_days)
+        _write_report(output, payload)
+        print('Provider input staged; not installed:', args.output)
+        return
     if args.prepare_nasdaq_input:
         if args.asset_csv is None or args.asset_symbol is None:
             parser.error('Both asset-csv and asset-symbol are required')

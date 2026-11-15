@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 import pytest
 from app.scanner import scan
 
@@ -614,3 +614,179 @@ def test_nasdaq_missing_volume_is_recorded_without_zero_fill(tmp_path, monkeypat
     data=scan_cli.prepare_nasdaq_input(benchmark,asset,benchmark_symbol='SPY',asset_symbol='NVDA',max_age_calendar_days=5,confirmed=True)
     assert 'benchmark=1, asset=0' in data['market_input']['provenance']['origin']
     assert all(set(bar)=={'date','close'} for bar in data['market_input']['market']['benchmark']['bars'])
+
+
+@pytest.fixture
+def twelve_case(tmp_path, monkeypatch):
+    import json
+    from copy import deepcopy
+    from app import scan_cli
+    monkeypatch.setenv('MARKET_TWELVE_DATA_ENABLED', '1')
+    monkeypatch.setenv('MARKET_TWELVE_DATA_PRIVATE_USE_CONFIRMED', '1')
+    monkeypatch.setattr(scan_cli, '_utc_now', lambda: datetime.fromisoformat('2026-11-15T12:00:00Z'))
+    key = tmp_path / 'key'
+    key.write_text('K' * 32)
+    key.chmod(0o600)
+    bodies = {}
+    for symbol in ('SPY', 'NVDA'):
+        bodies[symbol] = {'meta': {'symbol': symbol, 'currency': 'USD', 'interval': '1day',
+            'exchange_timezone': 'America/New_York'}, 'values': [
+            {'datetime': str(date(2026, 11, 13) - timedelta(days=i)),
+             'open': '100', 'high': '102', 'low': '99', 'close': '101'} for i in range(200)]}
+    calls = []
+    class Response:
+        status = 200
+        def read(self, limit):
+            return json.dumps(bodies[calls[-1]['symbol'][0]]).encode()[:limit]
+    class Connection:
+        def __init__(self, host, timeout):
+            assert host == 'api.twelvedata.com' and timeout == 20
+        def request(self, method, path, headers):
+            from urllib.parse import parse_qs, urlsplit
+            assert method == 'GET'
+            query = parse_qs(urlsplit(path).query)
+            assert query['adjust'] == ['splits'] and query['prepost'] == ['false']
+            calls.append(query)
+        def getresponse(self):
+            return Response()
+        def close(self):
+            pass
+    monkeypatch.setattr(scan_cli.http.client, 'HTTPSConnection', Connection)
+    return scan_cli, key, bodies, calls, deepcopy
+
+
+def test_twelve_provider_provenance_and_no_manual_masquerade(twelve_case, monkeypatch):
+    cli, key, _, calls, deepcopy = twelve_case
+    payload = cli.prepare_twelve_data_input(key, max_age_calendar_days=3)
+    assert len(calls) == 2 and calls[0]['end_date'] == ['2026-11-14']
+    assert payload['market_input']['schema'] == 'market-provider-input-v1'
+    report = cli.combined_report(payload, max_age_calendar_days=3)
+    assert report['automated_acquisition'] and report['data_mode'] == 'PROVIDER_API'
+    assert not report['deployment_allowed'] and not report['paper_trades_executed']
+    assert report['completeness'] == 'partial'
+    assert 'not dividend total return' in report['provenance']['origin']
+    assert 'K' * 32 not in str(payload)
+    manual = deepcopy(payload)
+    manual['market_input']['schema'] = 'market-manual-input-v1'
+    with pytest.raises(PermissionError):
+        cli.combined_report(manual, max_age_calendar_days=3)
+    monkeypatch.delenv('MARKET_TWELVE_DATA_ENABLED')
+    with pytest.raises(PermissionError):
+        cli.combined_report(payload, max_age_calendar_days=3)
+
+
+@pytest.mark.parametrize('missing', ['MARKET_TWELVE_DATA_ENABLED', 'MARKET_TWELVE_DATA_PRIVATE_USE_CONFIRMED'])
+def test_twelve_policy_before_key_or_network(twelve_case, monkeypatch, missing):
+    cli, key, _, calls, _ = twelve_case
+    monkeypatch.delenv(missing)
+    key.unlink()
+    with pytest.raises(PermissionError):
+        cli.prepare_twelve_data_input(key, max_age_calendar_days=3)
+    assert not calls
+
+
+@pytest.mark.parametrize('fault', ['symbol', 'currency', 'timezone', 'interval', 'duplicate',
+    'future', 'nan', 'infinite', 'envelope', 'short', 'error', 'session_gap', 'stale'])
+def test_twelve_rejects_invalid_pair(twelve_case, fault):
+    cli, key, bodies, calls, _ = twelve_case
+    body = bodies['NVDA']
+    if fault == 'symbol': body['meta']['symbol'] = 'OTHER'
+    if fault == 'currency': body['meta']['currency'] = 'EUR'
+    if fault == 'timezone': body['meta']['exchange_timezone'] = 'Australia/Sydney'
+    if fault == 'interval': body['meta']['interval'] = '1week'
+    if fault == 'duplicate': body['values'][1] = body['values'][0]
+    if fault == 'future': body['values'][0]['datetime'] = '2026-11-16'
+    if fault == 'nan': body['values'][0]['close'] = 'NaN'
+    if fault == 'infinite': body['values'][0]['high'] = 'Infinity'
+    if fault == 'envelope': body['values'][0]['low'] = '200'
+    if fault == 'short': body['values'] = body['values'][:120]
+    if fault == 'error': bodies['NVDA'] = {'status': 'error', 'message': 'K' * 32}
+    if fault == 'session_gap': body['values'].pop()
+    if fault == 'stale':
+        for row in body['values']:
+            row['datetime'] = str(date.fromisoformat(row['datetime']) - timedelta(days=5))
+    with pytest.raises(ValueError) as error:
+        cli.prepare_twelve_data_input(key, max_age_calendar_days=3)
+    assert 'K' * 32 not in str(error.value)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('hour,minute,expected', [(20, 9, '2026-11-15'), (21, 9, '2026-11-15'), (21, 10, '2026-11-16')])
+def test_twelve_closed_session_cutoff(twelve_case, monkeypatch, hour, minute, expected):
+    cli, key, _, calls, _ = twelve_case
+    monkeypatch.setattr(cli, '_utc_now', lambda: datetime(2026, 11, 16, hour, minute, tzinfo=timezone.utc))
+    cli.prepare_twelve_data_input(key, max_age_calendar_days=3)
+    assert calls[0]['end_date'] == [expected]
+
+
+def test_twelve_key_permissions_and_symlink_block_before_network(twelve_case, tmp_path):
+    cli, key, _, calls, _ = twelve_case
+    key.chmod(0o644)
+    with pytest.raises(ValueError):
+        cli.prepare_twelve_data_input(key, max_age_calendar_days=3)
+    key.chmod(0o600)
+    link = tmp_path / 'link'
+    link.symlink_to(key)
+    with pytest.raises(OSError):
+        cli.prepare_twelve_data_input(link, max_age_calendar_days=3)
+    assert not calls
+
+
+def test_twelve_network_errors_are_sanitized_no_retry(twelve_case, monkeypatch):
+    cli, key, _, calls, _ = twelve_case
+    def fail(*args, **kwargs):
+        raise RuntimeError('https://example/?apikey=' + 'K' * 32)
+    monkeypatch.setattr(cli.http.client.HTTPSConnection, 'getresponse', fail)
+    with pytest.raises(ValueError, match='^TWELVE_DATA_REQUEST_FAILED$'):
+        cli.prepare_twelve_data_input(key, max_age_calendar_days=3)
+    assert len(calls) == 1
+
+
+def test_twelve_cli_failure_keeps_output_absent(twelve_case, tmp_path, monkeypatch):
+    cli, key, bodies, _, _ = twelve_case
+    bodies['NVDA'] = {'status': 'error'}
+    output = tmp_path / 'new.json'
+    monkeypatch.setattr('sys.argv', ['scan_cli', '-', '--prepare-twelve-data-input',
+        '--api-key-file', str(key), '--max-age-calendar-days', '3', '--output', str(output)])
+    with pytest.raises(ValueError):
+        cli.main()
+    assert not output.exists()
+
+
+@pytest.mark.parametrize('status,raw', [(302, b'{}'), (429, b'{}'),
+    (200, b'x' * 2_000_001), (200, b'not-json'), (200, b'[]')])
+def test_twelve_http_redirect_limit_and_malformed_fail_closed(twelve_case, monkeypatch, status, raw):
+    cli, key, _, calls, _ = twelve_case
+    class Response:
+        def read(self, limit):
+            assert limit == 2_000_001
+            return raw
+    response = Response()
+    response.status = status
+    monkeypatch.setattr(cli.http.client.HTTPSConnection, 'getresponse', lambda self: response)
+    with pytest.raises(ValueError, match='^TWELVE_DATA_REQUEST_FAILED$'):
+        cli.prepare_twelve_data_input(key, max_age_calendar_days=3)
+    assert len(calls) == 1
+
+
+def test_twelve_cli_existing_output_never_fetches_or_replaces(twelve_case, tmp_path, monkeypatch):
+    cli, key, _, calls, _ = twelve_case
+    output = tmp_path / 'existing.json'
+    output.write_bytes(b'last valid input')
+    monkeypatch.setattr('sys.argv', ['scan_cli', '-', '--prepare-twelve-data-input',
+        '--api-key-file', str(key), '--max-age-calendar-days', '3', '--output', str(output)])
+    with pytest.raises(ValueError, match='STAGED_OUTPUT_MUST_BE_NEW'):
+        cli.main()
+    assert output.read_bytes() == b'last valid input' and not calls
+
+
+def test_twelve_cli_success_and_readonly_view(twelve_case, tmp_path, monkeypatch, capsys):
+    import json
+    cli, key, _, calls, _ = twelve_case
+    output = tmp_path / 'new.json'
+    monkeypatch.setattr('sys.argv', ['scan_cli', '-', '--prepare-twelve-data-input',
+        '--api-key-file', str(key), '--max-age-calendar-days', '3', '--output', str(output)])
+    cli.main()
+    assert len(calls) == 2 and output.stat().st_mode & 0o777 == 0o600
+    result = cli.combined_report(json.loads(output.read_text()), max_age_calendar_days=3)
+    assert 'PROVIDER_API' in cli.report_summary(result)
