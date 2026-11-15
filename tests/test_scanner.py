@@ -898,6 +898,10 @@ def test_twelve_units_keep_credential_out_of_report_and_no_second_timer(twelve_p
     refresh, report = helper.units(Path('/opt/market-report/releases/reviewed'),
         Path('/opt/market-report/venv/bin/python'), 'market-report')
     assert b'LoadCredential=' in refresh and b'LoadCredential=' not in report
+    assert b'RuntimeDirectory=market-report-refresh' in refresh
+    assert b'stage-credential --source %d/twelve-data.key' in refresh
+    assert b'--api-key-file /run/market-report-refresh/provider.key' in refresh
+    assert b'ExecStopPost=/usr/bin/rm -f /run/market-report-refresh/provider.key' in refresh
     assert b'ExecStartPost=+/usr/bin/python3 -I -B' in refresh
     assert b'Requires=market-report-refresh.service' in report
     assert b'After=market-report-refresh.service' in report
@@ -991,3 +995,84 @@ def test_twelve_rollout_restores_baseline_and_timer_on_failure_or_manual_rollbac
     assert report.stat().st_mode & 0o777 == 0o600
     assert commands[-1] == ['systemctl', 'start', 'market-report.timer'] or not fail_start
     assert not mapped('/etc/systemd/system/market-report-refresh.service').exists()
+
+
+def test_twelve_managed_credential_copy_preserves_strict_cli_key_policy(twelve_publish_case, twelve_case, tmp_path):
+    import os
+    helper, _, _, _, _, _ = twelve_publish_case
+    cli, key, _, _, _ = twelve_case
+    # A readable manager-style mode is not an ordinary privately owned key file.
+    key.chmod(0o440)
+    with pytest.raises(ValueError, match='PRIVATE_OWNED_KEY_FILE_REQUIRED'):
+        cli.prepare_twelve_data_input(key, max_age_calendar_days=3)
+    runtime = tmp_path / 'runtime'
+    runtime.mkdir(mode=0o700)
+    output = runtime / 'provider.key'
+    helper.stage_credential(key, output)
+    assert output.stat().st_uid == os.geteuid()
+    assert output.stat().st_mode & 0o777 == 0o400
+    assert key.stat().st_mode & 0o777 == 0o440
+    assert cli.prepare_twelve_data_input(output, max_age_calendar_days=3)['market_input']['provenance']['source'] == 'twelve_data'
+
+
+def test_twelve_credential_entrypoint_runs_without_root_but_publish_still_requires_root(twelve_publish_case, twelve_case, tmp_path, monkeypatch):
+    import os
+    if os.geteuid() == 0:
+        pytest.skip('This entrypoint regression requires an unprivileged test UID')
+    helper, _, _, _, _, _ = twelve_publish_case
+    _, key, _, _, _ = twelve_case
+    monkeypatch.setattr(helper, 'ROOT_UID', 0)
+    runtime = tmp_path / 'runtime'
+    runtime.mkdir(mode=0o700)
+    output = runtime / 'provider.key'
+    monkeypatch.setattr('sys.argv', ['rollout', 'stage-credential', '--source', str(key), '--key-output', str(output)])
+    helper.main()
+    assert output.stat().st_mode & 0o777 == 0o400
+    monkeypatch.setattr('sys.argv', ['rollout', 'publish', '--source', str(tmp_path), '--account', 'market-report'])
+    with pytest.raises(PermissionError, match='ROOT_CONTROLLED_OPERATION_REQUIRED'):
+        helper.main()
+
+
+@pytest.mark.parametrize('fault', ['shared_directory', 'existing_key', 'symlink', 'invalid', 'oversized'])
+def test_twelve_credential_copy_refuses_unsafe_destination_or_content(twelve_publish_case, twelve_case, tmp_path, fault):
+    helper, _, _, _, _, _ = twelve_publish_case
+    _, key, _, _, _ = twelve_case
+    runtime = tmp_path / 'runtime'
+    runtime.mkdir(mode=0o700)
+    output = runtime / 'provider.key'
+    if fault == 'shared_directory': runtime.chmod(0o755)
+    if fault == 'existing_key': output.write_bytes(b'previous private key')
+    if fault == 'symlink': output.symlink_to(key)
+    if fault == 'invalid': key.write_bytes(b'invalid')
+    if fault == 'oversized': key.write_bytes(b'A' * 513)
+    before = key.read_bytes()
+    with pytest.raises((ValueError, OSError)):
+        helper.stage_credential(key, output)
+    assert key.read_bytes() == before
+    if fault == 'existing_key': assert output.read_bytes() == b'previous private key'
+    elif fault == 'symlink': assert output.is_symlink()
+    else: assert not output.exists()
+
+
+@pytest.mark.parametrize('fault', [None, 'input_changed', 'successful_prior', 'wrong_account'])
+def test_twelve_recovery_accepts_only_matching_failed_rollout(twelve_publish_case, tmp_path, fault):
+    import json
+    helper, _, _, account, _, _ = twelve_publish_case
+    audit = tmp_path / 'failed-audit'
+    audit.mkdir(mode=0o700)
+    state = tmp_path / 'retained-state'
+    state.mkdir(mode=0o700)
+    manifest = {'account': account if fault != 'wrong_account' else 'someone-else'}
+    (audit / 'manifest.json').write_text(json.dumps(manifest))
+    for name, raw in [('service.before', b'service'), ('timer.before', b'timer'), ('input.before.json', b'input')]:
+        (audit / name).write_bytes(raw)
+    (state / 'pending.json').write_bytes(b'failed attempt evidence')
+    if fault == 'successful_prior': (audit / 'receipt.json').write_bytes(b'{}')
+    args = (audit, account, state, b'service', b'timer', b'changed' if fault == 'input_changed' else b'input')
+    if fault:
+        with pytest.raises(ValueError): helper.accept_failed_state(*args)
+        assert not (audit / 'state-before-recovery').exists()
+    else:
+        helper.accept_failed_state(*args)
+        assert (audit / 'state-before-recovery/pending.json').read_bytes() == b'failed attempt evidence'
+    assert (state / 'pending.json').read_bytes() == b'failed attempt evidence'

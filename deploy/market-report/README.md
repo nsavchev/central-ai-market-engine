@@ -231,3 +231,25 @@ and removes only the refresh unit and its own drop-in. It preserves whether the
 timer was active at rollback entry. Old price freshness still applies; rollback
 is not a download of current quotes. No credentials, raw responses or private
 operational receipts belong in public git.
+
+
+### Managed credentials and recovery after a failed first rollout
+
+Systemd may expose a readable LoadCredential file whose ownership/mode differs
+from a caller-owned key. Keep the API CLI's strict private-key check unchanged.
+The fetch unit now runs the unprivileged `stage-credential` mode, which reads only
+the manager-provided regular bounded credential and creates an exclusive0400
+copy inside its own0700 RuntimeDirectory. It neither changes the original key's
+permissions nor puts the secret in argv/environment. ExecStopPost deletes the
+copy; systemd also removes the runtime directory when the unit ends. Only this
+staging mode is available without root; publishing/install/rollback stay guarded.
+
+After an install failure that restored the baseline but retained StateDirectory,
+use `--resume-failed-rollout /root/PRIVATE_FAILED_ROLLOUT_BACKUP` with a newly
+reviewed source. Recovery refuses a successful prior receipt, account/ownership
+mismatch, changed baseline service/timer/input, symlinks or unexpected state.
+It preserves pending/preview evidence in the old private backup before reusing
+the existing state directory. Do not delete retained state or reuse the failed
+source release to bypass the original replay checks. The new attempt gets its
+own immutable release and audit directory; no price/API request is needed to
+validate the old failure record.

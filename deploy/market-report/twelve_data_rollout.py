@@ -67,6 +67,55 @@ def atomic(path, data, uid, gid, mode):
         Path(name).unlink(missing_ok=True)
 
 
+def stage_credential(source, output):
+    """Normalize readable systemd credentials without relaxing CLI key policy.
+
+    This phase runs without privilege as the fetch account, in RuntimeDirectory.
+    The manager controls the source; only the private per-unit copy is consumed.
+    """
+    directory = output.parent
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError('PRIVATE_RUNTIME_DIRECTORY_REQUIRED')
+    raw, _ = read_regular(source, limit=512)
+    if re.fullmatch(rb'[A-Za-z0-9_-]{16,256}', raw.strip()) is None:
+        raise ValueError('INVALID_CREDENTIAL_FORMAT')
+    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchmod(stream.fileno(), 0o400)
+            stream.write(raw.strip() + b'\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
+
+
+def accept_failed_state(audit, account, state, old_service, old_timer, old_input):
+    """Allow retained state only with matching failed-rollout/baseline evidence."""
+    trusted(audit)
+    manifest = json.loads(read_regular(audit / 'manifest.json', owner=ROOT_UID)[0])
+    identity = pwd.getpwnam(account)
+    info = state.lstat()
+    if (manifest.get('account') != account or (audit / 'receipt.json').exists()
+            or (audit / 'rollback.json').exists() or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != identity.pw_uid or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError('FAILED_ROLLOUT_STATE_MISMATCH')
+    for name, expected in [('service.before', old_service), ('timer.before', old_timer),
+            ('input.before.json', old_input)]:
+        if read_regular(audit / name, owner=ROOT_UID)[0] != expected:
+            raise ValueError('FAILED_ROLLOUT_BASELINE_CHANGED')
+    retained = audit / 'state-before-recovery'
+    retained.mkdir(mode=0o700)
+    for path in state.iterdir():
+        if path.name not in ('pending.json', 'preview.json'):
+            raise ValueError('UNEXPECTED_RETAINED_STATE')
+        raw, _ = read_regular(path, owner=identity.pw_uid)
+        atomic(retained / path.name, raw, ROOT_UID, os.getegid(), 0o600)
+
+
 def publish(source, python, account, state, config, runner=run):
     """Validate a root-held immutable copy before replacing the complete input."""
     identity = pwd.getpwnam(account)
@@ -142,10 +191,14 @@ Group={account}
 WorkingDirectory={source}
 StateDirectory=market-report-refresh
 StateDirectoryMode=0700
+RuntimeDirectory=market-report-refresh
+RuntimeDirectoryMode=0700
 LoadCredential=twelve-data.key:/etc/market-report/twelve-data.key
 ExecStartPre=/usr/bin/rm -f /var/lib/market-report-refresh/pending.json
-ExecStart=/usr/bin/env -i HOME=/var/lib/market-report-refresh PATH=/usr/bin:/bin {policy} {python} -B -m app.scan_cli - --prepare-twelve-data-input --api-key-file %d/twelve-data.key --max-age-calendar-days 3 --output /var/lib/market-report-refresh/pending.json
+ExecStartPre=/usr/bin/python3 -I -B {helper} stage-credential --source %d/twelve-data.key --key-output /run/market-report-refresh/provider.key
+ExecStart=/usr/bin/env -i HOME=/var/lib/market-report-refresh PATH=/usr/bin:/bin {policy} {python} -B -m app.scan_cli - --prepare-twelve-data-input --api-key-file /run/market-report-refresh/provider.key --max-age-calendar-days 3 --output /var/lib/market-report-refresh/pending.json
 ExecStartPost=+/usr/bin/python3 -I -B {helper} publish --source {source} --python {python} --account {account}
+ExecStopPost=/usr/bin/rm -f /run/market-report-refresh/provider.key
 UMask=0077
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -153,7 +206,7 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/market-report-refresh
+ReadWritePaths=/var/lib/market-report-refresh /run/market-report-refresh
 TimeoutStartSec=90
 TimeoutStopSec=15
 KillMode=control-group
@@ -172,7 +225,7 @@ ExecStart=/usr/bin/env -i HOME=/var/lib/market-report PATH=/usr/bin:/bin {policy
     return refresh.encode(), dropin.encode()
 
 
-def install(checkout, expected_sha, account, expected_service_hash):
+def install(checkout, expected_sha, account, expected_service_hash, failed_audit=None):
     """Reversible fixed-path rollout; original timer configuration is never edited."""
     trusted(checkout)
     if (re.fullmatch('[0-9a-f]{40}', expected_sha) is None
@@ -196,8 +249,9 @@ def install(checkout, expected_sha, account, expected_service_hash):
     if dropdir.exists() or dropdir.is_symlink() or refresh.exists() or refresh.is_symlink():
         raise ValueError('EXISTING_OVERRIDE_DO_NOT_OVERWRITE')
     state = Path('/var/lib/market-report-refresh')
-    if state.exists() or state.is_symlink():
-        raise ValueError('EXISTING_REFRESH_STATE_DO_NOT_OVERWRITE')
+    has_state = state.exists() or state.is_symlink()
+    if has_state and failed_audit is None:
+        raise ValueError('EXISTING_REFRESH_STATE_REQUIRES_FAILED_ROLLOUT_EVIDENCE')
     if run(['systemctl', 'is-enabled', 'market-report.timer']) != 'enabled':
         raise ValueError('EXPECTED_EXISTING_TIMER_ENABLED')
     if run(['systemctl', 'is-active', 'market-report.timer']) != 'active':
@@ -207,6 +261,8 @@ def install(checkout, expected_sha, account, expected_service_hash):
         raise ValueError('EXPECTED_TWO_SOFIA_SLOTS')
     old_input, input_info = read_regular(config / 'input.json', owner=ROOT_UID)
     old_report, report_info = read_regular(Path('/var/lib/market-report/latest-report.json'), owner=identity.pw_uid)
+    if has_state:
+        accept_failed_state(failed_audit, account, state, old_service, old_timer, old_input)
     audit = Path(tempfile.mkdtemp(prefix='market-api-rollout-', dir='/root'))
     print('ROLLOUT_BACKUP=' + str(audit), flush=True)
     for name, data in [('service.before', old_service), ('timer.before', old_timer),
@@ -338,17 +394,24 @@ def rollback(audit):
 
 def main():
     os.umask(0o077)
-    if os.geteuid() != ROOT_UID:
-        raise PermissionError('ROOT_CONTROLLED_OPERATION_REQUIRED')
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['publish', 'install', 'rollback'])
+    parser.add_argument('mode', choices=['publish', 'install', 'rollback', 'stage-credential'])
     parser.add_argument('--source', type=Path)
     parser.add_argument('--python', type=Path, default=Path('/opt/market-report/venv/bin/python'))
     parser.add_argument('--account')
     parser.add_argument('--backup', type=Path)
+    parser.add_argument('--key-output', type=Path)
+    parser.add_argument('--resume-failed-rollout', type=Path)
     parser.add_argument('--sha')
     parser.add_argument('--expected-service-sha256')
     args = parser.parse_args()
+    if args.mode == 'stage-credential':
+        if args.source is None or args.key_output is None:
+            parser.error('Credential staging requires source and key-output')
+        stage_credential(args.source, args.key_output)
+        return
+    if os.geteuid() != ROOT_UID:
+        raise PermissionError('ROOT_CONTROLLED_OPERATION_REQUIRED')
     if args.mode in ('install', 'publish') and (args.source is None or args.account is None):
         parser.error('Install/publish requires source and account')
     lockfile = Path('/etc/market-report') / ('.api-refresh.lock' if args.mode == 'publish' else '.api-install.lock')
@@ -371,7 +434,7 @@ def main():
                 return
             if args.sha is None or args.expected_service_sha256 is None:
                 parser.error('Installation requires exact source and reviewed service hashes')
-            install(args.source, args.sha, args.account, args.expected_service_sha256)
+            install(args.source, args.sha, args.account, args.expected_service_sha256, args.resume_failed_rollout)
 
 
 if __name__ == '__main__':
