@@ -171,3 +171,63 @@ standing automatic updater, deployment or change to an existing timer.
 References: [official API documentation](https://twelvedata.com/docs),
 [historical request parameters](https://support.twelvedata.com/en/articles/5656039-how-to-get-historical-prices),
 [personal plans](https://twelvedata.com/pricing).
+
+
+## Install the reviewed automatic refresh dependency
+
+`deploy/market-report/twelve_data_rollout.py` owns only root-controlled deployment
+and atomic input publication. It reuses the existing scanner/API CLI and the
+existing report timer; it is not a second scheduler or an AI worker controller.
+Run installation only from a clean, exact-SHA, root-owned checkout after source
+CI and isolated operator acceptance. Supply the already-reviewed base service
+hash; unexpected units, overrides, state, source changes or replay stop the install.
+
+```bash
+python3 -I -B deploy/market-report/twelve_data_rollout.py install \
+  --source /root/private-reviewed-checkout --sha REVIEWED_COMMIT_SHA \
+  --account EXISTING_NONROOT_REPORT_ACCOUNT \
+  --expected-service-sha256 REVIEWED_INSTALLED_SERVICE_SHA256
+```
+
+The original manual source, venv, input, output and base unit are retained.
+A root-owned versioned release is extracted from the pinned git archive. A report
+service drop-in adds Requires/After on one new oneshot refresh service, without
+RemainAfterExit or a second timer. The existing timer is briefly paused while
+an in-flight report finishes and the change is tested, then resumed unchanged.
+The first new report validates provider provenance/hash binding before success.
+A startup failure attempts to restore the original input/output and unit
+configuration and resume the previous timer; retain the private audit directory
+and inspect any error instead of replaying the installer.
+
+Acquisition runs as the existing nonroot report account, with systemd
+LoadCredential supplying the root-held key privately for that service's lifetime.
+No secret is placed in argv, inherited environment, repository or report service.
+The fetch service permits Internet address families; the report service retains
+its existing AF_UNIX-only profile and has no credential. Requests remain fixed
+to the provider's official HTTPS host and bounded by the accepted CLI contract.
+
+The fetch unit's sole privileged ExecStartPost uses the systemd `+` prefix to run
+the fixed reviewed publisher with root filesystem access, intentionally outside
+the fetch user's capability/filesystem restrictions. It accepts only the fixed
+SPY/NVDA provider pair, refuses to discard supplied macro/valuation context,
+snapshots the pending file into a root-held immutable temporary input, and calls
+the reviewed report CLI as nonroot before atomic publication. Previous input is
+fsynced before replacement; ownership/group/read permissions are preserved.
+The old report remains on acquisition/publication failure because the dependent
+report job does not start. This is a narrow trusted deployment boundary, not
+permission to execute arbitrary generated code as root.
+
+A private root audit directory contains the original files, metadata, installed
+unit identities and receipt. To explicitly restore the prior manual pipeline:
+
+```bash
+python3 -I -B /opt/market-report/releases/REVIEWED_COMMIT_SHA/deploy/market-report/twelve_data_rollout.py rollback \
+  --backup /root/PRIVATE_ROLLOUT_BACKUP
+```
+
+Rollback refuses changed base units or extra/modified overrides, retains the newer
+input/report as evidence, restores the recorded manual input/output/permissions
+and removes only the refresh unit and its own drop-in. It preserves whether the
+timer was active at rollback entry. Old price freshness still applies; rollback
+is not a download of current quotes. No credentials, raw responses or private
+operational receipts belong in public git.

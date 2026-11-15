@@ -790,3 +790,204 @@ def test_twelve_cli_success_and_readonly_view(twelve_case, tmp_path, monkeypatch
     assert len(calls) == 2 and output.stat().st_mode & 0o777 == 0o600
     result = cli.combined_report(json.loads(output.read_text()), max_age_calendar_days=3)
     assert 'PROVIDER_API' in cli.report_summary(result)
+
+
+@pytest.fixture
+def twelve_publish_case(twelve_case, tmp_path, monkeypatch):
+    import importlib.util
+    import json
+    import os
+    import pwd
+    from pathlib import Path
+    cli, key, _, _, _ = twelve_case
+    path = Path(__file__).resolve().parents[1] / 'deploy/market-report/twelve_data_rollout.py'
+    spec = importlib.util.spec_from_file_location('twelve_rollout', path)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    monkeypatch.setattr(helper, 'ROOT_UID', os.geteuid())
+    # Root code trust is an installation precondition; test filesystem operations as CI UID.
+    monkeypatch.setattr(helper, 'trusted', lambda path: None)
+    config = tmp_path / 'config'
+    state = tmp_path / 'state'
+    config.mkdir()
+    state.mkdir()
+    old = {'schema': 'market-combined-input-v1', 'market_input': {}, 'report_asof': 'old'}
+    target = config / 'input.json'
+    target.write_text(json.dumps(old))
+    target.chmod(0o640)
+    payload = cli.prepare_twelve_data_input(key, max_age_calendar_days=3)
+    pending = state / 'pending.json'
+    pending.write_text(json.dumps(payload))
+    def validate(command, **kwargs):
+        candidate = Path(command[command.index('app.scan_cli') + 1])
+        assert candidate.parent == config and candidate.stat().st_mode & 0o777 == 0o640
+        data = json.loads(candidate.read_text())
+        result = cli.combined_report(data, max_age_calendar_days=3)
+        (state / 'preview.json').write_text(json.dumps(result))
+        return ''
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    return helper, config, state, account, payload, validate
+
+
+def test_twelve_publisher_retains_metadata_and_durable_previous_input(twelve_publish_case):
+    import json
+    import os
+    helper, config, state, account, payload, validate = twelve_publish_case
+    target = config / 'input.json'
+    old = target.read_bytes()
+    helper.publish(config, config, account, state, config, runner=validate)
+    assert json.loads(target.read_text()) == payload
+    assert (config / 'input.previous.json').read_bytes() == old
+    assert target.stat().st_uid == os.geteuid()
+    assert target.stat().st_mode & 0o777 == 0o640
+    assert not list(config.glob('.provider-check-*'))
+
+
+@pytest.mark.parametrize('failure', ['validation', 'binding', 'concurrent', 'pending_swap'])
+def test_twelve_publisher_failure_and_immutable_snapshot(twelve_publish_case, failure):
+    import json
+    helper, config, state, account, payload, validate = twelve_publish_case
+    target = config / 'input.json'
+    old = target.read_bytes()
+    def runner(command, **kwargs):
+        if failure == 'validation':
+            raise ValueError('rejected by CLI')
+        validate(command, **kwargs)
+        if failure == 'binding':
+            preview = state / 'preview.json'
+            result = json.loads(preview.read_text())
+            result['market_sha256'] = 'wrong'
+            preview.write_text(json.dumps(result))
+        if failure == 'concurrent':
+            target.write_bytes(b'external authorized update')
+        if failure == 'pending_swap':
+            (state / 'pending.json').write_bytes(b'changed after snapshot')
+    if failure == 'pending_swap':
+        helper.publish(config, config, account, state, config, runner=runner)
+        assert json.loads(target.read_text()) == payload
+    else:
+        with pytest.raises(ValueError):
+            helper.publish(config, config, account, state, config, runner=runner)
+        assert target.read_bytes() == (b'external authorized update' if failure == 'concurrent' else old)
+        assert not (config / 'input.previous.json').exists()
+    assert not list(config.glob('.provider-check-*'))
+
+
+@pytest.mark.parametrize('failure', ['context', 'wrong_pair', 'symlink'])
+def test_twelve_publisher_rejects_context_pair_and_symlink(twelve_publish_case, failure):
+    import json
+    helper, config, state, account, payload, validate = twelve_publish_case
+    target = config / 'input.json'
+    if failure == 'context':
+        target.write_text(json.dumps({'macro': {'valuable': 'existing data'}}))
+    if failure == 'wrong_pair':
+        payload['market_input']['market']['assets'][0]['symbol'] = 'OTHER'
+        (state / 'pending.json').write_text(json.dumps(payload))
+    if failure == 'symlink':
+        (state / 'pending.json').unlink()
+        (state / 'pending.json').symlink_to(target)
+    old = target.read_bytes()
+    with pytest.raises((ValueError, OSError)):
+        helper.publish(config, config, account, state, config, runner=validate)
+    assert target.read_bytes() == old
+
+
+def test_twelve_units_keep_credential_out_of_report_and_no_second_timer(twelve_publish_case):
+    from pathlib import Path
+    helper, _, _, _, _, _ = twelve_publish_case
+    refresh, report = helper.units(Path('/opt/market-report/releases/reviewed'),
+        Path('/opt/market-report/venv/bin/python'), 'market-report')
+    assert b'LoadCredential=' in refresh and b'LoadCredential=' not in report
+    assert b'ExecStartPost=+/usr/bin/python3 -I -B' in refresh
+    assert b'Requires=market-report-refresh.service' in report
+    assert b'After=market-report-refresh.service' in report
+    assert b'OnCalendar=' not in refresh + report
+    assert b'RemainAfterExit=' not in refresh
+    assert b'api-key-file' not in report
+    with pytest.raises(ValueError):
+        helper.units(Path('/opt/source'), Path('/usr/bin/python3'), 'bad user')
+
+
+@pytest.mark.parametrize('fail_start', [False, True])
+def test_twelve_rollout_restores_baseline_and_timer_on_failure_or_manual_rollback(twelve_publish_case, tmp_path, monkeypatch, fail_start):
+    import hashlib
+    import io
+    import json
+    import os
+    from pathlib import Path
+    import tarfile
+    helper, _, _, account, _, _ = twelve_publish_case
+    sandbox = tmp_path / 'installation'
+    sandbox.mkdir()
+    def mapped(value):
+        value = str(value)
+        if value == '/root' or value.startswith(('/etc/', '/opt/', '/var/')):
+            return sandbox / value.lstrip('/')
+        return Path(value)
+    monkeypatch.setattr(helper, 'Path', mapped)
+    real_atomic = helper.atomic
+    monkeypatch.setattr(helper, 'atomic', lambda path, data, uid, gid, mode:
+        real_atomic(path, data, uid, os.getegid() if gid == 0 else gid, mode))
+    original_mkdtemp = helper.tempfile.mkdtemp
+    monkeypatch.setattr(helper.tempfile, 'mkdtemp', lambda prefix, dir:
+        original_mkdtemp(prefix=prefix, dir=mapped(dir)))
+    service = mapped('/etc/systemd/system/market-report.service')
+    timer = mapped('/etc/systemd/system/market-report.timer')
+    input_file = mapped('/etc/market-report/input.json')
+    report = mapped('/var/lib/market-report/latest-report.json')
+    for path in (service, timer, input_file, report, mapped('/root') / 'placeholder'):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    mapped('/opt/market-report').mkdir(parents=True)
+    service.write_bytes(b'accepted original service')
+    timer.write_bytes(b'OnCalendar=*-*-* 08:00:00 Europe/Sofia\nOnCalendar=*-*-* 23:15:00 Europe/Sofia\n')
+    input_file.write_bytes(b'{"original":"input"}')
+    input_file.chmod(0o640)
+    report.write_bytes(b'{"original":"report"}')
+    report.chmod(0o600)
+    before = (input_file.read_bytes(), report.read_bytes(), timer.read_bytes())
+    commands = []
+    def runner(command, **kwargs):
+        commands.append(command)
+        if command[0] == 'git':
+            return 'a' * 40 if command[-1] == 'HEAD' else ''
+        if command[:2] == ['systemctl', 'is-enabled']: return 'enabled'
+        if command[:2] == ['systemctl', 'is-active']: return 'active'
+        if command[:2] == ['systemctl', 'show']: return 'inactive'
+        if command == ['systemctl', 'start', 'market-report.service']:
+            if fail_start:
+                raise ValueError('service dependency failed')
+            payload = {'market_input': {'market': {}, 'provenance': {'source': 'twelve_data'}}}
+            input_file.write_text(json.dumps(payload))
+            result = {'market_sha256': hashlib.sha256(b'{}').hexdigest(),
+                'data_mode': 'PROVIDER_API', 'provenance': payload['market_input']['provenance'],
+                'automated_acquisition': True, 'deployment_allowed': False,
+                'relative_strength': {'as_of': '2026-11-13'}}
+            report.write_text(json.dumps(result))
+        return ''
+    monkeypatch.setattr(helper, 'run', runner)
+    def archive(command, stdout, check):
+        assert command[-2:] == ['archive', 'a' * 40] and check
+        with tarfile.open(fileobj=stdout, mode='w') as stream:
+            member = tarfile.TarInfo('app/example.py')
+            raw = b'# reviewed immutable source\n'
+            member.size = len(raw)
+            stream.addfile(member, io.BytesIO(raw))
+    monkeypatch.setattr(helper.subprocess, 'run', archive)
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    args = (checkout, 'a' * 40, account, hashlib.sha256(service.read_bytes()).hexdigest())
+    if fail_start:
+        with pytest.raises(ValueError, match='service dependency failed'):
+            helper.install(*args)
+    else:
+        helper.install(*args)
+        audit = next(mapped('/root').glob('market-api-rollout-*'))
+        assert json.loads((audit / 'receipt.json').read_text())['automatic_data_download']
+        helper.rollback(audit)
+        assert (audit / 'rollback-current-input.json').exists()
+        assert (audit / 'rollback.json').exists()
+    assert (input_file.read_bytes(), report.read_bytes(), timer.read_bytes()) == before
+    assert input_file.stat().st_mode & 0o777 == 0o640
+    assert report.stat().st_mode & 0o777 == 0o600
+    assert commands[-1] == ['systemctl', 'start', 'market-report.timer'] or not fail_start
+    assert not mapped('/etc/systemd/system/market-report-refresh.service').exists()
