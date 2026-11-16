@@ -89,7 +89,9 @@ jobs:
               # Synthetic allowance, not real provider prices or production authority.
               now = datetime.now(timezone.utc)
               return dict(schema='generation-admission-v1', generation_authorized=True,
-                  binding=dict(binding), scope='generate_only', disclosure='task_description_only',
+                  binding=dict(binding), scope='generate_only', disclosure=(
+                      'task_description_and_parent_candidate' if binding['schema']=='generation-request-v2'
+                      else 'task_description_only'),
                   authorization_id='ci-'+binding['nonce'], budget_period=now.strftime('%Y-%m'),
                   budget_limit_microuros=1000000, budget_call_limit=100, reserved_microuros=1000,
                   model='ci-fixture-model', max_output_tokens=100,
@@ -179,7 +181,17 @@ jobs:
                       assert persisted['admission']['receipt']['generation_authorized'] is True
                       body=json.loads(request.content)
                       assert body['model']=='ci-fixture-model' and body['max_tokens']==100
-                      assert body['messages']==[dict(role='user',content='Synthetic generated arithmetic correction')]
+                      assert len(body['messages'])==1 and body['messages'][0]['role']=='user'
+                      prompt=body['messages'][0]['content']
+                      if ordinal==1:
+                          assert body['messages']==[dict(role='user',content='Synthetic generated arithmetic correction')]
+                      else:
+                          assert persisted['binding']['schema']=='generation-request-v2'
+                          assert persisted['admission']['receipt']['disclosure']=='task_description_and_parent_candidate'
+                          assert 'previous candidate failed' in prompt and 'candidate_code' in prompt
+                          assert 'def f(): return 1' in prompt and 'revision_test.py' not in prompt
+                          assert persisted['revision_parent']['parent_task_id']==root_id
+                      assert persisted['dispatch']['prompt_sha256']==hashlib.sha256(prompt.encode()).hexdigest()
                       assert persisted['dispatch']['admission_sha256']==persisted['admission_sha256']
                       answer='```python\ndef f(): return '+str(ordinal)+'\n```'
                       return httpx.Response(200,stream=httpx.ByteStream(json.dumps(
@@ -190,16 +202,19 @@ jobs:
                       handoffs=paths[0],proposals=paths[1],candidates=paths[2],
                       trusted_test_file=str(frozen_test),trusted_test_sha256=test_digest,image=image,
                       authorization_check=authorize,generator=generate,generator_id=generate.generator_id,
-                      generation_authorization_check=authorize_generation)
+                      generation_authorization_check=authorize_generation,
+                      revision_candidate_file=failed_candidate if ordinal==2 else None)
                   audit=TaskStorage(database).get(task_id)
                   assert audit['generation']['phase']=='completed'
                   assert report['test_status']==('failed' if ordinal==1 else 'passed')
                   assert report['approved'] is report['deployment_allowed'] is False
                   assert original.read_bytes()==original_bytes and containers()==before
                   if ordinal==1:
+                      failed_candidate=str(Path(paths[2])/('candidate_'+task_id+'.py'))
                       task_id=bridge.submit_revision(task_id,report['verification_nonce'])['task_id']
               assert len(TaskStorage(database).get(root_id)['revision_family']['members'])==2
               print('MOCK_OPENAI_ADAPTER_REAL_DOCKER_FAILED_ROOT_LINKED_CORRECTION_PASSED')
+              print('MOCK_OPENAI_BOUND_CORRECTION_CONTEXT_REAL_DOCKER_PASSED')
               print('SYNTHETIC_AUTH_REAL_DOCKER_DURABLE_COMPLETION_AND_REPLAY_PASSED')
               from scripts.openai_admitted_acceptance import run_e2e_case
               e2e_case=root/'operator-e2e'; e2e_case.mkdir(mode=0o700)
