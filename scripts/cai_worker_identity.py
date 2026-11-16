@@ -74,6 +74,10 @@ def _file(path):
         mode=stat.S_IMODE(m.st_mode),size=m.st_size,sha256=_digest(path))
 
 
+def _process_directories():
+    return Path('/proc').iterdir()
+
+
 def _quiescent(database, key):
     # No SQLite sidecar is silently deleted, checkpointed or reconstructed.
     for suffix in ('-wal','-shm','-journal'):
@@ -81,7 +85,7 @@ def _quiescent(database, key):
         if p.exists() or p.is_symlink():raise ValueError('IDENTITY_SQLITE_SIDECAR_PRESENT')
     gc.collect()
     identities={(p.stat().st_dev,p.stat().st_ino) for p in (database,key)}
-    for process in Path('/proc').iterdir():
+    for process in _process_directories():
         if not process.name.isdecimal():continue
         try:
             for fd in (process/'fd').iterdir():

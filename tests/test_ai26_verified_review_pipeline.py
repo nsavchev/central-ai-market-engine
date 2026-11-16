@@ -2105,6 +2105,12 @@ def identity_transfer_fixture(monkeypatch,tmp_path):
     from pathlib import Path
     from central_ai.task_storage import TaskStorage
     from scripts.cai_worker_identity import prepare
+    if os.geteuid()!=0:
+        import scripts.cai_worker_identity as transfer
+        # CI cannot inspect protected same-UID runner helpers. Unit cases own
+        # only this process (including its fork child); root VPS acceptance
+        # retains the real complete /proc inventory and production refusal.
+        monkeypatch.setattr(transfer,'_process_directories',lambda:[Path('/proc')/str(os.getpid())])
     params,_=model_amendment_fixture(monkeypatch,tmp_path/'old-state')
     # Local root tests use nobody; ordinary CI uses its current unprivileged
     # account. Only private fixture paths become traversable, never key bytes.
@@ -2219,6 +2225,22 @@ def test_identity_transfer_rejects_an_open_source_handle(monkeypatch,tmp_path):
     with options['database'].open('rb'):
         with pytest.raises(ValueError,match='SOURCE_OPEN_BY_PROCESS'):
             apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
+    assert options['database'].is_file() and not options['target_state'].exists()
+
+
+def test_identity_transfer_uninspectable_operator_process_blocks_without_weakening_guard(monkeypatch,tmp_path):
+    import os
+    from types import SimpleNamespace
+    import scripts.cai_worker_identity as transfer
+    params,options,proposal,result=identity_transfer_fixture(monkeypatch,tmp_path)
+    class Uninspectable:
+        name='99999999'
+        def __truediv__(self,part):return self
+        def iterdir(self):raise PermissionError('synthetic protected process')
+        def stat(self):return SimpleNamespace(st_uid=os.geteuid())
+    monkeypatch.setattr(transfer,'_process_directories',lambda:[Uninspectable()])
+    with pytest.raises(ValueError,match='PROCESS_SCAN_UNCERTAIN'):
+        transfer.apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
     assert options['database'].is_file() and not options['target_state'].exists()
 
 
