@@ -180,7 +180,7 @@ finally:c.close()
 print('NONROOT_RETAINED_LEDGER_ACCESS_CONFIRMED')
 """
     if os.geteuid()==0:
-        cmd=['runuser','-u',body['account'],'--','env','-i','PATH=/usr/bin:/bin',
+        cmd=['/usr/sbin/runuser','-u',body['account'],'--','/usr/bin/env','-i','PATH=/usr/bin:/bin',
              '/usr/bin/python3','-B','-c',program]
     else:
         import sys

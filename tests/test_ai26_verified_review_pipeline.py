@@ -2244,6 +2244,23 @@ def test_identity_transfer_uninspectable_operator_process_blocks_without_weakeni
     assert options['database'].is_file() and not options['target_state'].exists()
 
 
+def test_identity_transfer_root_postcheck_uses_absolute_tools_with_narrow_path(monkeypatch):
+    import os
+    from types import SimpleNamespace
+    import scripts.cai_worker_identity as transfer
+    monkeypatch.setenv('PATH','/usr/bin:/bin')
+    monkeypatch.setattr(os,'geteuid',lambda:0)
+    calls=[]
+    def run(cmd,**kwargs):
+        assert cmd[:7]==['/usr/sbin/runuser','-u','ci-fixture-account','--','/usr/bin/env','-i','PATH=/usr/bin:/bin']
+        assert cmd[7:10]==['/usr/bin/python3','-B','-c']
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0,stdout='NONROOT_RETAINED_LEDGER_ACCESS_CONFIRMED\n')
+    monkeypatch.setattr(transfer.subprocess,'run',run)
+    transfer._verify_access({'account':'ci-fixture-account'})
+    assert len(calls)==1
+
+
 def test_identity_transfer_rejects_cross_filesystem_without_copy_fallback(monkeypatch,tmp_path):
     import tempfile
     from pathlib import Path
