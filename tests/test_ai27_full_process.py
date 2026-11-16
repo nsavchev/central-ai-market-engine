@@ -278,11 +278,12 @@ def correction_context_fixture(monkeypatch, tmp_path, *, call_limit=100, runner_
     from test_ai26_verified_review_pipeline import generation_admission_fixture
     db = tmp_path / 'tasks.sqlite'
     source = tmp_path / 'source'
-    source.mkdir()
+    source.mkdir(mode=0o700)
     original = source / 'relative.py'
     wrong = 'def relative_performance_pp(asset_return, benchmark_return):\n    return asset_return + benchmark_return\n'
     correct = wrong.replace(' + ', ' - ')
     original.write_text(wrong)
+    original.chmod(0o600)
     bridge = PersistentTaskBridge(db)
     root = bridge.submit('Implement relative_performance_pp(asset_return, benchmark_return): '
         'subtract benchmark percentage return from asset percentage return, yielding percentage points. '
@@ -323,6 +324,7 @@ else:
     test.write_text(constraints + 'assert abs(relative_performance_pp(5, 2) - 3) < 1e-9\n'
         'assert abs(relative_performance_pp(-5, 2) + 7) < 1e-9\n'
         'assert abs(relative_performance_pp(5, -2) - 7) < 1e-9\n')
+    test.chmod(0o600)
     test_sha = hashlib.sha256(test.read_bytes()).hexdigest()
     seen = []
     def transport(request):
@@ -412,6 +414,19 @@ def test_correction_context_drives_fail_to_pass_and_hashes_actual_prompt(monkeyp
     assert 'candidate_code' not in json.dumps(saved) and wrong not in json.dumps(saved)
     assert TaskStorage(params['database']).get(root)['verification']['outcome']['test_status'] == 'failed'
     assert original.read_text() == wrong
+
+
+def test_correction_fixture_inputs_remain_trusted_with_group_writable_umask(monkeypatch, tmp_path):
+    import os
+    from pathlib import Path
+    from central_ai.isolated_functional_verifier import _read_input
+    previous = os.umask(0o002)
+    try:
+        params, _, _, original, wrong = correction_context_fixture(monkeypatch, tmp_path)
+    finally:
+        os.umask(previous)
+    assert _read_input(original).decode() == wrong
+    assert _read_input(Path(params['trusted_test_file']))
 
 
 @pytest.mark.parametrize('failure', ['missing', 'wrong_code', 'old_disclosure', 'context_tamper', 'parent_tamper', 'lineage_tamper', 'code_tamper'])
