@@ -350,6 +350,202 @@ class TaskStorage:
         except (ValueError, TypeError, OverflowError):
             raise ValueError('INVALID_GENERATION_ADMISSION') from None
 
+    @staticmethod
+    def _generation_history(conn, exclude_task_id=None):
+        history = []
+        for task_id, encoded in conn.execute('SELECT task_id,payload FROM tasks ORDER BY task_id'):
+            if task_id == exclude_task_id:
+                continue
+            task = json.loads(encoded)
+            generation = task.get('generation')
+            if generation is None:
+                continue
+            if not isinstance(generation, dict) or generation.get('admission_required') is not True:
+                raise ValueError('UNACCOUNTED_GENERATION_HISTORY')
+            entry = generation.get('admission')
+            if entry is None:
+                audit = task.get('verification', {})
+                if audit.get('phase') == 'blocked' and audit.get('error_stage') == 'generation_authorization':
+                    continue
+                raise ValueError('UNACCOUNTED_GENERATION_HISTORY')
+            if (not isinstance(entry, dict) or set(entry) != {'receipt', 'reserved_at'}
+                    or TaskStorage._json_digest(entry) != generation.get('admission_sha256')):
+                raise ValueError('INVALID_GENERATION_BUDGET_HISTORY')
+            try:
+                at = datetime.fromisoformat(entry['reserved_at'])
+                if at.utcoffset() != timedelta(0):
+                    raise ValueError('INVALID_GENERATION_BUDGET_HISTORY')
+                TaskStorage._generation_admission(entry['receipt'], generation.get('binding'), at)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                raise ValueError('INVALID_GENERATION_BUDGET_HISTORY') from None
+            history.append({'task_id': task_id, 'admission': entry})
+        return history
+
+    @staticmethod
+    def _validated_budget_amendment(amendment, *, authorized):
+        fields = {'schema', 'amendment_id', 'budget_period', 'currency', 'budget_limit_microusd',
+            'previous_call_limit', 'new_call_limit', 'expected_used_calls', 'expected_reserved_microusd',
+            'expected_history_sha256', 'model', 'max_output_tokens', 'operator_authorized',
+            'approved', 'deployment_allowed'}
+        if (not isinstance(amendment, dict) or set(amendment) != fields
+                or amendment.get('schema') != 'generation-budget-amendment-usd-v1'
+                or amendment.get('currency') != 'USD' or amendment.get('operator_authorized') is not authorized
+                or amendment.get('approved') is not False or amendment.get('deployment_allowed') is not False
+                or not isinstance(amendment.get('amendment_id'), str)
+                or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,64}', amendment['amendment_id'])
+                or not isinstance(amendment.get('budget_period'), str)
+                or not re.fullmatch(r'[0-9]{4}-(0[1-9]|1[0-2])', amendment['budget_period'])
+                or not isinstance(amendment.get('expected_history_sha256'), str)
+                or not re.fullmatch(r'[0-9a-f]{64}', amendment['expected_history_sha256'])
+                or not isinstance(amendment.get('model'), str)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}', amendment['model'])
+                or any(type(amendment.get(key)) is not int for key in (
+                    'budget_limit_microusd', 'previous_call_limit', 'new_call_limit',
+                    'expected_used_calls', 'expected_reserved_microusd', 'max_output_tokens'))
+                or not 1 <= amendment['budget_limit_microusd'] <= 10**12
+                or not 1 <= amendment['previous_call_limit'] < amendment['new_call_limit'] <= 100000
+                or amendment['new_call_limit'] > amendment['previous_call_limit'] + 2
+                or not 1 <= amendment['expected_used_calls'] <= amendment['previous_call_limit']
+                or not 1 <= amendment['expected_reserved_microusd'] <= amendment['budget_limit_microusd']
+                or not 1 <= amendment['max_output_tokens'] <= 1500):
+            raise ValueError('INVALID_BUDGET_AMENDMENT')
+
+    @staticmethod
+    def _check_budget_baseline(amendment, history):
+        if TaskStorage._json_digest(history) != amendment['expected_history_sha256']:
+            raise ValueError('BUDGET_AMENDMENT_HISTORY_CHANGED')
+        receipts = [item['admission']['receipt'] for item in history
+                    if item['admission']['receipt']['budget_period'] == amendment['budget_period']]
+        if (len(receipts) != amendment['expected_used_calls']
+                or any(receipt['schema'] != 'generation-admission-usd-v2'
+                    or receipt['budget_limit_microusd'] != amendment['budget_limit_microusd']
+                    or receipt['budget_call_limit'] != amendment['previous_call_limit']
+                    or receipt['model'] != amendment['model']
+                    or receipt['max_output_tokens'] != amendment['max_output_tokens'] for receipt in receipts)
+                or sum(receipt['reserved_microusd'] for receipt in receipts) != amendment['expected_reserved_microusd']):
+            raise ValueError('BUDGET_AMENDMENT_BASELINE_MISMATCH')
+
+    @staticmethod
+    def _active_budget_amendment(conn, period, history):
+        active = None
+        for (encoded,) in conn.execute('SELECT payload FROM tasks'):
+            record = json.loads(encoded).get('generation_budget_amendment')
+            if record is None:
+                continue
+            if (not isinstance(record, dict) or set(record) != {
+                    'schema', 'amendment', 'amendment_sha256', 'covered_task_ids', 'recorded_at'}
+                    or record.get('schema') != 'generation-budget-amendment-record-v1'
+                    or TaskStorage._json_digest(record.get('amendment')) != record.get('amendment_sha256')):
+                raise ValueError('INVALID_BUDGET_AMENDMENT_HISTORY')
+            amendment = record['amendment']
+            TaskStorage._validated_budget_amendment(amendment, authorized=True)
+            try:
+                recorded = datetime.fromisoformat(record['recorded_at'])
+                if recorded.utcoffset() != timedelta(0) or recorded.strftime('%Y-%m') != amendment['budget_period']:
+                    raise ValueError('INVALID_BUDGET_AMENDMENT_HISTORY')
+            except (TypeError, ValueError):
+                raise ValueError('INVALID_BUDGET_AMENDMENT_HISTORY') from None
+            if amendment['budget_period'] != period:
+                continue
+            ids = record.get('covered_task_ids')
+            if (active is not None or not isinstance(ids, list) or not ids
+                    or any(not isinstance(value, str) for value in ids) or len(set(ids)) != len(ids)):
+                raise ValueError('INVALID_BUDGET_AMENDMENT_HISTORY')
+            baseline = [item for item in history if item['task_id'] in set(ids)]
+            if len(baseline) != len(ids):
+                raise ValueError('BUDGET_AMENDMENT_HISTORY_CHANGED')
+            TaskStorage._check_budget_baseline(amendment, baseline)
+            active = record
+        return active
+
+    @classmethod
+    def generation_budget_snapshot(cls, database):
+        """Read-only existing ledger snapshot; no schema initialization or provider."""
+        path = Path(database)
+        if not path.is_absolute() or path.is_symlink() or not path.is_file() or path.resolve() != path:
+            raise ValueError('TASK_DB_UNAVAILABLE')
+        with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5) as conn:
+            conn.execute('PRAGMA query_only=ON'); conn.execute('BEGIN')
+            history = cls._generation_history(conn)
+            period = datetime.now(timezone.utc).strftime('%Y-%m')
+            active = cls._active_budget_amendment(conn, period, history)
+        current = [item['admission']['receipt'] for item in history
+                   if item['admission']['receipt']['budget_period'] == period]
+        if not current or any(receipt['schema'] != 'generation-admission-usd-v2' for receipt in current):
+            raise ValueError('USD_BUDGET_HISTORY_REQUIRED')
+        return dict(schema='generation-budget-snapshot-v1', budget_period=period,
+            admission_history_sha256=cls._json_digest(history), admitted_calls=len(current),
+            budget_limits_microusd=sorted({receipt['budget_limit_microusd'] for receipt in current}),
+            call_limits=sorted({receipt['budget_call_limit'] for receipt in current}),
+            reserved_total_microusd=sum(receipt['reserved_microusd'] for receipt in current),
+            models=sorted({receipt['model'] for receipt in current}),
+            output_token_limits=sorted({receipt['max_output_tokens'] for receipt in current}),
+            amendment_id=active['amendment']['amendment_id'] if active else None,
+            effective_call_limit=(active['amendment']['new_call_limit'] if active else
+                next(iter({receipt['budget_call_limit'] for receipt in current}))
+                if len({receipt['budget_call_limit'] for receipt in current}) == 1 else None),
+            changes_performed=False, provider_request_sent=False)
+
+    @classmethod
+    def prepare_generation_budget_amendment(cls, database, *, expected_history_sha256, new_call_limit, amendment_id):
+        snapshot = cls.generation_budget_snapshot(database)
+        if (snapshot['amendment_id'] is not None or len(snapshot['call_limits']) != 1
+                or len(snapshot['budget_limits_microusd']) != 1 or len(snapshot['models']) != 1
+                or len(snapshot['output_token_limits']) != 1
+                or snapshot['admission_history_sha256'] != expected_history_sha256):
+            raise ValueError('BUDGET_AMENDMENT_PREPARATION_CONFLICT')
+        amendment = dict(schema='generation-budget-amendment-usd-v1', amendment_id=amendment_id,
+            budget_period=snapshot['budget_period'], currency='USD',
+            budget_limit_microusd=snapshot['budget_limits_microusd'][0],
+            previous_call_limit=snapshot['call_limits'][0], new_call_limit=new_call_limit,
+            expected_used_calls=snapshot['admitted_calls'], expected_reserved_microusd=snapshot['reserved_total_microusd'],
+            expected_history_sha256=expected_history_sha256, model=snapshot['models'][0],
+            max_output_tokens=snapshot['output_token_limits'][0], operator_authorized=False,
+            approved=False, deployment_allowed=False)
+        cls._validated_budget_amendment(amendment, authorized=False)
+        return amendment
+
+    @classmethod
+    def record_generation_budget_amendment(cls, database, *, enabled, amendment):
+        """Trusted operator boundary only; never called by generation/admission.
+
+        Changes a monthly callback ceiling, not task authority or account billing.
+        Keeps every old receipt/reservation/hash intact; no refund or provider I/O.
+        """
+        if enabled != 'YES':
+            raise ValueError('OPERATOR_BUDGET_AMENDMENT_DISABLED')
+        amendment = json.loads(json.dumps(amendment, allow_nan=False))
+        cls._validated_budget_amendment(amendment, authorized=True)
+        if amendment['budget_period'] != datetime.now(timezone.utc).strftime('%Y-%m'):
+            raise ValueError('BUDGET_AMENDMENT_PERIOD_MISMATCH')
+        path = Path(database)
+        if not path.is_absolute() or path.is_symlink() or not path.is_file() or path.resolve() != path:
+            raise ValueError('TASK_DB_UNAVAILABLE')
+        with sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=5) as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            history = cls._generation_history(conn)
+            if cls._active_budget_amendment(conn, amendment['budget_period'], history) is not None:
+                raise ValueError('BUDGET_AMENDMENT_ALREADY_EXISTS')
+            cls._check_budget_baseline(amendment, history)
+            tasks = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM tasks')]
+            cls.check_verification_barrier(tasks)
+            if any('dispatch' in task.get('generation', {}) and task['generation'].get('phase') != 'completed' for task in tasks):
+                raise ValueError('BUDGET_AMENDMENT_DISPATCH_UNRESOLVED')
+            anchor = next(item['task_id'] for item in history
+                if item['admission']['receipt']['budget_period'] == amendment['budget_period'])
+            task = json.loads(conn.execute('SELECT payload FROM tasks WHERE task_id=?', (anchor,)).fetchone()[0])
+            if task.get('generation_budget_amendment') is not None:
+                raise ValueError('BUDGET_AMENDMENT_ANCHOR_OCCUPIED')
+            task['generation_budget_amendment'] = dict(schema='generation-budget-amendment-record-v1',
+                amendment=json.loads(json.dumps(amendment)), amendment_sha256=cls._json_digest(amendment),
+                covered_task_ids=[item['task_id'] for item in history], recorded_at=datetime.now(timezone.utc).isoformat())
+            cursor = conn.execute('UPDATE tasks SET payload=?,updated_at=? WHERE task_id=?',
+                (json.dumps(task, allow_nan=False), datetime.now(timezone.utc).isoformat(), anchor))
+            if cursor.rowcount != 1:
+                raise ValueError('BUDGET_AMENDMENT_WRITE_CONFLICT')
+        return dict(amendment_recorded=True, amendment_id=amendment['amendment_id'],
+                    new_call_limit=amendment['new_call_limit'], provider_request_sent=False, worker_activated=False)
+
     def authorize_generation(self, task_id, nonce, receipt):
         """Atomically reserve a host-declared ceiling before the callback.
 
@@ -370,41 +566,29 @@ class TaskStorage:
             now = datetime.now(timezone.utc)
             self._generation_admission(receipt, binding, now)
             currency, limit, reserved, _, _ = self._generation_budget(receipt)
+            history = self._generation_history(conn, exclude_task_id=task_id)
+            active = self._active_budget_amendment(conn, receipt['budget_period'], history)
+            amended = active['amendment'] if active else None
+            covered = set(active['covered_task_ids']) if active else set()
+            if amended and (currency != 'USD' or limit != amended['budget_limit_microusd']
+                    or receipt['budget_call_limit'] != amended['new_call_limit']
+                    or receipt['model'] != amended['model']
+                    or receipt['max_output_tokens'] > amended['max_output_tokens']):
+                raise ValueError('GENERATION_BUDGET_POLICY_CONFLICT')
             total = calls = 0
-            for other_id, encoded in conn.execute('SELECT task_id,payload FROM tasks'):
-                other = json.loads(encoded)
-                previous = other.get('generation')
-                if previous is None or other_id == task_id:
-                    continue
-                if not isinstance(previous, dict) or previous.get('admission_required') is not True:
-                    raise ValueError('UNACCOUNTED_GENERATION_HISTORY')
-                entry = previous.get('admission')
-                if entry is None:
-                    previous_audit = other.get('verification', {})
-                    if (previous_audit.get('phase') == 'blocked'
-                            and previous_audit.get('error_stage') == 'generation_authorization'):
-                        continue  # Proven rejection before any dispatch admission.
-                    raise ValueError('UNACCOUNTED_GENERATION_HISTORY')
-                if not isinstance(entry, dict) or set(entry) != {'receipt','reserved_at'}:
-                    raise ValueError('INVALID_GENERATION_BUDGET_HISTORY')
-                if hashlib.sha256(json.dumps(entry, sort_keys=True, separators=(',', ':')).encode()).hexdigest() != previous.get('admission_sha256'):
-                    raise ValueError('INVALID_GENERATION_BUDGET_HISTORY')
-                try:
-                    at = datetime.fromisoformat(entry['reserved_at'])
-                    if at.utcoffset() != timedelta(0):
-                        raise ValueError('INVALID_GENERATION_BUDGET_HISTORY')
-                    self._generation_admission(entry['receipt'], previous.get('binding'), at)
-                except (KeyError, TypeError, ValueError, OverflowError):
-                    raise ValueError('INVALID_GENERATION_BUDGET_HISTORY') from None
-                prior = entry['receipt']
+            for item in history:
+                other_id = item['task_id']
+                prior = item['admission']['receipt']
                 if prior['authorization_id'] == receipt['authorization_id']:
                     raise ValueError('GENERATION_AUTHORIZATION_REPLAY')
                 if prior['budget_period'] == receipt['budget_period']:
                     prior_currency, prior_limit, prior_reserved, _, _ = self._generation_budget(prior)
                     if prior_currency != currency:
                         raise ValueError('GENERATION_BUDGET_CURRENCY_CONFLICT')
-                    if (prior_limit != limit
-                            or prior['budget_call_limit'] != receipt['budget_call_limit']):
+                    allowed_previous = (amended is not None and other_id in covered
+                        and prior['budget_call_limit'] == amended['previous_call_limit'])
+                    if (prior_limit != limit or (prior['budget_call_limit'] != receipt['budget_call_limit']
+                            and not allowed_previous)):
                         raise ValueError('GENERATION_BUDGET_POLICY_CONFLICT')
                     total += prior_reserved
                     calls += 1

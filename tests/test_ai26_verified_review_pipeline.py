@@ -816,6 +816,211 @@ def budget_authorizer(*, cap=1000000, reserve=1000, calls=100, authorization_id=
     return authorize
 
 
+def usd_budget_authorizer(*, calls=1, model='gpt-4.1-mini', tokens=128, cap=20000000):
+    def authorize(binding):
+        receipt = generation_admission_fixture(binding)
+        receipt.pop('budget_limit_microuros')
+        receipt.pop('reserved_microuros')
+        receipt.update(schema='generation-admission-usd-v2', budget_limit_microusd=cap,
+            reserved_microusd=10000, budget_call_limit=calls, model=model, max_output_tokens=tokens)
+        return receipt
+    return authorize
+
+
+def amendment_fixture(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    params['generation_authorization_check'] = usd_budget_authorizer()
+    prepare_and_verify(**params)
+    snapshot = TaskStorage.generation_budget_snapshot(params['database'])
+    amendment = TaskStorage.prepare_generation_budget_amendment(params['database'],
+        expected_history_sha256=snapshot['admission_history_sha256'], new_call_limit=3,
+        amendment_id='ci-one-to-three')
+    return params, snapshot, amendment
+
+
+def test_budget_amendment_prepare_is_readonly_and_matches_operator_fingerprint(monkeypatch, tmp_path):
+    import hashlib, json, sqlite3
+    from pathlib import Path
+    from central_ai.task_storage import TaskStorage
+    params, snapshot, amendment = amendment_fixture(monkeypatch, tmp_path)
+    before = Path(params['database']).read_bytes()
+    with sqlite3.connect(params['database']) as conn:
+        history = [{'task_id': task_id, 'admission': json.loads(encoded)['generation']['admission']}
+                   for task_id, encoded in conn.execute('SELECT task_id,payload FROM tasks ORDER BY task_id')]
+    expected = hashlib.sha256(json.dumps(history, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    assert snapshot['admission_history_sha256'] == expected
+    assert snapshot['admitted_calls'] == snapshot['effective_call_limit'] == 1
+    assert snapshot['reserved_total_microusd'] == 10000 and not snapshot['changes_performed']
+    assert amendment['operator_authorized'] is False and amendment['new_call_limit'] == 3
+    with pytest.raises(ValueError, match='OPERATOR_BUDGET_AMENDMENT_DISABLED'):
+        TaskStorage.record_generation_budget_amendment(params['database'], enabled='', amendment=amendment)
+    with pytest.raises(ValueError, match='INVALID_BUDGET_AMENDMENT'):
+        TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES', amendment=amendment)
+    assert Path(params['database']).read_bytes() == before
+
+
+def test_budget_amendment_counts_old_call_and_denies_fourth_without_rewriting_receipts(monkeypatch, tmp_path):
+    import json, sqlite3
+    from central_ai.task_storage import TaskStorage
+    params, snapshot, amendment = amendment_fixture(monkeypatch, tmp_path)
+    root = TaskStorage(params['database']).get(params['task_id'])
+    with sqlite3.connect(params['database']) as conn:
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+    TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES',
+        amendment=dict(amendment, operator_authorized=True))
+    saved = TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation'] == root['generation'] and saved['verification'] == root['verification']
+    assert TaskStorage.generation_budget_snapshot(params['database'])['effective_call_limit'] == 3
+    for _ in range(2):
+        params = add_analyzed_generation_task(params)
+        params['generation_authorization_check'] = usd_budget_authorizer(calls=3)
+        assert prepare_and_verify(**params)['tests_passed']
+    current = TaskStorage.generation_budget_snapshot(params['database'])
+    assert current['admitted_calls'] == 3 and current['reserved_total_microusd'] == 30000
+    assert current['call_limits'] == [1, 3]
+    params = add_analyzed_generation_task(params)
+    params['generator'] = lambda _: pytest.fail('fourth callback must not run')
+    with pytest.raises(ValueError, match='GENERATION_CALL_BUDGET_EXHAUSTED'):
+        prepare_and_verify(**params)
+    with sqlite3.connect(params['database']) as conn:
+        assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall() == tables
+
+
+@pytest.mark.parametrize('field,value', [('new_call_limit', 4), ('previous_call_limit', 2),
+    ('budget_limit_microusd', 30000000), ('model', 'other-model'), ('max_output_tokens', 1500),
+    ('expected_history_sha256', 'f'*64), ('expected_used_calls', 0), ('approved', True)])
+def test_budget_amendment_rejects_unreviewed_policy_or_history(monkeypatch, tmp_path, field, value):
+    from central_ai.task_storage import TaskStorage
+    params, _, amendment = amendment_fixture(monkeypatch, tmp_path)
+    with pytest.raises(ValueError):
+        TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES',
+            amendment=dict(amendment, operator_authorized=True, **{field: value}))
+    assert TaskStorage.generation_budget_snapshot(params['database'])['amendment_id'] is None
+
+
+@pytest.mark.parametrize('change', ['cap', 'model', 'tokens', 'old_call_limit'])
+def test_budget_amendment_does_not_authorize_other_bounds(monkeypatch, tmp_path, change):
+    from central_ai.task_storage import TaskStorage
+    params, _, amendment = amendment_fixture(monkeypatch, tmp_path)
+    TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES',
+        amendment=dict(amendment, operator_authorized=True))
+    params = add_analyzed_generation_task(params)
+    options = dict(calls=3)
+    if change == 'cap': options['cap'] = 30000000
+    if change == 'model': options['model'] = 'other-model'
+    if change == 'tokens': options['tokens'] = 129
+    if change == 'old_call_limit': options['calls'] = 1
+    params['generation_authorization_check'] = usd_budget_authorizer(**options)
+    params['generator'] = lambda _: pytest.fail('changed policy must not dispatch')
+    with pytest.raises(ValueError, match='GENERATION_BUDGET_POLICY_CONFLICT'):
+        prepare_and_verify(**params)
+
+
+def test_budget_amendment_is_single_and_concurrent_apply_has_one_winner(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from central_ai.task_storage import TaskStorage
+    params, _, amendment = amendment_fixture(monkeypatch, tmp_path)
+    approved = dict(amendment, operator_authorized=True)
+    def apply():
+        try:
+            return TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES', amendment=approved)['amendment_recorded']
+        except ValueError as error:
+            assert str(error) == 'BUDGET_AMENDMENT_ALREADY_EXISTS'
+            return False
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(executor.map(lambda _: apply(), range(2))) == [False, True]
+    assert TaskStorage.generation_budget_snapshot(params['database'])['admitted_calls'] == 1
+
+
+def test_budget_review_cli_prepares_disabled_file_and_requires_exact_explicit_apply(monkeypatch, tmp_path):
+    from pathlib import Path
+    from central_ai.task_storage import TaskStorage
+    from scripts.cai_budget_review import prepare, apply
+    params, snapshot, _ = amendment_fixture(monkeypatch, tmp_path / 'ledger')
+    review = tmp_path / 'review'
+    review.mkdir(mode=0o700)
+    path = review / 'proposal.json'
+    result = prepare(params['database'], path, expected_history_sha256=snapshot['admission_history_sha256'],
+        new_call_limit=3, amendment_id='ci-reviewed-file')
+    assert result['prepared'] and not result['ledger_changed']
+    assert path.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(ValueError, match='EXPLICIT_OPERATOR_BUDGET_APPROVAL_REQUIRED'):
+        apply(params['database'], path, approved=False, expected_review_sha256=result['proposal_sha256'])
+    with pytest.raises(ValueError, match='REVIEW_FILE_CHANGED'):
+        apply(params['database'], path, approved=True, expected_review_sha256='f'*64)
+    assert TaskStorage.generation_budget_snapshot(params['database'])['amendment_id'] is None
+    assert apply(params['database'], path, approved=True,
+        expected_review_sha256=result['proposal_sha256'])['amendment_recorded']
+
+
+@pytest.mark.parametrize('tamper', ['old_receipt', 'covered_ids', 'amendment_hash'])
+def test_budget_amendment_rejects_changed_retained_evidence_before_callback(monkeypatch, tmp_path, tamper):
+    import json, sqlite3
+    from central_ai.task_storage import TaskStorage
+    params, _, amendment = amendment_fixture(monkeypatch, tmp_path)
+    root = params['task_id']
+    if tamper != 'old_receipt':
+        TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES',
+            amendment=dict(amendment, operator_authorized=True))
+    with sqlite3.connect(params['database']) as conn:
+        task = json.loads(conn.execute('SELECT payload FROM tasks WHERE task_id=?', (root,)).fetchone()[0])
+        if tamper == 'old_receipt':
+            task['generation']['admission']['receipt']['reserved_microusd'] += 1
+            task['generation']['admission_sha256'] = TaskStorage._json_digest(task['generation']['admission'])
+        elif tamper == 'covered_ids':
+            task['generation_budget_amendment']['covered_task_ids'] = []
+        else:
+            task['generation_budget_amendment']['amendment']['new_call_limit'] = 2
+        conn.execute('UPDATE tasks SET payload=? WHERE task_id=?', (json.dumps(task), root))
+    if tamper == 'old_receipt':
+        with pytest.raises(ValueError, match='BUDGET_AMENDMENT_HISTORY_CHANGED'):
+            TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES',
+                amendment=dict(amendment, operator_authorized=True))
+    else:
+        params = add_analyzed_generation_task(params)
+        params['generation_authorization_check'] = usd_budget_authorizer(calls=3)
+        params['generator'] = lambda _: pytest.fail('corrupt authority must not dispatch')
+        with pytest.raises(ValueError, match='INVALID_BUDGET_AMENDMENT_HISTORY'):
+            prepare_and_verify(**params)
+
+
+def test_budget_amendment_failed_write_rolls_back_without_spending_or_rewriting_history(monkeypatch, tmp_path):
+    import sqlite3
+    from central_ai.task_storage import TaskStorage
+    params, _, amendment = amendment_fixture(monkeypatch, tmp_path)
+    before = TaskStorage(params['database']).get(params['task_id'])
+    connect = sqlite3.connect
+    class BrokenWrite:
+        def __init__(self, *args, **kwargs): self.connection = connect(*args, **kwargs)
+        def __enter__(self): self.connection.__enter__(); return self
+        def __exit__(self, *args): return self.connection.__exit__(*args)
+        def execute(self, sql, *args):
+            result = self.connection.execute(sql, *args)
+            if sql.startswith('UPDATE tasks SET payload='):
+                raise OSError('synthetic failure before transaction commit')
+            return result
+    with monkeypatch.context() as context:
+        context.setattr(sqlite3, 'connect', BrokenWrite)
+        with pytest.raises(OSError):
+            TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES',
+                amendment=dict(amendment, operator_authorized=True))
+    assert TaskStorage(params['database']).get(params['task_id']) == before
+    assert TaskStorage.generation_budget_snapshot(params['database'])['amendment_id'] is None
+
+
+def test_budget_amendment_cannot_relabel_legacy_currency_or_initialize_missing_ledger(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = generation_params(monkeypatch, tmp_path)
+    prepare_and_verify(**params)  # Legacy synthetic EUR receipt remains EUR.
+    with pytest.raises(ValueError, match='USD_BUDGET_HISTORY_REQUIRED'):
+        TaskStorage.generation_budget_snapshot(params['database'])
+    missing = tmp_path / 'missing.sqlite'
+    with pytest.raises(ValueError, match='TASK_DB_UNAVAILABLE'):
+        TaskStorage.generation_budget_snapshot(missing)
+    assert not missing.exists()
+
+
 def test_generator_requires_separate_admission_before_journal_or_dispatch(monkeypatch, tmp_path):
     from central_ai.task_storage import TaskStorage
     params = generation_params(monkeypatch, tmp_path)
