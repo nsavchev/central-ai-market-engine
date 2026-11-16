@@ -2100,6 +2100,182 @@ def model_amendment_fixture(monkeypatch, tmp_path, *, old_amendment=False):
     return params, policy
 
 
+def identity_transfer_fixture(monkeypatch,tmp_path):
+    import os,pwd
+    from pathlib import Path
+    from central_ai.task_storage import TaskStorage
+    from scripts.cai_worker_identity import prepare
+    params,_=model_amendment_fixture(monkeypatch,tmp_path/'old-state')
+    # Local root tests use nobody; ordinary CI uses its current unprivileged
+    # account. Only private fixture paths become traversable, never key bytes.
+    person=pwd.getpwnam('nobody') if os.geteuid()==0 else pwd.getpwuid(os.geteuid())
+    if os.geteuid()==0:
+        if not tmp_path.is_relative_to('/tmp'):
+            pytest.fail('Root identity fixture requires an isolated --basetemp under /tmp')
+        for parent in (tmp_path,*tmp_path.parents):
+            if parent==Path('/tmp'):break
+            parent.chmod(0o711)
+    authority=tmp_path/'old-authority';authority.mkdir(mode=0o700)
+    key=authority/'reviewer.key';key.write_bytes(b'ci-synthetic-existing-key-32-bytes');key.chmod(0o600)
+    # Legacy database mode is deliberately 0644 inside a private directory.
+    database=Path(params['database']);database.parent.chmod(0o700);database.chmod(0o644)
+    review=tmp_path/'review';review.mkdir(mode=0o700)
+    snapshot=TaskStorage.generation_budget_snapshot(database)
+    options=dict(database=database,reviewer_key=key,target_state=tmp_path/'new-state',
+        target_authority=tmp_path/'new-authority',account=person.pw_name,
+        expected_history_sha256=snapshot['admission_history_sha256'],expected_policy_sha256=snapshot['active_policy_sha256'])
+    proposal=review/'proposal.json';result=prepare(proposal,**options)
+    return params,options,proposal,result
+
+
+def test_identity_transfer_prepare_is_readonly_and_apply_preserves_inodes_history_and_key(monkeypatch,tmp_path):
+    import json,stat,sqlite3
+    from pathlib import Path
+    from scripts.cai_worker_identity import apply
+    from central_ai.task_storage import TaskStorage
+    params,options,proposal,result=identity_transfer_fixture(monkeypatch,tmp_path)
+    db,key=options['database'],options['reviewer_key']
+    original,key_bytes=db.read_bytes(),key.read_bytes();db_ino=db.stat().st_ino;key_ino=key.stat().st_ino
+    assert not options['target_state'].exists() and not options['target_authority'].exists()
+    assert stat.S_IMODE(db.stat().st_mode)==0o644
+    assert json.loads(proposal.read_text())['jobs']=={}
+    assert result['ledger_changed'] is False
+    receipt=apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
+    destination=Path(receipt['database']);target_key=Path(receipt['reviewer_key_file'])
+    assert receipt['history_preserved'] and receipt['nonroot_access_confirmed']
+    assert destination.read_bytes()==original and destination.stat().st_ino==db_ino
+    assert target_key.read_bytes()==key_bytes and target_key.stat().st_ino==key_ino
+    assert db.is_dir() and key.is_dir() and stat.S_IMODE(db.stat().st_mode)==0
+    assert stat.S_IMODE(destination.stat().st_mode)==0o600 and stat.S_IMODE(target_key.parent.stat().st_mode)==0o700
+    snapshot=TaskStorage.generation_budget_snapshot(destination)
+    assert snapshot['admitted_calls']==1 and snapshot['effective_call_limit']==3
+    with pytest.raises(sqlite3.OperationalError):TaskStorage(db)
+    with pytest.raises((ValueError,OSError)):apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
+
+
+@pytest.mark.parametrize('fault',['first_exchange','second_exchange','postcheck'])
+def test_identity_transfer_error_restores_original_files_without_reset(monkeypatch,tmp_path,fault):
+    import stat
+    import scripts.cai_worker_identity as transfer
+    params,options,proposal,result=identity_transfer_fixture(monkeypatch,tmp_path)
+    db,key=options['database'],options['reviewer_key']
+    identities=[(p,p.read_bytes(),p.stat().st_ino,p.stat().st_uid,p.stat().st_gid,stat.S_IMODE(p.stat().st_mode)) for p in (db,key)]
+    exchange=transfer._exchange;calls=[]
+    def broken(a,b):
+        calls.append(True)
+        if len(calls)==(1 if fault=='first_exchange' else 2):raise OSError('synthetic exchange failure')
+        exchange(a,b)
+    if fault=='postcheck':
+        monkeypatch.setattr(transfer,'_verify_access',lambda _:(_ for _ in ()).throw(ValueError('synthetic postcheck failure')))
+    else:monkeypatch.setattr(transfer,'_exchange',broken)
+    with pytest.raises((ValueError,OSError),match='synthetic'):transfer.apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
+    for p,raw,ino,uid,gid,mode in identities:
+        assert p.read_bytes()==raw and p.stat().st_ino==ino and p.stat().st_uid==uid and p.stat().st_gid==gid
+        assert stat.S_IMODE(p.stat().st_mode)==mode
+    assert not options['target_state'].exists() and not options['target_authority'].exists()
+    assert (proposal.parent/'identity-intent.json').exists() and (proposal.parent/'identity-rollback.json').exists()
+
+
+@pytest.mark.parametrize('bad',['key','database','database_bytes','wal_mode','sidecar','target','hardlink','symlink',
+    'public_key','public_parent','history','policy','root_account'])
+def test_identity_transfer_rejects_changed_review_or_unsafe_paths(monkeypatch,tmp_path,bad):
+    import os
+    from scripts.cai_worker_identity import apply
+    params,options,proposal,result=identity_transfer_fixture(monkeypatch,tmp_path)
+    db,key=options['database'],options['reviewer_key']
+    if bad=='key':key.write_bytes(b'changed-synthetic-key-material-32')
+    if bad=='database':db.chmod(0o600)
+    if bad=='database_bytes':
+        with db.open('ab') as out:out.write(b'x')
+    if bad=='wal_mode':
+        with db.open('r+b') as out:out.seek(18);out.write(b'\x02\x02')
+    if bad=='sidecar':db.with_name(db.name+'-wal').touch()
+    if bad=='target':options['target_state'].mkdir()
+    if bad=='hardlink':os.link(key,tmp_path/'second-key-link')
+    if bad=='symlink':key.rename(key.with_suffix('.original'));key.symlink_to(key.with_suffix('.original'))
+    if bad=='public_key':key.chmod(0o644)
+    if bad=='public_parent':key.parent.chmod(0o755)
+    if bad in ('history','policy','root_account'):
+        import json,hashlib
+        value=json.loads(proposal.read_text())
+        if bad=='root_account':value['account']='root'
+        else:value['history_sha256' if bad=='history' else 'policy_sha256']='0'*64
+        proposal.write_text(json.dumps(value));result['proposal_sha256']=hashlib.sha256(proposal.read_bytes()).hexdigest()
+    with pytest.raises((ValueError,OSError)):apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
+    assert db.is_file() and not (options['target_authority']).exists()
+
+
+def test_identity_transfer_requires_approval_and_exact_review_hash(monkeypatch,tmp_path):
+    from scripts.cai_worker_identity import apply
+    params,options,proposal,result=identity_transfer_fixture(monkeypatch,tmp_path)
+    with pytest.raises(ValueError,match='APPROVAL_REQUIRED'):apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=False)
+    with pytest.raises(ValueError,match='REVIEW_CHANGED'):apply(proposal,expected_review_sha256='0'*64,approved=True)
+    assert options['database'].is_file() and not options['target_state'].exists()
+
+
+def test_identity_transfer_rejects_an_open_source_handle(monkeypatch,tmp_path):
+    from scripts.cai_worker_identity import apply
+    params,options,proposal,result=identity_transfer_fixture(monkeypatch,tmp_path)
+    with options['database'].open('rb'):
+        with pytest.raises(ValueError,match='SOURCE_OPEN_BY_PROCESS'):
+            apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
+    assert options['database'].is_file() and not options['target_state'].exists()
+
+
+def test_identity_transfer_rejects_cross_filesystem_without_copy_fallback(monkeypatch,tmp_path):
+    import tempfile
+    from pathlib import Path
+    from scripts.cai_worker_identity import plan
+    params,options,proposal,result=identity_transfer_fixture(monkeypatch,tmp_path)
+    if not Path('/dev/shm').is_dir() or Path('/dev/shm').stat().st_dev==options['database'].stat().st_dev:
+        pytest.skip('No disposable second filesystem')
+    with tempfile.TemporaryDirectory(dir='/dev/shm',prefix='cai-identity-test-') as temp:
+        with pytest.raises(ValueError,match='SAME_FILESYSTEM_REQUIRED'):
+            plan(**dict(options,target_state=Path(temp)/'state'))
+    assert options['database'].is_file()
+
+
+def test_identity_transfer_changed_moved_ledger_is_retained_as_uncertain(monkeypatch,tmp_path):
+    from pathlib import Path
+    import scripts.cai_worker_identity as transfer
+    params,options,proposal,result=identity_transfer_fixture(monkeypatch,tmp_path)
+    def change(body):
+        p=Path(body['target_state'])/Path(body['database']).name
+        with p.open('ab') as out:out.write(b'changed-after-transfer')
+        raise ValueError('postcheck drift')
+    monkeypatch.setattr(transfer,'_verify_access',change)
+    with pytest.raises(RuntimeError,match='UNCERTAIN_RETAIN_INTENT'):
+        transfer.apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
+    assert options['database'].is_dir()
+    assert (options['target_state']/options['database'].name).is_file()
+    assert (proposal.parent/'identity-intent.json').exists() and not (proposal.parent/'identity-receipt.json').exists()
+
+
+@pytest.mark.parametrize('exchange_number',[1,2])
+def test_identity_transfer_sigkill_window_keeps_old_paths_blocked_and_intent(monkeypatch,tmp_path,exchange_number):
+    import gc,multiprocessing,os,signal,sqlite3
+    from central_ai.task_storage import TaskStorage
+    import scripts.cai_worker_identity as transfer
+    params,options,proposal,result=identity_transfer_fixture(monkeypatch,tmp_path)
+    original=transfer._exchange
+    def child():
+        count=[]
+        def terminate_after_exchange(a,b):
+            original(a,b);count.append(True)
+            if len(count)==exchange_number:os.kill(os.getpid(),signal.SIGKILL)
+        transfer._exchange=terminate_after_exchange
+        transfer.apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
+    gc.collect()
+    process=multiprocessing.get_context('fork').Process(target=child);process.start();process.join(timeout=10)
+    if process.is_alive():process.kill();process.join();pytest.fail('identity transfer child hung')
+    assert process.exitcode==-signal.SIGKILL
+    assert options['database'].is_dir()
+    with pytest.raises(sqlite3.OperationalError):TaskStorage(options['database'])
+    assert (options['target_state']/options['database'].name).is_file()
+    assert (proposal.parent/'identity-intent.json').exists() and not (proposal.parent/'identity-receipt.json').exists()
+    with pytest.raises((ValueError,OSError)):transfer.apply(proposal,expected_review_sha256=result['proposal_sha256'],approved=True)
+
+
 def modern_authorizer(profile_id='primary'):
     from central_ai.task_storage import TaskStorage
     def admit(binding):
