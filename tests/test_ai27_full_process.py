@@ -265,7 +265,7 @@ def revision_fixture(monkeypatch, tmp_path):
     return params, report
 
 
-def correction_context_fixture(monkeypatch, tmp_path, *, call_limit=100):
+def correction_context_fixture(monkeypatch, tmp_path, *, call_limit=100, runner_factory=None, image=None):
     """Real persisted pipeline/HTTP adapter; static code and HTTP are test fixtures.
 
     This intentionally is not a rootless Docker or real-provider acceptance.
@@ -297,7 +297,30 @@ def correction_context_fixture(monkeypatch, tmp_path, *, call_limit=100):
         directory.mkdir(mode=0o700)
         paths[name] = str(directory)
     test = tmp_path / 'independent_test.py'
-    test.write_text('assert abs(relative_performance_pp(5, 2) - 3) < 1e-9\n'
+    constraints = ''
+    if runner_factory is not None:
+        constraints = '''import sys, os
+from pathlib import Path
+sys.path.insert(0, '/sandbox')
+from candidate import relative_performance_pp
+assert os.getuid() == os.geteuid() == 65534
+status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
+assert all(int(status[k].strip(), 16) == 0 for k in ('CapEff', 'CapPrm', 'CapAmb'))
+assert status['NoNewPrivs'].strip() == '1'
+assert Path('/sys/fs/cgroup/memory.max').read_text().strip() == '134217728'
+assert Path('/sys/fs/cgroup/pids.max').read_text().strip() == '32'
+quota, period = Path('/sys/fs/cgroup/cpu.max').read_text().split()
+assert int(quota) * 2 == int(period)
+assert not any(line.split()[1] == '00000000' for line in Path('/proc/net/route').read_text().splitlines()[1:])
+assert not os.environ.get('OPENAI_API_KEY')
+try:
+    Path('/forbidden-root-write').write_text('forbidden')
+except OSError as error:
+    assert error.errno == 30
+else:
+    raise AssertionError('root filesystem writable')
+'''
+    test.write_text(constraints + 'assert abs(relative_performance_pp(5, 2) - 3) < 1e-9\n'
         'assert abs(relative_performance_pp(-5, 2) + 7) < 1e-9\n'
         'assert abs(relative_performance_pp(5, -2) - 7) < 1e-9\n')
     test_sha = hashlib.sha256(test.read_bytes()).hexdigest()
@@ -313,7 +336,24 @@ def correction_context_fixture(monkeypatch, tmp_path, *, call_limit=100):
     def authorize(binding):
         return dict(verification_authorized=True, binding=dict(binding), reviewer_id='ci-independent-review',
                     authorization_id='ci-review-' + binding['nonce'], approved=False, deployment_allowed=False)
+    if runner_factory is not None:
+        import hmac
+        import secrets
+        from central_ai.verifier_gate import make_hmac_review_authorizer
+        key = secrets.token_bytes(32)  # Ephemeral synthetic acceptance identity only.
+        def issue(binding):
+            receipt = dict(schema='review-hmac-sha256-v1', binding=dict(binding),
+                reviewer_id='ci-independent-review', authorization_id='ci-review-' + binding['nonce'],
+                issued_at=1000, expires_at=1100, verification_authorized=True,
+                approved=False, deployment_allowed=False)
+            raw = json.dumps(receipt, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+            return dict(receipt, mac=hmac.new(key, raw, 'sha256').hexdigest())
+        authorize = make_hmac_review_authorizer(reviewer_keys={'ci-independent-review': key},
+            request_receipt=issue, clock=lambda: 1050)
     def verifier(**kwargs):
+        if runner_factory is not None:
+            from central_ai.isolated_functional_verifier import run_functional_tests
+            return run_functional_tests(**kwargs, run=runner_factory())
         kwargs['record_resources'](dict(snapshot_directory='/tmp/central-ai-input-ci-correction',
             container_name='central-ai-verifier-' + 'c' * 32))
         raw = Path(kwargs['candidate']).read_bytes()
@@ -332,11 +372,13 @@ def correction_context_fixture(monkeypatch, tmp_path, *, call_limit=100):
             executed_candidate=True, completion_confirmed=passed, execution_policy='bounded-arithmetic-v1',
             returncode=0 if passed else 1, test_sha256=test_sha)
     def base_admit(binding):
+        if runner_factory is not None:
+            runner_factory()  # Recheck host/daemon/image before reservation or HTTP.
         receipt = generation_admission_fixture(binding)
         receipt['budget_call_limit'] = call_limit
         return receipt
     params = dict(enabled='YES', database=str(db), task_id=root, **paths,
-        trusted_test_file=str(test), trusted_test_sha256=test_sha, image='python@sha256:' + 'a' * 64,
+        trusted_test_file=str(test), trusted_test_sha256=test_sha, image=image or 'python@sha256:' + 'a' * 64,
         authorization_check=authorize, verifier=verifier, generator=generator,
         generator_id=generator.generator_id, generation_authorization_check=base_admit)
     report = prepare_and_verify(**params)
@@ -444,6 +486,59 @@ def test_correction_context_changed_after_http_is_blocked_without_retry(monkeypa
     with pytest.raises(ValueError, match='VERIFICATION_ALREADY_STARTED'):
         prepare_and_verify(**params)
     assert len(seen) == 2
+
+
+def test_real_rootless_bound_correction_context(monkeypatch, tmp_path):
+    """Opt-in real private daemon; model responses and host allowance are synthetic."""
+    import hashlib
+    import os
+    from pathlib import Path
+    from central_ai.isolated_functional_verifier import make_isolated_docker_runner
+    from central_ai.task_storage import TaskStorage
+    runner_file = os.environ.get('CENTRAL_AI_ROOTLESS_CI_POLICY')
+    if not runner_file:
+        pytest.skip('requires intended nonroot/private rootless daemon')
+    policy = json.loads(Path(runner_file).read_text())
+    image = os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE']
+    def checked():
+        return make_isolated_docker_runner(policy, [image])
+    checked()  # No host or verifier guard is replaced in this acceptance.
+    def containers():
+        result = checked()(['docker', 'container', 'ls', '--all', '--format', '{{.Names}}'],
+            capture_output=True, text=True, timeout=10, check=False)
+        assert result.returncode == 0
+        return set(result.stdout.splitlines())
+    before = containers()
+    params, root, seen, original, wrong = correction_context_fixture(monkeypatch, tmp_path,
+        call_limit=2, runner_factory=checked, image=image)
+    test = Path(params['trusted_test_file'])
+    test_before = test.read_bytes()
+    result = prepare_and_verify(**params)
+    assert result['test_status'] == 'passed' and result['completion_confirmed']
+    assert not result['approved'] and not result['deployment_allowed']
+    store = TaskStorage(params['database'])
+    first = store.get(root)
+    second = store.get(params['task_id'])
+    assert first['verification']['outcome']['test_status'] == 'failed'
+    assert second['verification']['outcome']['test_status'] == 'passed'
+    assert second['generation']['binding']['schema'] == 'generation-request-v2'
+    prompt = seen[1]['messages'][-1]['content']
+    assert hashlib.sha256(prompt.encode()).hexdigest() == second['generation']['dispatch']['prompt_sha256']
+    assert len(seen) == 2 and original.read_text() == wrong and test.read_bytes() == test_before
+    assert first['revision_family']['members'] == [root, params['task_id']]
+    assert first['generation']['admission']['receipt']['budget_call_limit'] == 2
+    for record in (first, second):
+        assert record['verification']['phase'] == 'completed'
+        assert not Path(record['verification']['resources']['snapshot_directory']).exists()
+    assert containers() == before
+    with pytest.raises(ValueError, match='VERIFICATION_ALREADY_STARTED'):
+        prepare_and_verify(**params)
+    with pytest.raises(ValueError, match='REVISION_PARENT_NOT_ELIGIBLE'):
+        PersistentTaskBridge(params['database']).submit_revision(params['task_id'], result['verification_nonce'])
+    assert len(seen) == 2 and containers() == before
+    print('ROOTLESS_BOUND_CORRECTION_CONTEXT_PASSED')
+    print(json.dumps(dict(provider='mock', root='failed', correction='passed',
+        callbacks=2, cleanup_confirmed=True, promotion_allowed=False)))
 
 
 def test_revision_family_budget_survives_reopen_and_new_task_ids(monkeypatch, tmp_path):
