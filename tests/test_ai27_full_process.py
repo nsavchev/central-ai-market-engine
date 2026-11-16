@@ -265,6 +265,187 @@ def revision_fixture(monkeypatch, tmp_path):
     return params, report
 
 
+def correction_context_fixture(monkeypatch, tmp_path, *, call_limit=100):
+    """Real persisted pipeline/HTTP adapter; static code and HTTP are test fixtures.
+
+    This intentionally is not a rootless Docker or real-provider acceptance.
+    """
+    import hashlib
+    import httpx
+    from pathlib import Path
+    from central_ai.app import make_openai_generator
+    from central_ai.isolated_functional_verifier import _validate_bounded_candidate
+    from test_ai26_verified_review_pipeline import generation_admission_fixture
+    db = tmp_path / 'tasks.sqlite'
+    source = tmp_path / 'source'
+    source.mkdir()
+    original = source / 'relative.py'
+    wrong = 'def relative_performance_pp(asset_return, benchmark_return):\n    return asset_return + benchmark_return\n'
+    correct = wrong.replace(' + ', ' - ')
+    original.write_text(wrong)
+    bridge = PersistentTaskBridge(db)
+    root = bridge.submit('Implement relative_performance_pp(asset_return, benchmark_return): '
+        'subtract benchmark percentage return from asset percentage return, yielding percentage points. '
+        'Return one Python code block with a single arithmetic function; no imports or calls.')['task_id']
+    targets = TaskFileTargets(db)
+    targets.initialize()
+    targets.register(root, str(source), original.name)
+    run_batch(enabled='YES', database=str(db), agent='ci-correction-root', max_tasks=1, idle_checks=1, sleep=lambda _: None)
+    paths = {}
+    for name in ('handoffs', 'proposals', 'candidates'):
+        directory = tmp_path / name
+        directory.mkdir(mode=0o700)
+        paths[name] = str(directory)
+    test = tmp_path / 'independent_test.py'
+    test.write_text('assert abs(relative_performance_pp(5, 2) - 3) < 1e-9\n'
+        'assert abs(relative_performance_pp(-5, 2) + 7) < 1e-9\n'
+        'assert abs(relative_performance_pp(5, -2) - 7) < 1e-9\n')
+    test_sha = hashlib.sha256(test.read_bytes()).hexdigest()
+    seen = []
+    def transport(request):
+        body = json.loads(request.content)
+        seen.append(body)
+        answer = wrong if len(seen) == 1 else correct
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(
+            {'choices': [{'message': {'content': '```python\n' + answer + '```'}}]}).encode()))
+    monkeypatch.setenv('OPENAI_API_KEY', 'ci-secret-not-real')
+    generator = make_openai_generator(enabled='YES', database=str(db), transport=httpx.MockTransport(transport))
+    def authorize(binding):
+        return dict(verification_authorized=True, binding=dict(binding), reviewer_id='ci-independent-review',
+                    authorization_id='ci-review-' + binding['nonce'], approved=False, deployment_allowed=False)
+    def verifier(**kwargs):
+        kwargs['record_resources'](dict(snapshot_directory='/tmp/central-ai-input-ci-correction',
+            container_name='central-ai-verifier-' + 'c' * 32))
+        raw = Path(kwargs['candidate']).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == kwargs['expected_sha256']
+        assert hashlib.sha256(test.read_bytes()).hexdigest() == kwargs['expected_test_sha256']
+        _validate_bounded_candidate(raw)
+        # Execute only these authored, bounded arithmetic fixtures in this unit test.
+        namespace = {'__builtins__': {'abs': abs}}
+        exec(compile(raw, '<static-test-candidate>', 'exec'), namespace)
+        passed = True
+        try:
+            exec(compile(test.read_bytes(), '<trusted-test>', 'exec'), namespace)
+        except AssertionError:
+            passed = False
+        return dict(status='passed' if passed else 'failed', passed=passed,
+            executed_candidate=True, completion_confirmed=passed, execution_policy='bounded-arithmetic-v1',
+            returncode=0 if passed else 1, test_sha256=test_sha)
+    def base_admit(binding):
+        receipt = generation_admission_fixture(binding)
+        receipt['budget_call_limit'] = call_limit
+        return receipt
+    params = dict(enabled='YES', database=str(db), task_id=root, **paths,
+        trusted_test_file=str(test), trusted_test_sha256=test_sha, image='python@sha256:' + 'a' * 64,
+        authorization_check=authorize, verifier=verifier, generator=generator,
+        generator_id=generator.generator_id, generation_authorization_check=base_admit)
+    report = prepare_and_verify(**params)
+    assert report['test_status'] == 'failed'
+    parent_candidate = tmp_path / 'candidates' / ('candidate_' + root + '.py')
+    child = bridge.submit_revision(root, report['verification_nonce'])['task_id']
+    run_batch(enabled='YES', database=str(db), agent='ci-correction-child', max_tasks=1, idle_checks=1, sleep=lambda _: None)
+    params.update(task_id=child, revision_candidate_file=str(parent_candidate))
+    def admit(binding):
+        receipt = base_admit(binding)
+        receipt['disclosure'] = 'task_description_and_parent_candidate'
+        return receipt
+    params['generation_authorization_check'] = admit
+    return params, root, seen, original, wrong
+
+
+def test_correction_context_drives_fail_to_pass_and_hashes_actual_prompt(monkeypatch, tmp_path):
+    import hashlib
+    from central_ai.task_storage import TaskStorage
+    params, root, seen, original, wrong = correction_context_fixture(monkeypatch, tmp_path)
+    report = prepare_and_verify(**params)
+    assert report['tests_passed'] and not report['approved'] and not report['deployment_allowed']
+    assert len(seen) == 2
+    prompt = seen[1]['messages'][-1]['content']
+    assert 'previous candidate failed' in prompt and 'candidate_code' in prompt
+    assert 'asset_return + benchmark_return' in prompt
+    assert 'independent_test.py' not in prompt and 'ci-secret-not-real' not in prompt
+    saved = TaskStorage(params['database']).get(params['task_id'])['generation']
+    assert saved['dispatch']['prompt_sha256'] == hashlib.sha256(prompt.encode()).hexdigest()
+    assert saved['dispatch']['prompt_sha256'] != saved['binding']['spec_sha256']
+    assert 'candidate_code' not in json.dumps(saved) and wrong not in json.dumps(saved)
+    assert TaskStorage(params['database']).get(root)['verification']['outcome']['test_status'] == 'failed'
+    assert original.read_text() == wrong
+
+
+@pytest.mark.parametrize('failure', ['missing', 'wrong_code', 'old_disclosure', 'context_tamper', 'parent_tamper', 'lineage_tamper', 'code_tamper'])
+def test_correction_context_rejects_mismatch_before_second_http(monkeypatch, tmp_path, failure):
+    import sqlite3
+    from pathlib import Path
+    from central_ai.task_storage import TaskStorage
+    from test_ai26_verified_review_pipeline import generation_admission_fixture
+    params, root, seen, _, _ = correction_context_fixture(monkeypatch, tmp_path)
+    if failure == 'missing':
+        params.pop('revision_candidate_file')
+    elif failure == 'wrong_code':
+        wrong = tmp_path / 'substitution.py'
+        wrong.write_text('def other(): return 1\n')
+        params['revision_candidate_file'] = str(wrong)
+    elif failure == 'old_disclosure':
+        params['generation_authorization_check'] = generation_admission_fixture
+    else:
+        original = params['generator']
+        def tamper(request):
+            if failure == 'context_tamper':
+                request['revision_context']['test_status'] = 'passed'
+            elif failure == 'code_tamper':
+                request['revision_context']['candidate_code'] += '\n'
+            else:
+                with sqlite3.connect(params['database']) as conn:
+                    victim = params['task_id'] if failure == 'lineage_tamper' else root
+                    task = json.loads(conn.execute('SELECT payload FROM tasks WHERE task_id=?', (victim,)).fetchone()[0])
+                    if failure == 'lineage_tamper': task['revision']['ordinal'] = 3
+                    else: task['verification']['nonce'] = 'f' * 32
+                    conn.execute('UPDATE tasks SET payload=? WHERE task_id=?', (json.dumps(task), victim))
+            return original(request)
+        params['generator'] = tamper
+    with pytest.raises(ValueError):
+        prepare_and_verify(**params)
+    assert len(seen) == 1
+    saved = TaskStorage(params['database']).get(params['task_id'])
+    assert saved['verification']['phase'] == 'blocked'
+    assert 'dispatch' not in saved.get('generation', {})
+    if failure in ('missing', 'wrong_code', 'old_disclosure'):
+        assert 'admission' not in saved.get('generation', {})
+
+
+def test_correction_context_does_not_create_another_paid_call_allowance(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params, root, seen, _, _ = correction_context_fixture(monkeypatch, tmp_path, call_limit=1)
+    with pytest.raises(ValueError, match='GENERATION_CALL_BUDGET_EXHAUSTED'):
+        prepare_and_verify(**params)
+    assert len(seen) == 1
+    assert 'admission' not in TaskStorage(params['database']).get(params['task_id'])['generation']
+    assert TaskStorage(params['database']).get(root)['generation']['admission']['receipt']['budget_call_limit'] == 1
+
+
+def test_correction_context_changed_after_http_is_blocked_without_retry(monkeypatch, tmp_path):
+    import sqlite3
+    from central_ai.task_storage import TaskStorage
+    params, root, seen, _, _ = correction_context_fixture(monkeypatch, tmp_path)
+    original = params['generator']
+    def change_after_dispatch(request):
+        response = original(request)
+        with sqlite3.connect(params['database']) as conn:
+            task = json.loads(conn.execute('SELECT payload FROM tasks WHERE task_id=?', (root,)).fetchone()[0])
+            task['verification']['nonce'] = 'f' * 32
+            conn.execute('UPDATE tasks SET payload=? WHERE task_id=?', (json.dumps(task), root))
+        return response
+    params['generator'] = change_after_dispatch
+    with pytest.raises(ValueError, match='REVISION_CONTEXT_INVALID'):
+        prepare_and_verify(**params)
+    saved = TaskStorage(params['database']).get(params['task_id'])
+    assert 'dispatch' in saved['generation'] and saved['generation']['phase'] == 'requested'
+    assert saved['verification']['phase'] == 'blocked' and len(seen) == 2
+    with pytest.raises(ValueError, match='VERIFICATION_ALREADY_STARTED'):
+        prepare_and_verify(**params)
+    assert len(seen) == 2
+
+
 def test_revision_family_budget_survives_reopen_and_new_task_ids(monkeypatch, tmp_path):
     params, report = revision_fixture(monkeypatch, tmp_path)
     root = params['task_id']

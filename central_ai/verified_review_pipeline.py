@@ -15,7 +15,7 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
                        candidates, recommendation=None, trusted_test_file, image,
                        trusted_test_sha256=None, authorization_check=None,
                        verifier=run_functional_tests, generator=None, generator_id=None,
-                       generation_authorization_check=None):
+                       generation_authorization_check=None, revision_candidate_file=None):
     if enabled != "YES":
         raise ValueError("PIPELINE_VERIFICATION_DISABLED")
     if not isinstance(trusted_test_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", trusted_test_sha256):
@@ -35,6 +35,8 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
         raise ValueError("INVALID_GENERATOR_CONFIGURATION")
     if generator is not None and not callable(generation_authorization_check):
         raise ValueError("GENERATION_AUTHORIZATION_REQUIRED")
+    if revision_candidate_file is not None and generator is None:
+        raise ValueError('REVISION_GENERATOR_REQUIRED')
     db = Path(database)
     if not db.is_absolute() or not db.is_file() or db.is_symlink():
         raise ValueError("INVALID_TASK_DB")
@@ -44,7 +46,11 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
     stage = "generation" if generator is not None else "preparation"
     try:
         if generator is not None:
-            request = storage.begin_generation(task_id, nonce, generator_id, trusted_test_sha256, image)
+            extra = {}
+            if revision_candidate_file is not None:
+                from central_ai.isolated_functional_verifier import _read_input
+                extra['revision_candidate'] = _read_input(Path(revision_candidate_file)).decode('utf-8')
+            request = storage.begin_generation(task_id, nonce, generator_id, trusted_test_sha256, image, **extra)
             stage = "generation_authorization"
             receipt = generation_authorization_check(dict(request['binding']))
             request['admission'] = storage.authorize_generation(task_id, nonce, receipt)
