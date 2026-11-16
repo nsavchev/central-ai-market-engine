@@ -265,29 +265,42 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
                       object_pairs_hook=pairs,parse_constant=constant)
     fields={'schema','scope','execution_policy','execution_authorized','approved','deployment_allowed','database','policy_id',
             'model','max_output_tokens','budget','authority','runtime_sha256','jobs'}
-    isolated = isinstance(config,dict) and config.get('schema')=='worker-review-runtime-v2'
+    modern = isinstance(config,dict) and config.get('schema')=='worker-review-runtime-v3'
+    isolated = isinstance(config,dict) and config.get('schema') in ('worker-review-runtime-v2','worker-review-runtime-v3')
+    if modern:
+        from central_ai.task_storage import DEVELOPER_MODEL_PROFILES
+        fields = (fields-{'model','max_output_tokens'}) | {'model_profiles','default_profile'}
+        if config.get('model_profiles') != DEVELOPER_MODEL_PROFILES or config.get('default_profile') != 'primary':
+            reject()
     if isolated:fields=fields|{'runner'}
     if (not isinstance(config,dict) or set(config)!=fields
-            or config['schema'] not in ('worker-review-runtime-v1','worker-review-runtime-v2') or config['scope']!='isolated_only'
+            or config['schema'] not in ('worker-review-runtime-v1','worker-review-runtime-v2','worker-review-runtime-v3') or config['scope']!='isolated_only'
             or config['execution_policy']!='bounded-arithmetic-v1'
             or type(config['execution_authorized']) is not bool
             or (not validation_only and config['execution_authorized'] is not True)
             or config['approved'] is not False or config['deployment_allowed'] is not False
-            or config['database']!=str(db) or config['model']!='gpt-4.1-mini'
-            or type(config['max_output_tokens']) is not int or not 1<=config['max_output_tokens']<=128
+            or config['database']!=str(db) or (not modern and (config['model']!='gpt-4.1-mini'
+                or type(config['max_output_tokens']) is not int or not 1<=config['max_output_tokens']<=128))
             or not isinstance(config['policy_id'],str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,64}',config['policy_id'])):
         reject()
     budget=config['budget'];authority=config['authority']
-    if (not isinstance(budget,dict) or set(budget)!={'currency','limit_microusd','reserved_microusd','call_limit'}
+    budget_fields = {'currency','limit_microusd','call_limit'} | (set() if modern else {'reserved_microusd'})
+    if (not isinstance(budget,dict) or set(budget)!=budget_fields
             or budget['currency']!='USD'
-            or any(type(budget[k]) is not int for k in ('limit_microusd','reserved_microusd','call_limit'))
-            or not 1<=budget['reserved_microusd']<=budget['limit_microusd']<=10**12
-            or budget['call_limit']!=1
+            or any(type(budget[k]) is not int for k in budget_fields-{'currency'})
+            or not 1<=budget['limit_microusd']<=10**12
+            or (not modern and not 1<=budget['reserved_microusd']<=budget['limit_microusd'])
+            or budget['call_limit']!=(3 if modern else 1)
             or not isinstance(authority,dict) or set(authority)!={'generation_id','reviewer_id','reviewer_key_file'}
             or not isinstance(authority.get('reviewer_key_file'),str)
             or any(not isinstance(authority[k],str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,64}',authority[k])
                    for k in ('generation_id','reviewer_id'))):
         reject()
+    if modern:
+        snapshot=TaskStorage.generation_budget_snapshot(db)
+        if (not snapshot['model_profiles_installed'] or snapshot['effective_call_limit']!=3
+                or snapshot['budget_limits_microusd'] != [budget['limit_microusd']]):
+            raise ValueError('WORKER_MODEL_POLICY_NOT_INSTALLED')
     core={'app.py','task_storage.py','verified_review_pipeline.py','verifier_gate.py',
           'developer_worker_coordinator.py','worker_batch.py','worker_scheduler.py','worker_supervised.py'}
     if isolated:core=core|{'isolated_functional_verifier.py','task_queue.py'}
@@ -310,9 +323,14 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
     with sqlite3.connect(db.as_uri()+'?mode=ro',uri=True,timeout=10) as conn:
         conn.execute('PRAGMA query_only=ON');conn.execute('BEGIN')
         for task_id,grant in grants.items():
+            allowed_fields = job_fields|{'source_file','source_sha256','spec_sha256'}
+            if modern and isinstance(grant,dict) and 'profile_id' in grant:
+                allowed_fields |= {'profile_id'}
             if (not isinstance(task_id,str) or str(UUID(task_id))!=task_id or not isinstance(grant,dict)
-                    or set(grant)!=job_fields|{'source_file','source_sha256','spec_sha256'}
+                    or set(grant)!=allowed_fields
                     or any(not isinstance(v,str) or not v for v in grant.values())):reject()
+            if modern:
+                TaskStorage.developer_model_profile(grant.get('profile_id','primary'))
             if (not re.fullmatch(r'[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}',grant['image'])
                     or any(not Path(grant[field]).is_absolute() or Path(grant[field]).resolve()!=Path(grant[field])
                            for field in ('source_file','trusted_test_file','handoffs','proposals','candidates'))
@@ -356,6 +374,15 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
                 or type(binding.get('ordinal')) is not int or binding.get('ordinal')!=1):
             raise ValueError('WORKER_REVIEW_GENERATION_DENIED')
         now=datetime.now(timezone.utc)
+        if modern:
+            profile_id=grant.get('profile_id','primary')
+            profile=TaskStorage.developer_model_profile(profile_id)
+            return dict(schema='generation-admission-usd-v3',generation_authorized=True,binding=dict(binding),
+                scope='generate_only',disclosure='task_description_only',profile_id=profile_id,
+                authorization_id=authority['generation_id']+':'+binding['nonce'],budget_period=now.strftime('%Y-%m'),
+                budget_limit_microusd=budget['limit_microusd'],reserved_microusd=profile['reserved_microusd'],
+                budget_call_limit=budget['call_limit'],model=profile['model'],max_output_tokens=profile['max_output_tokens'],
+                expires_at=(now+timedelta(seconds=60)).isoformat(),approved=False,deployment_allowed=False)
         return dict(schema='generation-admission-usd-v2',generation_authorized=True,binding=dict(binding),
             scope='generate_only',disclosure='task_description_only',
             authorization_id=authority['generation_id']+':'+binding['nonce'],budget_period=now.strftime('%Y-%m'),

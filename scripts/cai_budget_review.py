@@ -12,14 +12,16 @@ from central_ai.task_storage import TaskStorage
 from central_ai.verifier_gate import read_private_host_file
 
 
-def prepare(database, proposal, *, expected_history_sha256, new_call_limit, amendment_id):
+def prepare(database, proposal, *, expected_history_sha256, new_call_limit, amendment_id, model_profiles=False):
     database, proposal = Path(database), Path(proposal)
     parent = proposal.parent
     if (not proposal.is_absolute() or parent.resolve() != parent or not parent.is_dir()
             or parent.stat().st_uid != os.getuid() or parent.stat().st_mode & 0o077
             or proposal.is_relative_to(database.parent)):
         raise ValueError('PRIVATE_REVIEW_OUTSIDE_LEDGER_REQUIRED')
-    amendment = TaskStorage.prepare_generation_budget_amendment(database,
+    prepare_policy = (TaskStorage.prepare_generation_model_amendment if model_profiles
+                      else TaskStorage.prepare_generation_budget_amendment)
+    amendment = prepare_policy(database,
         expected_history_sha256=expected_history_sha256,
         new_call_limit=new_call_limit, amendment_id=amendment_id)
     review = dict(schema='operator-generation-budget-review-v1', database=str(database),
@@ -36,12 +38,13 @@ def prepare(database, proposal, *, expected_history_sha256, new_call_limit, amen
     except Exception:
         proposal.unlink(missing_ok=True)
         raise
+    details = (dict(default_profile=amendment['default_profile'], profiles=amendment['profiles']) if model_profiles
+               else dict(model=amendment['model'], max_output_tokens=amendment['max_output_tokens']))
     return dict(prepared=True, ledger_changed=False, provider_request_sent=False, worker_activated=False,
         proposal_file=str(proposal), proposal_sha256=hashlib.sha256(raw).hexdigest(),
         budget_period=amendment['budget_period'], used_calls=amendment['expected_used_calls'],
         previous_call_limit=amendment['previous_call_limit'], proposed_call_limit=amendment['new_call_limit'],
-        budget_limit_microusd=amendment['budget_limit_microusd'], model=amendment['model'],
-        max_output_tokens=amendment['max_output_tokens'])
+        budget_limit_microusd=amendment['budget_limit_microusd'], **details)
 
 
 def apply(database, proposal, *, approved, expected_review_sha256):
@@ -82,6 +85,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument('--prepare', action='store_true')
+    modes.add_argument('--prepare-models', action='store_true')
     modes.add_argument('--apply-approved', action='store_true')
     parser.add_argument('--database', type=Path, required=True)
     parser.add_argument('--proposal-file', type=Path, required=True)
@@ -90,11 +94,11 @@ def main():
     parser.add_argument('--new-call-limit', type=int)
     parser.add_argument('--amendment-id')
     args = parser.parse_args()
-    if args.prepare:
+    if args.prepare or args.prepare_models:
         if args.expected_history_sha256 is None or args.new_call_limit is None or args.amendment_id is None:
             parser.error('Preparation requires exact history, new-call-limit and amendment-id')
         result = prepare(args.database, args.proposal_file, expected_history_sha256=args.expected_history_sha256,
-            new_call_limit=args.new_call_limit, amendment_id=args.amendment_id)
+            new_call_limit=args.new_call_limit, amendment_id=args.amendment_id, model_profiles=args.prepare_models)
     else:
         if args.expected_review_sha256 is None:
             parser.error('Apply requires the exact previously reviewed file hash')

@@ -9,8 +9,23 @@ from datetime import datetime, timezone, timedelta
 
 OPENAI_GENERATOR_ID = 'openai-bounded-v1'
 
+# Reviewed developer profiles, not environment-selected fallbacks. USD prices
+# are per million tokens (Standard, short context), checked 2026-11-16.
+DEVELOPER_MODEL_PROFILES = {
+    'primary': dict(model='gpt-6.1-sol', max_output_tokens=8192, reasoning_effort='medium',
+                    reserved_microusd=200000),
+    'simple': dict(model='gpt-6-luna', max_output_tokens=2048, reasoning_effort='low',
+                   reserved_microusd=10000),
+}
+
 
 class TaskStorage:
+    @staticmethod
+    def developer_model_profile(profile_id='primary'):
+        if not isinstance(profile_id, str) or profile_id not in DEVELOPER_MODEL_PROFILES:
+            raise ValueError('UNKNOWN_DEVELOPER_MODEL_PROFILE')
+        return dict(DEVELOPER_MODEL_PROFILES[profile_id])
+
     def __init__(self, db_path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(
@@ -310,7 +325,7 @@ class TaskStorage:
         if receipt.get('schema') == 'generation-admission-v1':
             return ('EUR', receipt.get('budget_limit_microuros'), receipt.get('reserved_microuros'),
                     'budget_limit_microuros', 'reserved_microuros')
-        if receipt.get('schema') == 'generation-admission-usd-v2':
+        if receipt.get('schema') in ('generation-admission-usd-v2', 'generation-admission-usd-v3'):
             return ('USD', receipt.get('budget_limit_microusd'), receipt.get('reserved_microusd'),
                     'budget_limit_microusd', 'reserved_microusd')
         raise ValueError('INVALID_GENERATION_ADMISSION')
@@ -323,6 +338,17 @@ class TaskStorage:
                   'authorization_id','budget_period',limit_key,
                   'budget_call_limit',reserved_key,'model','max_output_tokens',
                   'expires_at','approved','deployment_allowed'}
+        modern = receipt.get('schema') == 'generation-admission-usd-v3'
+        if not modern and receipt.get('model') in {p['model'] for p in DEVELOPER_MODEL_PROFILES.values()}:
+            raise ValueError('MODEL_PROFILE_ADMISSION_REQUIRED')
+        if modern:
+            fields |= {'profile_id'}
+            profile = TaskStorage.developer_model_profile(receipt.get('profile_id'))
+            if (not isinstance(binding, dict) or binding.get('provider_id') != OPENAI_GENERATOR_ID
+                    or receipt.get('model') != profile['model']
+                    or receipt.get('max_output_tokens') != profile['max_output_tokens']
+                    or reserved != profile['reserved_microusd']):
+                raise ValueError('INVALID_GENERATION_MODEL_PROFILE')
         if (not isinstance(receipt, dict) or set(receipt) != fields
                 or receipt.get('generation_authorized') is not True
                 or receipt.get('binding') != binding or receipt.get('scope') != 'generate_only'
@@ -338,7 +364,7 @@ class TaskStorage:
                     limit_key,'budget_call_limit',reserved_key,'max_output_tokens'))
                 or not 1 <= reserved <= limit <= 10**12
                 or not 1 <= receipt['budget_call_limit'] <= 100000
-                or not 1 <= receipt['max_output_tokens'] <= 1500
+                or not 1 <= receipt['max_output_tokens'] <= (8192 if modern else 1500)
                 or receipt.get('budget_period') != reserved_at.strftime('%Y-%m')
                 or not isinstance(receipt.get('expires_at'), str)):
             raise ValueError('INVALID_GENERATION_ADMISSION')
@@ -383,10 +409,31 @@ class TaskStorage:
 
     @staticmethod
     def _validated_budget_amendment(amendment, *, authorized):
+        modern = isinstance(amendment, dict) and amendment.get('schema') == 'generation-model-amendment-usd-v2'
         fields = {'schema', 'amendment_id', 'budget_period', 'currency', 'budget_limit_microusd',
             'previous_call_limit', 'new_call_limit', 'expected_used_calls', 'expected_reserved_microusd',
             'expected_history_sha256', 'model', 'max_output_tokens', 'operator_authorized',
             'approved', 'deployment_allowed'}
+        checked = amendment
+        if modern:
+            fields = (fields - {'model', 'max_output_tokens'}) | {
+                'profiles', 'default_profile', 'previous_policy_sha256'}
+            if (set(amendment) != fields or amendment.get('profiles') != DEVELOPER_MODEL_PROFILES
+                    or amendment.get('default_profile') != 'primary'
+                    or type(amendment.get('expected_used_calls')) is not int or amendment['expected_used_calls'] != 1
+                    or (amendment.get('previous_policy_sha256') is not None
+                        and not re.fullmatch(r'[0-9a-f]{64}', str(amendment['previous_policy_sha256'])))
+                    or type(amendment.get('previous_call_limit')) is not int
+                    or amendment['previous_call_limit'] not in (1, 3)
+                    or amendment.get('new_call_limit') != 3):
+                raise ValueError('INVALID_BUDGET_AMENDMENT')
+            # Reuse all common bound/flag checks, preserving the v1 contract.
+            checked = {k:v for k,v in amendment.items() if k not in {
+                'profiles', 'default_profile', 'previous_policy_sha256'}}
+            checked.update(schema='generation-budget-amendment-usd-v1', model='gpt-4.1-mini',
+                           max_output_tokens=128, previous_call_limit=1)
+            TaskStorage._validated_budget_amendment(checked, authorized=authorized)
+            return
         if (not isinstance(amendment, dict) or set(amendment) != fields
                 or amendment.get('schema') != 'generation-budget-amendment-usd-v1'
                 or amendment.get('currency') != 'USD' or amendment.get('operator_authorized') is not authorized
@@ -416,6 +463,16 @@ class TaskStorage:
             raise ValueError('BUDGET_AMENDMENT_HISTORY_CHANGED')
         receipts = [item['admission']['receipt'] for item in history
                     if item['admission']['receipt']['budget_period'] == amendment['budget_period']]
+        if amendment['schema'] == 'generation-model-amendment-usd-v2':
+            if (len(receipts) != amendment['expected_used_calls']
+                    or any(receipt['schema'] != 'generation-admission-usd-v2'
+                        or receipt['budget_limit_microusd'] != amendment['budget_limit_microusd']
+                        or receipt['model'] != 'gpt-4.1-mini' or receipt['max_output_tokens'] != 128
+                        or receipt['budget_call_limit'] not in (1, amendment['previous_call_limit'])
+                        for receipt in receipts)
+                    or sum(receipt['reserved_microusd'] for receipt in receipts) != amendment['expected_reserved_microusd']):
+                raise ValueError('BUDGET_AMENDMENT_BASELINE_MISMATCH')
+            return
         if (len(receipts) != amendment['expected_used_calls']
                 or any(receipt['schema'] != 'generation-admission-usd-v2'
                     or receipt['budget_limit_microusd'] != amendment['budget_limit_microusd']
@@ -456,7 +513,42 @@ class TaskStorage:
                 raise ValueError('BUDGET_AMENDMENT_HISTORY_CHANGED')
             TaskStorage._check_budget_baseline(amendment, baseline)
             active = record
-        return active
+        # A model migration may follow the optional v1 call-only amendment.
+        # Both records survive; migration never rewrites or reuses an admission.
+        migrated = None
+        for (encoded,) in conn.execute('SELECT payload FROM tasks'):
+            record = json.loads(encoded).get('generation_model_amendment')
+            if record is None:
+                continue
+            if (not isinstance(record, dict) or set(record) != {
+                    'schema', 'amendment', 'amendment_sha256', 'covered_task_ids', 'recorded_at'}
+                    or record.get('schema') != 'generation-budget-amendment-record-v1'
+                    or TaskStorage._json_digest(record.get('amendment')) != record.get('amendment_sha256')):
+                raise ValueError('INVALID_BUDGET_AMENDMENT_HISTORY')
+            body = record['amendment']
+            TaskStorage._validated_budget_amendment(body, authorized=True)
+            if body.get('schema') != 'generation-model-amendment-usd-v2':
+                raise ValueError('INVALID_BUDGET_AMENDMENT_HISTORY')
+            try:
+                at = datetime.fromisoformat(record['recorded_at'])
+                if at.utcoffset() != timedelta(0) or at.strftime('%Y-%m') != body['budget_period']:
+                    raise ValueError('INVALID_BUDGET_AMENDMENT_HISTORY')
+            except (TypeError, ValueError):
+                raise ValueError('INVALID_BUDGET_AMENDMENT_HISTORY') from None
+            if body['budget_period'] != period:
+                continue
+            ids = record['covered_task_ids']
+            if (migrated is not None or not isinstance(ids, list) or not ids
+                    or any(not isinstance(value, str) for value in ids) or len(set(ids)) != len(ids)
+                    or body['previous_policy_sha256'] != (TaskStorage._json_digest(active) if active else None)
+                    or body['previous_call_limit'] != (active['amendment']['new_call_limit'] if active else 1)):
+                raise ValueError('INVALID_BUDGET_AMENDMENT_HISTORY')
+            baseline = [item for item in history if item['task_id'] in set(ids)]
+            if len(baseline) != len(ids):
+                raise ValueError('BUDGET_AMENDMENT_HISTORY_CHANGED')
+            TaskStorage._check_budget_baseline(body, baseline)
+            migrated = record
+        return migrated or active
 
     @classmethod
     def generation_budget_snapshot(cls, database):
@@ -469,9 +561,18 @@ class TaskStorage:
             history = cls._generation_history(conn)
             period = datetime.now(timezone.utc).strftime('%Y-%m')
             active = cls._active_budget_amendment(conn, period, history)
+            measured = []
+            for (encoded,) in conn.execute('SELECT payload FROM tasks'):
+                generation = json.loads(encoded).get('generation', {})
+                receipt = generation.get('admission', {}).get('receipt', {})
+                usage = generation.get('provider_usage')
+                if usage is not None and receipt.get('budget_period') == period:
+                    if cls._json_digest(usage) != generation.get('provider_usage_sha256'):
+                        raise ValueError('OPENAI_USAGE_HISTORY_CHANGED')
+                    measured.append(usage)
         current = [item['admission']['receipt'] for item in history
                    if item['admission']['receipt']['budget_period'] == period]
-        if not current or any(receipt['schema'] != 'generation-admission-usd-v2' for receipt in current):
+        if not current or any(receipt['schema'] not in ('generation-admission-usd-v2','generation-admission-usd-v3') for receipt in current):
             raise ValueError('USD_BUDGET_HISTORY_REQUIRED')
         return dict(schema='generation-budget-snapshot-v1', budget_period=period,
             admission_history_sha256=cls._json_digest(history), admitted_calls=len(current),
@@ -480,7 +581,12 @@ class TaskStorage:
             reserved_total_microusd=sum(receipt['reserved_microusd'] for receipt in current),
             models=sorted({receipt['model'] for receipt in current}),
             output_token_limits=sorted({receipt['max_output_tokens'] for receipt in current}),
+            measured_calls=len(measured), usage_unavailable_calls=len(current)-len(measured),
+            estimated_standard_cost_microusd=sum(u['estimated_standard_cost_microusd'] for u in measured),
+            invoice_verified=False,
             amendment_id=active['amendment']['amendment_id'] if active else None,
+            active_policy_sha256=cls._json_digest(active) if active else None,
+            model_profiles_installed=bool(active and active['amendment']['schema'] == 'generation-model-amendment-usd-v2'),
             effective_call_limit=(active['amendment']['new_call_limit'] if active else
                 next(iter({receipt['budget_call_limit'] for receipt in current}))
                 if len({receipt['budget_call_limit'] for receipt in current}) == 1 else None),
@@ -506,6 +612,24 @@ class TaskStorage:
         return amendment
 
     @classmethod
+    def prepare_generation_model_amendment(cls, database, *, expected_history_sha256, new_call_limit, amendment_id):
+        snapshot = cls.generation_budget_snapshot(database)
+        if (snapshot['model_profiles_installed'] or snapshot['admission_history_sha256'] != expected_history_sha256
+                or snapshot['budget_limits_microusd'] != [20000000]
+                or snapshot['models'] != ['gpt-4.1-mini'] or snapshot['output_token_limits'] != [128]
+                or snapshot['effective_call_limit'] not in (1, 3) or new_call_limit != 3):
+            raise ValueError('MODEL_AMENDMENT_PREPARATION_CONFLICT')
+        amendment = dict(schema='generation-model-amendment-usd-v2', amendment_id=amendment_id,
+            budget_period=snapshot['budget_period'], currency='USD', budget_limit_microusd=20000000,
+            previous_call_limit=snapshot['effective_call_limit'], new_call_limit=3,
+            expected_used_calls=snapshot['admitted_calls'], expected_reserved_microusd=snapshot['reserved_total_microusd'],
+            expected_history_sha256=expected_history_sha256, profiles=json.loads(json.dumps(DEVELOPER_MODEL_PROFILES)),
+            default_profile='primary', previous_policy_sha256=snapshot['active_policy_sha256'],
+            operator_authorized=False, approved=False, deployment_allowed=False)
+        cls._validated_budget_amendment(amendment, authorized=False)
+        return amendment
+
+    @classmethod
     def record_generation_budget_amendment(cls, database, *, enabled, amendment):
         """Trusted operator boundary only; never called by generation/admission.
 
@@ -524,7 +648,12 @@ class TaskStorage:
         with sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=5) as conn:
             conn.execute('BEGIN IMMEDIATE')
             history = cls._generation_history(conn)
-            if cls._active_budget_amendment(conn, amendment['budget_period'], history) is not None:
+            active = cls._active_budget_amendment(conn, amendment['budget_period'], history)
+            modern = amendment['schema'] == 'generation-model-amendment-usd-v2'
+            if modern and (amendment['previous_policy_sha256'] != (cls._json_digest(active) if active else None)
+                    or amendment['previous_call_limit'] != (active['amendment']['new_call_limit'] if active else 1)):
+                raise ValueError('MODEL_AMENDMENT_POLICY_CHANGED')
+            if active is not None and (not modern or active['amendment']['schema'] == 'generation-model-amendment-usd-v2'):
                 raise ValueError('BUDGET_AMENDMENT_ALREADY_EXISTS')
             cls._check_budget_baseline(amendment, history)
             tasks = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM tasks')]
@@ -534,9 +663,10 @@ class TaskStorage:
             anchor = next(item['task_id'] for item in history
                 if item['admission']['receipt']['budget_period'] == amendment['budget_period'])
             task = json.loads(conn.execute('SELECT payload FROM tasks WHERE task_id=?', (anchor,)).fetchone()[0])
-            if task.get('generation_budget_amendment') is not None:
+            field = 'generation_model_amendment' if modern else 'generation_budget_amendment'
+            if task.get(field) is not None:
                 raise ValueError('BUDGET_AMENDMENT_ANCHOR_OCCUPIED')
-            task['generation_budget_amendment'] = dict(schema='generation-budget-amendment-record-v1',
+            task[field] = dict(schema='generation-budget-amendment-record-v1',
                 amendment=json.loads(json.dumps(amendment)), amendment_sha256=cls._json_digest(amendment),
                 covered_task_ids=[item['task_id'] for item in history], recorded_at=datetime.now(timezone.utc).isoformat())
             cursor = conn.execute('UPDATE tasks SET payload=?,updated_at=? WHERE task_id=?',
@@ -544,7 +674,8 @@ class TaskStorage:
             if cursor.rowcount != 1:
                 raise ValueError('BUDGET_AMENDMENT_WRITE_CONFLICT')
         return dict(amendment_recorded=True, amendment_id=amendment['amendment_id'],
-                    new_call_limit=amendment['new_call_limit'], provider_request_sent=False, worker_activated=False)
+                    new_call_limit=amendment['new_call_limit'], provider_request_sent=False, worker_activated=False,
+                    **(dict(default_profile='primary', profiles=amendment['profiles']) if modern else {}))
 
     def authorize_generation(self, task_id, nonce, receipt):
         """Atomically reserve a host-declared ceiling before the callback.
@@ -570,7 +701,13 @@ class TaskStorage:
             active = self._active_budget_amendment(conn, receipt['budget_period'], history)
             amended = active['amendment'] if active else None
             covered = set(active['covered_task_ids']) if active else set()
-            if amended and (currency != 'USD' or limit != amended['budget_limit_microusd']
+            modern = amended is not None and amended['schema'] == 'generation-model-amendment-usd-v2'
+            if receipt['schema'] == 'generation-admission-usd-v3' and not modern:
+                raise ValueError('MODEL_POLICY_AMENDMENT_REQUIRED')
+            if modern and (receipt['schema'] != 'generation-admission-usd-v3' or currency != 'USD'
+                    or limit != amended['budget_limit_microusd'] or receipt['budget_call_limit'] != amended['new_call_limit']):
+                raise ValueError('GENERATION_BUDGET_POLICY_CONFLICT')
+            if amended and not modern and (currency != 'USD' or limit != amended['budget_limit_microusd']
                     or receipt['budget_call_limit'] != amended['new_call_limit']
                     or receipt['model'] != amended['model']
                     or receipt['max_output_tokens'] > amended['max_output_tokens']):
@@ -586,7 +723,7 @@ class TaskStorage:
                     if prior_currency != currency:
                         raise ValueError('GENERATION_BUDGET_CURRENCY_CONFLICT')
                     allowed_previous = (amended is not None and other_id in covered
-                        and prior['budget_call_limit'] == amended['previous_call_limit'])
+                        and (modern or prior['budget_call_limit'] == amended['previous_call_limit']))
                     if (prior_limit != limit or (prior['budget_call_limit'] != receipt['budget_call_limit']
                             and not allowed_previous)):
                         raise ValueError('GENERATION_BUDGET_POLICY_CONFLICT')
@@ -609,6 +746,8 @@ class TaskStorage:
         profile = {key:receipt[key] for key in (
             'model','max_output_tokens','expires_at','disclosure','scope','approved','deployment_allowed')}
         profile['admission_sha256'] = generation['admission_sha256']
+        if receipt['schema'] == 'generation-admission-usd-v3':
+            profile['profile_id'] = receipt['profile_id']
         return profile
 
     def begin_openai_dispatch(self, request):
@@ -663,7 +802,7 @@ class TaskStorage:
             generation['dispatch_sha256'] = self._json_digest(dispatch)
             self._write_review_task(conn, binding['task_id'], task)
         return dict(prompt=prompt, model=profile['model'], max_tokens=profile['max_output_tokens'],
-                    expires_at=profile['expires_at'])
+                    expires_at=profile['expires_at'], **({'profile_id': profile['profile_id']} if 'profile_id' in profile else {}))
 
     @staticmethod
     def _json_digest(value):
@@ -672,11 +811,53 @@ class TaskStorage:
     @staticmethod
     def _openai_dispatch_profile(generation):
         receipt = generation['admission']['receipt']
+        modern = receipt['schema'] == 'generation-admission-usd-v3'
+        extra = {}
+        if modern:
+            profile = TaskStorage.developer_model_profile(receipt['profile_id'])
+            extra = dict(profile_id=receipt['profile_id'], endpoint='responses', reasoning_effort=profile['reasoning_effort'])
         return dict(provider='openai', model=receipt['model'], max_output_tokens=receipt['max_output_tokens'],
                     prompt_sha256=(generation.get('prompt_sha256')
                         if generation['binding'].get('schema') == 'generation-request-v2'
                         else generation['binding']['spec_sha256']),
-                    admission_sha256=generation['admission_sha256'])
+                    admission_sha256=generation['admission_sha256'], **extra)
+
+    def record_openai_usage(self, request, usage, *, elapsed_ms):
+        """Persist bounded numeric usage, including incomplete answers; never raw responses."""
+        fields = {'input_tokens', 'output_tokens', 'cached_input_tokens', 'reasoning_tokens'}
+        if (not isinstance(usage, dict) or set(usage) != fields
+                or any(type(v) is not int or not 0 <= v <= 2000000 for v in usage.values())
+                or usage['cached_input_tokens'] > usage['input_tokens']
+                or usage['reasoning_tokens'] > usage['output_tokens']
+                or type(elapsed_ms) is not int or not 0 <= elapsed_ms <= 120000):
+            raise ValueError('INVALID_OPENAI_USAGE')
+        task_id = request['binding']['task_id']
+        with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            task = self._review_task(conn, task_id)
+            generation = task.get('generation', {})
+            receipt = generation.get('admission', {}).get('receipt', {})
+            dispatch = generation.get('dispatch')
+            if (receipt.get('schema') != 'generation-admission-usd-v3'
+                    or generation.get('phase') != 'requested' or 'provider_usage' in generation
+                    or self._json_digest(dispatch) != generation.get('dispatch_sha256')
+                    or not isinstance(dispatch, dict)
+                    or {k:v for k,v in dispatch.items() if k != 'started_at'} != self._openai_dispatch_profile(generation)
+                    or receipt.get('binding') != request.get('binding')
+                    or generation.get('admission_sha256') != request.get('admission', {}).get('admission_sha256')):
+                raise ValueError('OPENAI_USAGE_CONFLICT')
+            # Integer hundredths of a microUSD/token; reasoning is already part
+            # of output_tokens, not billed a second time. Not an invoice.
+            rates = (200, 10, 1000) if receipt['profile_id'] == 'primary' else (10, 1, 50)
+            uncached = usage['input_tokens'] - usage['cached_input_tokens']
+            cost = (uncached*rates[0] + usage['cached_input_tokens']*rates[1] + usage['output_tokens']*rates[2] + 99)//100
+            generation['provider_usage'] = dict(usage, elapsed_ms=elapsed_ms,
+                estimated_standard_cost_microusd=cost, pricing_date='2026-11-16', invoice_verified=False)
+            generation['provider_usage_sha256'] = self._json_digest(generation['provider_usage'])
+            self._write_review_task(conn, task_id, task)
+        if (usage['output_tokens'] > receipt['max_output_tokens']
+                or cost > receipt['reserved_microusd']):
+            raise ValueError('OPENAI_USAGE_EXCEEDS_RESERVATION')
 
     def complete_generation(self, task_id, nonce, recommendation, admission_sha256):
         if not isinstance(recommendation, str) or not recommendation.strip() or len(recommendation) > 12000:
@@ -704,6 +885,10 @@ class TaskStorage:
                         or self._json_digest(dispatch) != generation.get('dispatch_sha256')
                         or {k:v for k,v in dispatch.items() if k != 'started_at'} != self._openai_dispatch_profile(generation)):
                     raise ValueError('OPENAI_DISPATCH_CONFLICT')
+                if (generation['admission']['receipt']['schema'] == 'generation-admission-usd-v3'
+                        and ('provider_usage' not in generation
+                            or self._json_digest(generation['provider_usage']) != generation.get('provider_usage_sha256'))):
+                    raise ValueError('OPENAI_USAGE_REQUIRED')
             if generation['binding'].get('schema') == 'generation-request-v2':
                 self._revision_context(conn, task, None,
                     generation['binding']['test_sha256'], generation['binding']['image'], task_id=task_id)

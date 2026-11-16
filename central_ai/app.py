@@ -4,6 +4,7 @@ import asyncio
 import json
 import secrets
 import re
+import time
 from datetime import datetime, timezone
 from typing import Literal
 import httpx
@@ -62,8 +63,10 @@ async def _provider_json(client, url, *, headers, json_body):
 
 
 async def call_provider(client: httpx.AsyncClient, provider: str, prompt: str, max_tokens: int, *, model_override=None):
+    from central_ai.task_storage import DEVELOPER_MODEL_PROFILES
+    modern = next((p for p in DEVELOPER_MODEL_PROFILES.values() if p['model'] == model_override), None)
     if (provider not in PROVIDERS or not isinstance(prompt, str) or not 1 <= len(prompt) <= 12000
-            or type(max_tokens) is not int or not 1 <= max_tokens <= 1500):
+            or type(max_tokens) is not int or not 1 <= max_tokens <= (modern['max_output_tokens'] if modern else 1500)):
         raise ValueError("INVALID_PROVIDER_REQUEST")
     if model_override is not None and (provider != 'openai' or not isinstance(model_override, str)
             or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}', model_override)):
@@ -73,7 +76,43 @@ async def call_provider(client: httpx.AsyncClient, provider: str, prompt: str, m
     if not key:
         return {"provider":provider,"status":"not_configured"}
     try:
-        if provider in ("openai", "deepseek"):
+        if provider == 'openai' and modern:
+            data = await _provider_json(client, 'https://api.openai.com/v1/responses',
+                headers={'Authorization':f'Bearer {key}'},
+                json_body=dict(model=model_override, input=[dict(role='user', content=prompt)],
+                    max_output_tokens=max_tokens, reasoning=dict(effort=modern['reasoning_effort']),
+                    store=False, service_tier='default'))
+            raw = data.get('usage')
+            if not isinstance(raw, dict):
+                raise ValueError('OPENAI_USAGE_REQUIRED')
+            usage = dict(input_tokens=raw.get('input_tokens'), output_tokens=raw.get('output_tokens'),
+                cached_input_tokens=raw.get('input_tokens_details', {}).get('cached_tokens', 0),
+                reasoning_tokens=raw.get('output_tokens_details', {}).get('reasoning_tokens', 0))
+            if (any(type(v) is not int or not 0 <= v <= 2000000 for v in usage.values())
+                    or usage['cached_input_tokens'] > usage['input_tokens']
+                    or usage['reasoning_tokens'] > usage['output_tokens']):
+                raise ValueError('INVALID_OPENAI_USAGE')
+            output = data.get('output')
+            if data.get('status') != 'completed' or not isinstance(output, list):
+                return dict(provider=provider, status='incomplete', usage=usage)
+            texts = []
+            for item in output:
+                if not isinstance(item, dict):
+                    return dict(provider=provider, status='invalid_output', usage=usage)
+                if item.get('type') == 'reasoning':
+                    continue
+                if (item.get('type') != 'message' or item.get('role') != 'assistant'
+                        or item.get('status') != 'completed' or not isinstance(item.get('content'), list)):
+                    return dict(provider=provider, status='invalid_output', usage=usage)
+                for part in item['content']:
+                    if not isinstance(part, dict) or part.get('type') != 'output_text' or not isinstance(part.get('text'), str):
+                        return dict(provider=provider, status='invalid_output', usage=usage)
+                    texts.append(part['text'])
+            answer = '\n'.join(texts)
+            if not answer.strip() or len(answer) > MAX_PROVIDER_ANSWER_CHARS:
+                return dict(provider=provider, status='invalid_output', usage=usage)
+            return dict(provider=provider, status='ok', answer=answer, usage=usage)
+        elif provider in ("openai", "deepseek"):
             base = "https://api.openai.com/v1/chat/completions" if provider == "openai" else "https://api.deepseek.com/chat/completions"
             model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini") if provider == "openai" else os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
             if model_override is not None:
@@ -108,13 +147,16 @@ def make_openai_generator(*, enabled, database, transport=None):
         raise ValueError('OPENAI_GENERATOR_NOT_CONFIGURED')
     storage = TaskStorage(path)
 
-    async def dispatch(profile):
+    async def dispatch(profile, request):
         async with httpx.AsyncClient(timeout=PROVIDER_DEADLINE_SECONDS, trust_env=False,
                                      follow_redirects=False, transport=transport) as client:
             if datetime.now(timezone.utc) >= datetime.fromisoformat(profile['expires_at']):
                 raise ValueError('GENERATION_ADMISSION_EXPIRED')
+            started = time.monotonic()
             result = await call_provider(client, 'openai', profile['prompt'], profile['max_tokens'],
                                          model_override=profile['model'])
+            if 'profile_id' in profile and 'usage' in result:
+                storage.record_openai_usage(request, result['usage'], elapsed_ms=int((time.monotonic()-started)*1000))
             if result.get('status') != 'ok':
                 raise RuntimeError('OPENAI_GENERATION_FAILED')
             return result['answer']
@@ -129,7 +171,7 @@ def make_openai_generator(*, enabled, database, transport=None):
         if not os.getenv('OPENAI_API_KEY'):
             raise ValueError('OPENAI_GENERATOR_NOT_CONFIGURED')
         profile = storage.begin_openai_dispatch(request)
-        return asyncio.run(dispatch(profile))
+        return asyncio.run(dispatch(profile, request))
 
     generate.generator_id = OPENAI_GENERATOR_ID
     return generate

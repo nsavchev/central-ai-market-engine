@@ -2087,6 +2087,207 @@ def test_usd_profile_uses_existing_openai_adapter_and_worker(monkeypatch,tmp_pat
     assert saved['verification']['phase']=='completed'
 
 
+def model_amendment_fixture(monkeypatch, tmp_path, *, old_amendment=False):
+    from central_ai.task_storage import TaskStorage
+    params, snapshot, old = amendment_fixture(monkeypatch, tmp_path)
+    if old_amendment:
+        TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES',
+            amendment=dict(old, operator_authorized=True))
+    policy = TaskStorage.prepare_generation_model_amendment(params['database'],
+        expected_history_sha256=snapshot['admission_history_sha256'], new_call_limit=3, amendment_id='ci-sol-luna')
+    TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES',
+        amendment=dict(policy, operator_authorized=True))
+    return params, policy
+
+
+def modern_authorizer(profile_id='primary'):
+    from central_ai.task_storage import TaskStorage
+    def admit(binding):
+        profile=TaskStorage.developer_model_profile(profile_id)
+        receipt=usd_budget_authorizer(calls=3)(binding)
+        receipt.update(schema='generation-admission-usd-v3', profile_id=profile_id,
+            **{k:v for k,v in profile.items() if k!='reasoning_effort'})
+        return receipt
+    return admit
+
+
+def modern_response(*, status='completed', output=None, input_tokens=100, output_tokens=40,
+                    cached_tokens=20, reasoning_tokens=10):
+    return dict(status=status, output=output if output is not None else [dict(type='message', role='assistant',
+        status='completed', content=[dict(type='output_text',text='```python\ndef f(): return 2\n```')])],
+        usage=dict(input_tokens=input_tokens, output_tokens=output_tokens,
+            input_tokens_details=dict(cached_tokens=cached_tokens),
+            output_tokens_details=dict(reasoning_tokens=reasoning_tokens)))
+
+
+def modern_http_response(value):
+    import httpx,json
+    return httpx.Response(200,stream=httpx.ByteStream(json.dumps(value).encode()))
+
+
+def modern_generator(monkeypatch, params, handler):
+    import httpx
+    from central_ai.app import make_openai_generator
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-secret-never-network')
+    monkeypatch.setenv('OPENAI_MODEL','must-not-select-model')
+    generator=make_openai_generator(enabled='YES', database=params['database'], transport=httpx.MockTransport(handler))
+    return dict(params, generator=generator, generator_id=generator.generator_id)
+
+
+@pytest.mark.parametrize('old_amendment', [False, True])
+def test_sol_luna_migration_preserves_history_and_counts_shared_slots(monkeypatch,tmp_path,old_amendment):
+    import httpx,json
+    from central_ai.task_storage import TaskStorage
+    params,policy=model_amendment_fixture(monkeypatch,tmp_path,old_amendment=old_amendment)
+    storage=TaskStorage(params['database']);root=storage.get(params['task_id'])
+    assert policy['previous_call_limit']==(3 if old_amendment else 1)
+    assert policy['default_profile']=='primary'
+    calls=[]
+    def handle(request):
+        body=json.loads(request.content); calls.append(body)
+        assert str(request.url)=='https://api.openai.com/v1/responses'
+        assert set(body)=={'model','input','max_output_tokens','reasoning','store','service_tier'}
+        assert body['store'] is False and body['service_tier']=='default'
+        return modern_http_response(modern_response())
+    for profile_id,model,tokens,effort in [('primary','gpt-6.1-sol',8192,'medium'),('simple','gpt-6-luna',2048,'low')]:
+        params=modern_generator(monkeypatch,add_analyzed_generation_task(params),handle)
+        params['generation_authorization_check']=modern_authorizer(profile_id)
+        assert prepare_and_verify(**params)['tests_passed']
+        saved=storage.get(params['task_id'])['generation']
+        assert calls[-1]['model']==model and calls[-1]['max_output_tokens']==tokens
+        assert calls[-1]['reasoning']=={'effort':effort}
+        assert saved['dispatch']['endpoint']=='responses' and saved['dispatch']['profile_id']==profile_id
+        assert saved['provider_usage']['reasoning_tokens']==10
+        assert saved['provider_usage']['estimated_standard_cost_microusd']==(562 if profile_id=='primary' else 29)
+        assert saved['provider_usage']['invoice_verified'] is False
+        assert 'synthetic-secret' not in json.dumps(saved)
+    snapshot=storage.generation_budget_snapshot(params['database'])
+    assert snapshot['admitted_calls']==3 and snapshot['effective_call_limit']==3
+    assert snapshot['model_profiles_installed'] and snapshot['reserved_total_microusd']==220000
+    assert snapshot['measured_calls']==2 and snapshot['usage_unavailable_calls']==1
+    assert snapshot['estimated_standard_cost_microusd']==591 and snapshot['invoice_verified'] is False
+    current=storage.get(root['task_id'])
+    assert current['generation']==root['generation'] and current['verification']==root['verification']
+    params=add_analyzed_generation_task(params)
+    with pytest.raises(ValueError,match='GENERATION_CALL_BUDGET_EXHAUSTED'):
+        prepare_and_verify(**params)
+    assert len(calls)==2
+
+
+@pytest.mark.parametrize('bad',['profile','tokens','reserve','model','schema','limit','calls'])
+def test_sol_luna_rejects_unreviewed_bounds_before_transport(monkeypatch,tmp_path,bad):
+    params,policy=model_amendment_fixture(monkeypatch,tmp_path)
+    params=modern_generator(monkeypatch,add_analyzed_generation_task(params),lambda _:pytest.fail('no HTTP'))
+    def admit(binding):
+        value=modern_authorizer()(binding)
+        if bad=='profile':value['profile_id']='other'
+        if bad=='tokens':value['max_output_tokens']=8193
+        if bad=='reserve':value['reserved_microusd']=1
+        if bad=='model':value['model']='gpt-6-astra'
+        if bad=='schema':value.pop('profile_id');value['schema']='generation-admission-usd-v2';value['max_output_tokens']=128
+        if bad=='limit':value['budget_limit_microusd']=30000000
+        if bad=='calls':value['budget_call_limit']=4
+        return value
+    params['generation_authorization_check']=admit
+    with pytest.raises(ValueError):prepare_and_verify(**params)
+
+
+def test_sol_luna_requires_policy_and_records_incomplete_usage_without_retry(monkeypatch,tmp_path):
+    import httpx
+    from central_ai.task_storage import TaskStorage
+    params,_,_=amendment_fixture(monkeypatch,tmp_path)
+    params=modern_generator(monkeypatch,add_analyzed_generation_task(params),lambda _:pytest.fail('no HTTP'))
+    params['generation_authorization_check']=modern_authorizer()
+    with pytest.raises(ValueError,match='MODEL_POLICY_AMENDMENT_REQUIRED'):prepare_and_verify(**params)
+    snapshot=TaskStorage.generation_budget_snapshot(params['database'])
+    policy=TaskStorage.prepare_generation_model_amendment(params['database'],
+        expected_history_sha256=snapshot['admission_history_sha256'],new_call_limit=3,amendment_id='ci-models')
+    TaskStorage.record_generation_budget_amendment(params['database'],enabled='YES',amendment=dict(policy,operator_authorized=True))
+    calls=[]
+    def handle(request):
+        calls.append(True)
+        return modern_http_response(modern_response(status='incomplete',output=[]))
+    params=modern_generator(monkeypatch,add_analyzed_generation_task(params),handle)
+    params['generation_authorization_check']=modern_authorizer()
+    with pytest.raises(RuntimeError,match='OPENAI_GENERATION_FAILED'):prepare_and_verify(**params)
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['provider_usage']['output_tokens']==40
+    assert saved['verification']['phase']=='blocked'
+    with pytest.raises(ValueError):prepare_and_verify(**params)
+    assert calls==[True]
+
+
+@pytest.mark.parametrize('response',[modern_response(output=[dict(type='function_call',name='arbitrary')]),
+    modern_response(output=[dict(type='message',role='assistant',status='completed',content=[dict(type='refusal',refusal='no')])]),
+    modern_response(input_tokens=200000),modern_response(output_tokens=8193),
+    dict(status='completed',output=[]),modern_response(cached_tokens=101)])
+def test_sol_luna_bad_response_or_overrun_never_executes_candidate(monkeypatch,tmp_path,response):
+    import httpx
+    from central_ai.task_storage import TaskStorage
+    params,_=model_amendment_fixture(monkeypatch,tmp_path)
+    params=modern_generator(monkeypatch,add_analyzed_generation_task(params),lambda _:modern_http_response(response))
+    params['generation_authorization_check']=modern_authorizer()
+    params['verifier']=lambda **_:pytest.fail('bad provider output must not execute')
+    with pytest.raises((RuntimeError,ValueError)):prepare_and_verify(**params)
+    assert TaskStorage(params['database']).get(params['task_id'])['verification']['phase']=='blocked'
+
+
+def test_sol_luna_private_review_requires_exact_hash_and_unchanged_prior_policy(monkeypatch,tmp_path):
+    import json
+    from scripts.cai_budget_review import prepare,apply
+    from central_ai.task_storage import TaskStorage
+    params,snapshot,old=amendment_fixture(monkeypatch,tmp_path/'state')
+    area=tmp_path/'private';area.mkdir(mode=0o700);proposal=area/'models.json'
+    prepared=prepare(params['database'],proposal,expected_history_sha256=snapshot['admission_history_sha256'],
+        new_call_limit=3,amendment_id='ci-models',model_profiles=True)
+    assert prepared['profiles']['primary']['model']=='gpt-6.1-sol'
+    assert json.loads(proposal.read_text())['execution_authorized'] is False
+    with pytest.raises(ValueError,match='REVIEW_FILE_CHANGED'):
+        apply(params['database'],proposal,approved=True,expected_review_sha256='0'*64)
+    TaskStorage.record_generation_budget_amendment(params['database'],enabled='YES',amendment=dict(old,operator_authorized=True))
+    with pytest.raises(ValueError,match='MODEL_AMENDMENT_POLICY_CHANGED'):
+        apply(params['database'],proposal,approved=True,expected_review_sha256=prepared['proposal_sha256'])
+    snapshot=TaskStorage.generation_budget_snapshot(params['database'])
+    policy=TaskStorage.prepare_generation_model_amendment(params['database'],
+        expected_history_sha256=snapshot['admission_history_sha256'],new_call_limit=3,amendment_id='ci-models-new')
+    TaskStorage.record_generation_budget_amendment(params['database'],enabled='YES',amendment=dict(policy,operator_authorized=True))
+    with pytest.raises(ValueError):
+        TaskStorage.record_generation_budget_amendment(params['database'],enabled='YES',amendment=dict(policy,operator_authorized=True))
+
+
+def test_sol_luna_usage_write_failure_and_replay_do_not_resend(monkeypatch,tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params,_=model_amendment_fixture(monkeypatch,tmp_path)
+    calls=[]
+    def handle(request):calls.append(True);return modern_http_response(modern_response())
+    params=modern_generator(monkeypatch,add_analyzed_generation_task(params),handle)
+    params['generation_authorization_check']=modern_authorizer()
+    def fail(*args,**kw):raise OSError('synthetic usage write failure')
+    with monkeypatch.context() as m:
+        m.setattr(TaskStorage,'record_openai_usage',fail)
+        with pytest.raises(OSError,match='usage write failure'):prepare_and_verify(**params)
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['dispatch'] and 'provider_usage' not in saved['generation']
+    assert TaskStorage.generation_budget_snapshot(params['database'])['reserved_total_microusd']==210000
+    with pytest.raises(ValueError):prepare_and_verify(**params)
+    assert len(calls)==1
+
+
+def test_sol_luna_usage_tamper_is_detected_in_readonly_snapshot(monkeypatch,tmp_path):
+    import json,sqlite3
+    from central_ai.task_storage import TaskStorage
+    params,_=model_amendment_fixture(monkeypatch,tmp_path)
+    params=modern_generator(monkeypatch,add_analyzed_generation_task(params),lambda _:modern_http_response(modern_response()))
+    params['generation_authorization_check']=modern_authorizer()
+    prepare_and_verify(**params)
+    saved=TaskStorage(params['database']).get(params['task_id'])
+    saved['generation']['provider_usage']['estimated_standard_cost_microusd']=0
+    with sqlite3.connect(params['database']) as con:
+        con.execute('UPDATE tasks SET payload=? WHERE task_id=?',(json.dumps(saved),params['task_id']))
+    with pytest.raises(ValueError,match='OPENAI_USAGE_HISTORY_CHANGED'):
+        TaskStorage.generation_budget_snapshot(params['database'])
+
+
 def runtime_policy_fixture(monkeypatch,tmp_path):
     import json,hashlib
     from pathlib import Path
@@ -2151,6 +2352,66 @@ def test_runtime_policy_persistent_key_usd_and_worker_restarts(monkeypatch,tmp_p
     assert saved['generation']['admission']['receipt']['authorization_id'].startswith('ci-host-generation:')
     assert saved['approved'] is saved['deployment_allowed'] is False
     assert original_key.hex() not in json.dumps(saved)
+
+
+@pytest.mark.parametrize('profile_id',[None,'simple'])
+def test_sol_luna_runtime_v3_defaults_to_sol_and_luna_requires_explicit_grant(monkeypatch,tmp_path,profile_id):
+    import hashlib,json
+    from pathlib import Path
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    import central_ai.isolated_functional_verifier as isolated
+    from central_ai.task_storage import TaskStorage,DEVELOPER_MODEL_PROFILES
+    from central_ai.worker_batch import run_batch
+    params,config,path,key,save=runtime_policy_fixture(monkeypatch,tmp_path)
+    params['generation_authorization_check']=usd_budget_authorizer()
+    prepare_and_verify(**params)
+    snapshot=TaskStorage.generation_budget_snapshot(params['database'])
+    policy=TaskStorage.prepare_generation_model_amendment(params['database'],
+        expected_history_sha256=snapshot['admission_history_sha256'],new_call_limit=3,amendment_id='ci-runtime-models')
+    TaskStorage.record_generation_budget_amendment(params['database'],enabled='YES',amendment=dict(policy,operator_authorized=True))
+    old_grant=config['jobs'][params['task_id']]
+    params=add_analyzed_generation_task(params)
+    task=TaskStorage(params['database']).get(params['task_id'])
+    grant=dict(old_grant,spec_sha256=hashlib.sha256(task['task']['task'].encode()).hexdigest())
+    if profile_id is not None:grant['profile_id']=profile_id
+    config.update(schema='worker-review-runtime-v3',default_profile='primary',
+        model_profiles=json.loads(json.dumps(DEVELOPER_MODEL_PROFILES)),runner={},
+        jobs={params['task_id']:grant},budget=dict(currency='USD',limit_microusd=20000000,call_limit=3))
+    config.pop('model');config.pop('max_output_tokens')
+    root=Path(__file__).resolve().parents[1]/'central_ai'
+    for name in ['isolated_functional_verifier.py','task_queue.py']:
+        config['runtime_sha256'][name]=hashlib.sha256((root/name).read_bytes()).hexdigest()
+    save()
+    monkeypatch.setattr(isolated,'make_isolated_docker_runner',lambda *args:lambda *a,**k:None)
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-only')
+    def verify(**kw):
+        record_fixture_resources(kw)
+        return valid_result(test_sha256=kw['expected_test_sha256'])
+    monkeypatch.setattr(pipeline,'run_functional_tests',verify)
+    calls=[];real=provider.make_openai_generator
+    def handle(request):calls.append(json.loads(request.content));return modern_http_response(modern_response())
+    import httpx
+    monkeypatch.setattr(provider,'make_openai_generator',lambda **kw:real(**kw,transport=httpx.MockTransport(handle)))
+    for i in range(2):
+        handler=pipeline.load_worker_review_config(enabled='YES',config_path=path,database=params['database'])
+        result=run_batch(enabled='YES',database=params['database'],agent='ci-model-profile',max_tasks=1,
+            idle_checks=1,review_handler=handler)
+        assert result['processed']==(1 if i==0 else 0)
+    assert len(calls)==1 and calls[0]['model']==('gpt-6-luna' if profile_id=='simple' else 'gpt-6.1-sol')
+    assert TaskStorage(params['database']).get(params['task_id'])['verification']['phase']=='completed'
+
+
+@pytest.mark.parametrize('field,value',[('profiles',{}),('default_profile','simple'),('new_call_limit',4),
+    ('budget_limit_microusd',30000000),('expected_history_sha256','0'*64),('operator_authorized',False)])
+def test_sol_luna_amendment_rejects_tampered_policy(monkeypatch,tmp_path,field,value):
+    from central_ai.task_storage import TaskStorage
+    params,snapshot,_=amendment_fixture(monkeypatch,tmp_path)
+    policy=TaskStorage.prepare_generation_model_amendment(params['database'],
+        expected_history_sha256=snapshot['admission_history_sha256'],new_call_limit=3,amendment_id='ci-policy')
+    policy.update(operator_authorized=True);policy[field]=value
+    with pytest.raises(ValueError):TaskStorage.record_generation_budget_amendment(params['database'],enabled='YES',amendment=policy)
+    assert not TaskStorage.generation_budget_snapshot(params['database'])['model_profiles_installed']
 
 
 @pytest.mark.parametrize('bad',['review_profile','not_authorized','promotion','database','currency','calls',
