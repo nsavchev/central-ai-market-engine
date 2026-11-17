@@ -3967,6 +3967,10 @@ def json_runtime_policy_fixture(monkeypatch, tmp_path):
     grant = dict(config['jobs'][old_task_id],
         spec_sha256=hashlib.sha256(task['task']['task'].encode()).hexdigest(),
         trusted_test_file=str(contract), trusted_test_sha256=hashlib.sha256(contract.read_bytes()).hexdigest())
+    # Both backends require private inputs and artifacts regardless of the caller's umask.
+    Path(grant['source_file']).chmod(0o600)
+    for name in ('handoffs', 'proposals', 'candidates'):
+        Path(grant[name]).chmod(0o700)
     config.update(schema='worker-review-runtime-v4', execution_policy='json-function-v1',
         default_profile='primary', model_profiles=json.loads(json.dumps(DEVELOPER_MODEL_PROFILES)),
         runner=dict(uid=10001, socket='/synthetic/private.sock', config_directory='/synthetic/empty',
@@ -4068,9 +4072,6 @@ def test_runtime_v4_worker_mock_provider_uses_json_without_nested_runner_or_repl
         config['runner'] = json.loads(Path(runner_file).read_text())
         job = config['jobs'][params['task_id']]
         job['image'] = os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE']
-        Path(job['source_file']).chmod(0o600)
-        for name in ('handoffs', 'proposals', 'candidates'):
-            Path(job[name]).chmod(0o700)
         save()
     calls, verified = [], []
     original_factory = provider.make_openai_generator
