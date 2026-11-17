@@ -19,6 +19,14 @@ DEVELOPER_MODEL_PROFILES = {
 }
 
 
+def estimate_usage_cost_microusd(
+    input_tokens, cached_input_tokens, output_tokens,
+    input_rate_hundredths, cached_rate_hundredths,
+    output_rate_hundredths
+):
+    return ((input_tokens - cached_input_tokens) * input_rate_hundredths + cached_input_tokens * cached_rate_hundredths + output_tokens * output_rate_hundredths + 99) // 100
+
+
 class TaskStorage:
     @staticmethod
     def developer_model_profile(profile_id='primary'):
@@ -849,8 +857,9 @@ class TaskStorage:
             # Integer hundredths of a microUSD/token; reasoning is already part
             # of output_tokens, not billed a second time. Not an invoice.
             rates = (200, 10, 1000) if receipt['profile_id'] == 'primary' else (10, 1, 50)
-            uncached = usage['input_tokens'] - usage['cached_input_tokens']
-            cost = (uncached*rates[0] + usage['cached_input_tokens']*rates[1] + usage['output_tokens']*rates[2] + 99)//100
+            cost = estimate_usage_cost_microusd(
+                usage['input_tokens'], usage['cached_input_tokens'],
+                usage['output_tokens'], *rates)
             generation['provider_usage'] = dict(usage, elapsed_ms=elapsed_ms,
                 estimated_standard_cost_microusd=cost, pricing_date='2026-11-16', invoice_verified=False)
             generation['provider_usage_sha256'] = self._json_digest(generation['provider_usage'])
