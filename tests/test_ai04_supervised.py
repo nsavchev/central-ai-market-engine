@@ -98,3 +98,117 @@ def test_invalid_loaded_review_handler_cannot_downgrade_to_analysis(monkeypatch,
             status_path=str(status),review_config_path='/private/policy.json',
             scheduler=lambda **kw:pytest.fail('must not downgrade to analysis'))
     assert json.loads(status.read_text())['state']=='blocked'
+
+
+@pytest.mark.parametrize('fails', [False, True])
+def test_cli_restores_existing_sigterm_handler_after_success_or_failure(monkeypatch, fails):
+    import signal
+    import central_ai.worker_supervised as service
+    monkeypatch.delenv('CENTRAL_WORKER_REVIEW_ENABLED', raising=False)
+    monkeypatch.delenv('CENTRAL_WORKER_REVIEW_CONFIG', raising=False)
+    previous = signal.getsignal(signal.SIGTERM)
+    def caller_handler(signum, frame):
+        pytest.fail('caller handler must not run during the scoped CLI call')
+    def run(**kwargs):
+        assert callable(signal.getsignal(signal.SIGTERM))
+        assert signal.getsignal(signal.SIGTERM) is not caller_handler
+        if fails:
+            raise RuntimeError('synthetic scheduler failure')
+        return dict(status='complete')
+    monkeypatch.setattr(service, 'run_supervised', run)
+    signal.signal(signal.SIGTERM, caller_handler)
+    try:
+        if fails:
+            with pytest.raises(RuntimeError, match='synthetic scheduler failure'):
+                service.main()
+        else:
+            service.main()
+        assert signal.getsignal(signal.SIGTERM) is caller_handler
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+@pytest.mark.skipif(not hasattr(__import__('os'), 'fork'), reason='requires POSIX fork and SIGTERM')
+def test_cli_real_sigterm_during_scheduled_wait_preserves_unwind_and_releases_lock(tmp_path):
+    import fcntl
+    import multiprocessing
+    import os
+    import signal
+    import time
+    import central_ai.worker_supervised as service
+    from central_ai.worker_scheduler import scheduled_cycles
+
+    database = tmp_path/'tasks.sqlite'
+    database.touch()
+    lock = tmp_path/'supervisor.lock'
+    status = tmp_path/'supervisor-status.json'
+    context = multiprocessing.get_context('fork')
+    receive, send = context.Pipe(duplex=True)
+
+    def child():
+        receive.close()
+        original = service.run_supervised
+        previous = signal.getsignal(signal.SIGTERM)
+        batches = []
+        def batch(**kwargs):
+            batches.append(kwargs)
+            return dict(processed=0)
+        def waiting(seconds):
+            send.send('waiting')
+            try:
+                time.sleep(seconds)
+            finally:
+                send.send('cleanup_started')
+                # Pipe acknowledgement keeps the second signal inside unwind
+                # without a timing race or shared Event condition lock.
+                assert send.poll(10) and send.recv() == 'release_cleanup'
+                send.send('cleanup_finished')
+        def schedule(**kwargs):
+            return scheduled_cycles(**kwargs, batch=batch, sleep=waiting)
+        service.run_supervised = lambda **kwargs: original(**kwargs, scheduler=schedule)
+        os.environ.update(CENTRAL_SUPERVISED_SERVICE_ENABLED='YES',
+            CENTRAL_TASK_DB=str(database), CENTRAL_WORKER_AGENT='ci-sigterm',
+            CENTRAL_SCHEDULER_LOCK=str(lock), CENTRAL_SUPERVISOR_STATUS=str(status),
+            CENTRAL_SCHEDULER_CYCLES='2', CENTRAL_SCHEDULER_INTERVAL='60',
+            CENTRAL_WORKER_MAX_TASKS='1')
+        os.environ.pop('CENTRAL_WORKER_REVIEW_ENABLED', None)
+        os.environ.pop('CENTRAL_WORKER_REVIEW_CONFIG', None)
+        try:
+            service.main()
+        except service.SupervisorStopRequested:
+            send.send(dict(stopped=True, batches=len(batches),
+                handler_restored=signal.getsignal(signal.SIGTERM) == previous))
+            raise SystemExit(1)
+        finally:
+            send.close()
+
+    process = context.Process(target=child)
+    process.start()
+    send.close()
+    try:
+        assert receive.poll(10) and receive.recv() == 'waiting'
+        started = time.monotonic()
+        os.kill(process.pid, signal.SIGTERM)
+        assert receive.poll(5) and receive.recv() == 'cleanup_started'
+        os.kill(process.pid, signal.SIGTERM)
+        receive.send('release_cleanup')
+        assert receive.poll(5) and receive.recv() == 'cleanup_finished'
+        assert receive.poll(5)
+        assert receive.recv() == dict(stopped=True, batches=1, handler_restored=True)
+        process.join(5)
+        elapsed = time.monotonic() - started
+        assert process.exitcode == 1 and elapsed < 10
+    finally:
+        if process.is_alive():
+            process.kill()
+        process.join(5)
+        receive.close()
+
+    record = json.loads(status.read_text())
+    assert record['state'] == 'failed'
+    assert record['error_type'] == 'SupervisorStopRequested'
+    assert 'SUPERVISOR_STOP_REQUESTED' not in status.read_text()
+    assert database.read_bytes() == b''
+    with lock.open() as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    print('SUPERVISOR_CLI_SIGTERM_UNWIND_PASSED', round(elapsed, 3))

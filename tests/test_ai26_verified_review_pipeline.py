@@ -860,6 +860,8 @@ def test_budget_amendment_prepare_is_readonly_and_matches_operator_fingerprint(m
     assert Path(params['database']).read_bytes() == before
 
 
+
+
 def test_budget_amendment_counts_old_call_and_denies_fourth_without_rewriting_receipts(monkeypatch, tmp_path):
     import json, sqlite3
     from central_ai.task_storage import TaskStorage
@@ -4111,3 +4113,179 @@ def test_runtime_v4_worker_mock_provider_uses_json_without_nested_runner_or_repl
     assert run_batch(enabled='YES', database=params['database'], agent='ci-json-runtime',
         max_tasks=1, idle_checks=1, review_handler=loaded)['processed'] == 0
     assert Path(params['database']).read_bytes() == before
+
+
+@pytest.mark.parametrize('backend', ['synthetic', 'rootless'])
+@pytest.mark.parametrize('phase', ['generation', 'execution'])
+def test_runtime_v4_supervisor_sigterm_records_state_and_blocks_replay(monkeypatch, tmp_path, backend, phase):
+    """Signal the actual CLI worker; mock HTTP only in the rootless variants."""
+    import fcntl, httpx, json, multiprocessing, os, runpy, shutil, signal, sys, time
+    from pathlib import Path
+    import central_ai.app as provider
+    import central_ai.isolated_functional_verifier as isolated
+    import central_ai.verified_review_pipeline as pipeline
+    import central_ai.worker_supervised as supervised
+    from central_ai.task_storage import TaskStorage
+
+    runner_file = os.environ.get('CENTRAL_AI_ROOTLESS_CI_POLICY')
+    if backend == 'rootless' and not runner_file:
+        pytest.skip('requires disposable nonroot/private rootless CI daemon')
+    if not hasattr(signal, 'SIGTERM') or 'fork' not in multiprocessing.get_all_start_methods():
+        pytest.skip('requires POSIX fork and SIGTERM')
+    prepare, real_runner = pipeline.prepare_review_pipeline, isolated.make_isolated_docker_runner
+    real_verify, real_cleanup = isolated.run_functional_tests, isolated._confirm_container_absent
+    params, config, path, key, save, _ = json_runtime_policy_fixture(monkeypatch, tmp_path)
+    job = config['jobs'][params['task_id']]
+    bound = None
+    if backend == 'rootless':
+        monkeypatch.setattr(pipeline, 'prepare_review_pipeline', prepare)
+        monkeypatch.setattr(isolated, 'make_isolated_docker_runner', real_runner)
+        config['runner'] = json.loads(Path(runner_file).read_text())
+        job['image'] = os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE']
+        save()
+        bound = real_runner(config['runner'], [job['image']])
+
+    state_dir = Path(params['database']).parent
+    status, lock = state_dir/'sigterm-status.json', state_dir/'sigterm.lock'
+    dispatched, resource_file = tmp_path/'dispatch.started', tmp_path/'resources.json'
+    cleaning, release = tmp_path/'cleanup.started', tmp_path/'cleanup.release'
+    originals = {p: p.read_bytes() for p in (path, key, Path(job['source_file']), Path(job['trusted_test_file']))}
+    for name, value in dict(CENTRAL_SUPERVISED_SERVICE_ENABLED='YES', CENTRAL_WORKER_REVIEW_ENABLED='YES',
+        CENTRAL_WORKER_REVIEW_CONFIG=str(path), CENTRAL_TASK_DB=params['database'],
+        CENTRAL_WORKER_AGENT='ci-json-stop', CENTRAL_SCHEDULER_LOCK=str(lock),
+        CENTRAL_SUPERVISOR_STATUS=str(status), CENTRAL_SCHEDULER_CYCLES='1',
+        CENTRAL_SCHEDULER_INTERVAL='1', CENTRAL_WORKER_MAX_TASKS='1',
+        OPENAI_API_KEY='synthetic-sigterm-no-network').items():
+        monkeypatch.setenv(name, value)
+
+    def wait_for(predicate, seconds=20):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.02)
+        raise AssertionError('bounded SIGTERM rehearsal boundary not reached')
+
+    def response(request):
+        with dispatched.open('x') as stream:
+            stream.write('one mocked HTTP request\n')
+        if phase == 'generation':
+            time.sleep(60)
+            raise AssertionError('generation should be interrupted')
+        return modern_http_response(modern_response(output=[dict(type='message', role='assistant',
+            status='completed', content=[dict(type='output_text', text=
+                '```python\ndef f():\n    import time\n    time.sleep(60)\n    return 2\n```')])]))
+
+    factory = provider.make_openai_generator
+    monkeypatch.setattr(provider, 'make_openai_generator',
+        lambda **kw: factory(**kw, transport=httpx.MockTransport(response)))
+
+    def cleanup_pause():
+        cleaning.write_text('unwinding\n')
+        # File handoff avoids a cross-process lock being stranded by a killed child.
+        wait_for(release.exists, 10)
+
+    def observed_cleanup(run, name):
+        cleanup_pause()
+        return real_cleanup(run, name)
+    if backend == 'rootless':
+        monkeypatch.setattr(isolated, '_confirm_container_absent', observed_cleanup)
+
+    def verify(**kwargs):
+        record = kwargs['record_resources']
+        def witnessed(resources):
+            record(resources)
+            pending = resource_file.with_suffix('.tmp')
+            pending.write_text(json.dumps(resources))
+            pending.replace(resource_file)
+        kwargs['record_resources'] = witnessed
+        if backend == 'rootless':
+            return real_verify(**kwargs)
+        snapshot = tmp_path/'central-ai-input-sigterm'
+        snapshot.mkdir(mode=0o700)
+        witnessed(dict(snapshot_directory=str(snapshot), container_name='central-ai-verifier-'+'a'*32))
+        try:
+            time.sleep(60)
+            raise AssertionError('verification should be interrupted')
+        finally:
+            cleanup_pause()
+            shutil.rmtree(snapshot)
+    monkeypatch.setattr(pipeline, 'run_functional_tests', verify)
+
+    def child():
+        # Execute the real module entrypoint and its sanitized nonzero-exit path.
+        sys.modules.pop('central_ai.worker_supervised', None)
+        runpy.run_module('central_ai.worker_supervised', run_name='__main__')
+    process = multiprocessing.get_context('fork').Process(target=child)
+    resources = None
+    started = time.monotonic()
+    process.start()
+    try:
+        wait_for(dispatched.exists)
+        if phase == 'execution':
+            wait_for(lambda: resource_file.exists() and resource_file.stat().st_size > 0)
+            resources = json.loads(resource_file.read_text())
+            if bound is not None:
+                def running():
+                    result = bound(['docker', 'container', 'inspect', resources['container_name'],
+                                    '--format', '{{.State.Running}}'],
+                        capture_output=True, text=True, timeout=5, check=False)
+                    return result.returncode == 0 and result.stdout.strip() == 'true'
+                wait_for(running)
+        startup_ms = int((time.monotonic()-started)*1000)
+        assert process.is_alive()
+        stopped = time.monotonic()
+        os.kill(process.pid, signal.SIGTERM)
+        if phase == 'execution':
+            wait_for(cleaning.exists, 15)
+            os.kill(process.pid, signal.SIGTERM)
+            release.write_text('continue bounded cleanup\n')
+        process.join(45)
+        stop_ms = int((time.monotonic()-stopped)*1000)
+        assert process.exitcode == 1 and stop_ms < 45000
+        saved = TaskStorage(params['database']).get(params['task_id'])
+        expected = 'blocked' if phase == 'generation' else 'cleanup_uncertain'
+        assert saved['verification']['phase'] == ('blocked' if phase == 'generation' else 'quarantined')
+        assert saved['approved'] is saved['deployment_allowed'] is False
+        assert json.loads(status.read_text())['state'] == expected
+        assert params['task_id'] not in status.read_text()
+        assert 'synthetic-sigterm-no-network' not in status.read_text()
+        assert TaskStorage.generation_budget_snapshot(params['database'])['admitted_calls'] == 2
+        if resources:
+            assert saved['verification']['resources'] == resources
+            assert not Path(resources['snapshot_directory']).exists()
+            if bound is not None:
+                absent = bound(['docker', 'container', 'ls', '--all', '--filter',
+                    'name=^/'+resources['container_name']+'$', '--format', '{{.Names}}'],
+                    capture_output=True, text=True, timeout=10, check=False)
+                assert absent.returncode == 0 and not absent.stdout.strip()
+        with lock.open('a+') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        monkeypatch.setattr(provider, 'make_openai_generator', lambda **kw: pytest.fail('must not redispatch'))
+        if phase == 'generation':
+            with pytest.raises(SystemExit) as stopped_again:
+                supervised.main()
+            assert stopped_again.value.code == 1
+        else:
+            with pytest.raises(ValueError, match='DATABASE_BLOCKED'):
+                supervised.main()
+        assert TaskStorage(params['database']).get(params['task_id']) == saved
+        assert TaskStorage.generation_budget_snapshot(params['database'])['admitted_calls'] == 2
+        assert all(p.read_bytes() == contents for p, contents in originals.items())
+        print('RUNTIME_V4_SUPERVISOR_SIGTERM_NO_RETRY_PASSED', json.dumps(dict(
+            backend=backend, phase=phase, startup_to_boundary_ms=startup_ms,
+            stop_ms=stop_ms, retained_state=expected, admitted_calls=2)))
+    finally:
+        if process.is_alive():
+            process.kill()
+        process.join(10)
+        # Reconcile only this disposable test's recorded resources on a failed assertion.
+        recorded = TaskStorage(params['database']).get(params['task_id']).get('verification', {}).get('resources')
+        if resources is None:
+            resources = recorded
+        elif recorded is not None:
+            assert resources == recorded
+        if resources and bound is not None and real_cleanup(bound, resources['container_name']):
+            snapshot = Path(resources['snapshot_directory'])
+            if snapshot.exists():
+                shutil.rmtree(snapshot)

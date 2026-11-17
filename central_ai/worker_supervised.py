@@ -1,11 +1,16 @@
 """Supervised bounded scheduler process. No autonomous deployment or broker access."""
 import json
 import os
+import signal
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from central_ai.worker_scheduler import scheduled_cycles
+
+
+class SupervisorStopRequested(RuntimeError):
+    """CLI termination request; existing journals and cleanup own the unwind."""
 
 
 def run_supervised(*, enabled, database, agent, lock_path, status_path,
@@ -94,17 +99,30 @@ def main():
         if review_enabled!='YES' or not config_path:
             raise ValueError('WORKER_REVIEW_CONFIG_DISABLED')
         options['review_config_path']=config_path
-    result = run_supervised(
-        enabled=os.getenv("CENTRAL_SUPERVISED_SERVICE_ENABLED", ""),
-        database=os.getenv("CENTRAL_TASK_DB", ""),
-        agent=os.getenv("CENTRAL_WORKER_AGENT", ""),
-        lock_path=os.getenv("CENTRAL_SCHEDULER_LOCK", ""),
-        status_path=os.getenv("CENTRAL_SUPERVISOR_STATUS", ""),
-        cycles=int(os.getenv("CENTRAL_SCHEDULER_CYCLES", "3")),
-        interval=int(os.getenv("CENTRAL_SCHEDULER_INTERVAL", "5")),
-        max_tasks=int(os.getenv("CENTRAL_WORKER_MAX_TASKS", "10")),
-        **options,
-    )
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    stopping = False
+    def stop_requested(signum, frame):
+        nonlocal stopping
+        if not stopping:
+            stopping = True
+            raise SupervisorStopRequested('SUPERVISOR_STOP_REQUESTED')
+        # A repeated termination request must not interrupt cleanup or its audit.
+        # SIGKILL remains an external hard-stop boundary with durable recovery.
+    try:
+        signal.signal(signal.SIGTERM, stop_requested)
+        result = run_supervised(
+            enabled=os.getenv("CENTRAL_SUPERVISED_SERVICE_ENABLED", ""),
+            database=os.getenv("CENTRAL_TASK_DB", ""),
+            agent=os.getenv("CENTRAL_WORKER_AGENT", ""),
+            lock_path=os.getenv("CENTRAL_SCHEDULER_LOCK", ""),
+            status_path=os.getenv("CENTRAL_SUPERVISOR_STATUS", ""),
+            cycles=int(os.getenv("CENTRAL_SCHEDULER_CYCLES", "3")),
+            interval=int(os.getenv("CENTRAL_SCHEDULER_INTERVAL", "5")),
+            max_tasks=int(os.getenv("CENTRAL_WORKER_MAX_TASKS", "10")),
+            **options,
+        )
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
     print("SUPERVISED_RESULT", result)
     if result.get('review_state') in ('cleanup_uncertain','blocked','candidate_failed'):
         raise SystemExit(1)

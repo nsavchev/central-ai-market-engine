@@ -4,9 +4,9 @@ The [profile example](../../deploy/ai08/worker-review-profile.example.json) is a
 
 ## Current source checkpoint — 2026-11-17
 
-**P1-JSON-POLICY-BINDING-01** adds an explicit JSON policy path in the existing pipeline, storage, revision bridge and runtime loader. Parent source `9f90fe9199d0532b7fd1b00b762ef8b7ee2245f5` has **33/33 successful CI workflows**, including [AI-19 run 44051949273](https://github.com/nsavchev/central-ai-market-engine/actions/runs/44051949273); candidate local tests and exact-source CI remain pending. The [runtime v4 contract](#explicit-json-runtime-contract--p1-json-policy-binding-01) below describes this source candidate. Earlier sections record their dated proposals and acceptance boundaries; they are not current deployment instructions. No installed policy is rewritten, service activated, paid request issued or retained history/key/budget changed by this source update.
+**P1-SUPERVISOR-SIGTERM-01** adds scoped termination handling to the existing supervisor CLI so its cleanup and durable-audit unwind can run. Parent source `78cec909b021b3b7a21ca3df26cb17fda550cd51` has **33/33 successful CI workflows**: [AI-19 run 44057062678](https://github.com/nsavchev/central-ai-market-engine/actions/runs/44057062678) passed 10 and 11 selected rootless tests; [DUP-01 run 44057062794](https://github.com/nsavchev/central-ai-market-engine/actions/runs/44057062794) passed 746 tests with 17 skips. New candidate CI remains pending. The [scoped signal contract](#scoped-supervisor-sigterm--p1-supervisor-sigterm-01) below describes this change and the unresolved service time budget. Earlier profiles and sections retain their dated proposals; they are not current deployment instructions. Earlier intended-runner evidence remains separate from new SIGTERM acceptance. No installed policy, service, paid allowance, history or key is changed by this source update.
 
-## First operational profile
+## Historical first operational profile
 
 - Keep activation disabled and jobs empty until an operator independently authorizes a specific task/source/spec/test/image tuple. Completed acceptance tasks belong under evidence_jobs; they are not new pending work.
 - Retain the selected provider/model, 128 output-token limit and existing bounded transport. No fallback provider/model. The provider key and separate durable reviewer key must remain outside the profile. Ephemeral acceptance keys are not production authority.
@@ -14,7 +14,7 @@ The [profile example](../../deploy/ai08/worker-review-profile.example.json) is a
 - Use generation-admission-usd-v2 for a USD application policy: budget_limit_microusd and reserved_microusd are integer millionths of a US dollar. For example, 1,000,000 micro-USD is USD1. One admitted callback per UTC month is the initial conservative proposal; changing it needs a new explicit host policy. Reservations are declared ceilings, not verified model pricing or provider invoices. Failed/interrupted admissions are not refunded automatically.
 - V1 receipts remain EUR and are never relabelled or converted. Mixed currencies in the same database/month are rejected. Keep acceptance databases intact. Choose and bind an operational ledger deliberately; never copy/delete/recreate a ledger to reset spent amounts or call counts. One application's ledger is not an account-wide cap; manual /ask and other databases/clients remain outside it.
 - Freeze a reviewed source commit, runtime environment/image, independent harness and output directories. The verifier image digest is distinct from the worker/runtime source binding. An acceptance image is not proof of a deployed release.
-- Reuse the existing worker/scheduler/service ownership. Proposed initial schedule: existing five-minute cadence, one cycle and max_tasks=1 per service run; 180-second service timeout is a proposal to review against worst-case transport/verifier cleanup time. No second timer or automatic activation. The CLI remains analysis-only by default. Review mode requires CENTRAL_SUPERVISED_SERVICE_ENABLED=YES, CENTRAL_WORKER_REVIEW_ENABLED=YES and CENTRAL_WORKER_REVIEW_CONFIG pointing to a complete trusted runtime policy; installing/enabling a service remains an independent operational action.
+- Reuse the existing worker/scheduler/service ownership. The historical initial proposal was the existing five-minute cadence, one cycle and max_tasks=1 per service run with a 180-second service timeout. **That timeout is unvalidated and is not the current JSON service budget**; see the sequential command allowances below before proposing any unit change. No second timer or automatic activation. The CLI remains analysis-only by default. Review mode requires CENTRAL_SUPERVISED_SERVICE_ENABLED=YES, CENTRAL_WORKER_REVIEW_ENABLED=YES and CENTRAL_WORKER_REVIEW_CONFIG pointing to a complete trusted runtime policy; installing/enabling a service remains an independent operational action.
 
 ## Stop and reconcile
 
@@ -230,3 +230,36 @@ The existing runner guard now checks cgroup v2/systemd and reported CPU quota/pe
 A complete well-formed JSON result that disagrees with the expected result is a semantic failure even when the container exits 0. The existing bridge may then create a bounded linked correction under a separate host grant. Malformed/missing output or uncertain completion/cleanup cannot be turned into a successful result or an automatic retry. V4's configured jobs are root tasks: the scheduler does not create or authorize the linked corrections demonstrated by the separate host-driven lifecycle tests.
 
 **Required acceptance:** focused negative/compatibility tests, followed by the exact-source AI-19 real-rootless JSON lifecycle with mock provider, retained family/outcomes, cleanup and replay refusal. After CI, run only the newly changed JSON scenario in a separately reviewed disposable intended-runner environment. Record that evidence separately from source CI. Then use the existing service-bound, stop/reconcile and rollback sections to prepare a measured disabled single-service proposal. Keep service activation, any paid call, production promotion and Issue #90 closure as explicit independent decisions.
+
+## Scoped supervisor SIGTERM — P1-SUPERVISOR-SIGTERM-01
+
+**Candidate on parent `78cec909b021b3b7a21ca3df26cb17fda550cd51`; no installed service change.** The existing [supervisor CLI](../../central_ai/worker_supervised.py) installs a temporary SIGTERM handler only around its `run_supervised` invocation. The first signal raises `SupervisorStopRequested`, letting the existing verifier `finally`, pipeline audit and supervisor exception path run. Repeated SIGTERM signals during this unwind return without interrupting it. The previous handler is restored on exit. Calling `run_supervised` directly does not alter process-wide signal handling.
+
+This is a stop request, not a completed review or a refund. Interruption during generation remains blocked with the original admission retained. Interruption after verification starts remains quarantined and requires reconciliation even when the fixture proves physical cleanup. Missing daemon-side proof preserves the existing uncertainty boundary. The handler does not retry a request, create a correction, clear a journal or release a spent reservation. SIGKILL cannot run this handler; the existing abrupt-death test and on-restart barriers remain separate.
+
+**Source acceptance:** AI-04 checks prior-handler restoration, a real forked CLI stop during a scheduled wait, repeated-signal suppression during unwind, released lock and sanitized status. AI-26 exercises generation and execution interruption through runtime-v4 and the actual CLI with synthetic and private-rootless backends. Both use a mocked provider and disposable state. Require exact-source CI for the new rootless variants before treating them as executed. The earlier JSON lifecycle and intended-runner observations do not prove this new behavior. These tests also do not prove an installed systemd unit's process-group signaling, timeout escalation or actual dockerd-loss recovery.
+
+### Nominal one-task command allowances
+
+For **one already-analyzed root task, one granted job, one unique image and one cycle**, the current source contains these sequential timeout allowances:
+
+| Existing phase | Nominal command allowance |
+|---|---:|
+| Runtime loader: daemon information and image inspection | 20 seconds |
+| JSON pipeline preflight: daemon information and image inspection | 20 seconds |
+| Generation admission: daemon information and image inspection | 20 seconds |
+| Provider request, including response headers/body | 65 seconds |
+| JSON verifier preflight: daemon information and image inspection | 20 seconds |
+| Candidate command, current configured path's default | 30 seconds |
+| Exact-name cleanup probe, removal and second probe | Up to 30 seconds |
+| **Sequential nominal sum** | **205 seconds** |
+
+This sum is **not an enforced end-to-end deadline or measured service maximum**. It excludes startup, repeated SQLite busy waits, local file/status work and process reaping. A directly configured 60-second candidate timeout adds another 30 seconds. Multiple images, jobs or cycles change the calculation. The default idle batch adds two one-second waits; pending analysis can also require a heartbeat-thread join. Local OS/filesystem delays have no absolute wall-clock guarantee from these application counters alone. The provider's local timeout or worker termination does not prove that upstream processing or billing stopped.
+
+Therefore neither the old AI-08 `TimeoutStartSec=120` / `TimeoutStopSec=30` nor the historical 180-second proposal establishes sufficient review-service time. Do not simply choose a larger timeout from the table. Measure full startup/load/admission, provider transport with a mock, verification/cleanup, persistence and stop/unwind under the intended identity, then assess one concrete workload and its hard-stop/reconciliation behavior.
+
+### Next operational evidence and disabled proposal
+
+After source CI, run only the new disposable signal cases and record startup-to-boundary and signal-to-exit measurements separately from earlier accepted scenarios. Keep the installed policy and retained state unchanged. Then read the **actual AI-08 service/timer identity**, `systemctl show` properties, resolved unit/drop-ins, UID/GID and compose entrypoint without changing them. A historical unit name or tracked file alone cannot identify the live owner or establish its effective settings.
+
+Use those observations to prepare a disabled replacement proposal for the existing owner: exact source/runtime pins, explicit cycle/task bounds, signal and escalation semantics, private runner and credential boundary, status/journal handling, and restoration of the original unit/config. Review measured stop behavior and unresolved resource state before any activation. No second service/timer, automatic timeout edit, runtime upgrade, budget change, paid request, merge, production migration or trading follows from this source change. **P1-SCHEDULED-SERVICE-BOUND-01 and Issue #90 remain open.**

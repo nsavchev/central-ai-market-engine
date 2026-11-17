@@ -1886,27 +1886,39 @@
         "path": "central_ai/worker_scheduler.py"
       },
       {
+        "kind": "ClassDef",
+        "line": 12,
+        "name": "SupervisorStopRequested",
+        "path": "central_ai/worker_supervised.py"
+      },
+      {
         "kind": "FunctionDef",
-        "line": 11,
+        "line": 16,
         "name": "run_supervised",
         "path": "central_ai/worker_supervised.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 85,
+        "line": 90,
         "name": "main",
         "path": "central_ai/worker_supervised.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 28,
+        "line": 33,
         "name": "review_state",
         "path": "central_ai/worker_supervised.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 41,
+        "line": 46,
         "name": "write_state",
+        "path": "central_ai/worker_supervised.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 104,
+        "name": "stop_requested",
         "path": "central_ai/worker_supervised.py"
       },
       {
@@ -2683,12 +2695,12 @@
       },
       {
         "from": "central_ai.worker_supervised",
-        "line": 8,
+        "line": 9,
         "to": "central_ai.worker_scheduler"
       },
       {
         "from": "central_ai.worker_supervised",
-        "line": 53,
+        "line": 58,
         "to": "central_ai.developer_worker_coordinator"
       },
       {
@@ -4259,7 +4271,7 @@
   "parent_ci_evidence": {
     "candidate_ci_status": "pending",
     "production_migration_authorized": false,
-    "source_commit": "9f90fe9199d0532b7fd1b00b762ef8b7ee2245f5",
+    "source_commit": "78cec909b021b3b7a21ca3df26cb17fda550cd51",
     "status": "success",
     "successful_workflows": 33,
     "workflow_count": 33
@@ -7021,7 +7033,7 @@
       "path": "central_ai/worker_scheduler.py"
     },
     {
-      "git_blob_sha": "19fe1e7a59cea5c32c7f151b917042982ecb994b",
+      "git_blob_sha": "43e0069351d7b248d26e68daf4d405bcba28c838",
       "path": "central_ai/worker_supervised.py"
     },
     {
@@ -7143,6 +7155,6 @@
   "snapshot_date": "2026-11-17",
   "snapshot_scope": "Current static Python source inventory only. main/PR reconciliation fields and ci_evidence retain their historical evidence provenance below; no new stack audit or runtime telemetry.",
   "source_commit": null,
-  "source_parent_commit": "9f90fe9199d0532b7fd1b00b762ef8b7ee2245f5",
+  "source_parent_commit": "78cec909b021b3b7a21ca3df26cb17fda550cd51",
   "source_state": "Reviewed candidate delta; exact current module bytes are identified by python_modules git_blob_sha. No self-referential commit hash."
 }
