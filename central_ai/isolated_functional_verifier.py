@@ -4,6 +4,7 @@ Untrusted candidate *is executed*, but only in a disposable restricted container
 No claim of a hardened security boundary against kernel-level exploits.
 """
 import ast
+import json
 import math
 import secrets
 import hashlib
@@ -105,9 +106,9 @@ def make_isolated_docker_runner(policy, images, *, run=subprocess.run):
     return bound
 
 
-def _read_input(path):
+def _read_input(path, *, suffix=".py"):
     """Read bounded regular-file bytes through one no-follow descriptor."""
-    if not path.is_absolute() or path.suffix != ".py":
+    if not path.is_absolute() or path.suffix != suffix:
         raise ValueError("UNSAFE_INPUT")
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -127,6 +128,135 @@ def _read_input(path):
 # This deliberately supports only the first reviewed arithmetic scenario. It is
 # not a sandbox for arbitrary Python; unsupported candidates never reach Docker.
 EXECUTION_POLICY = 'bounded-arithmetic-v1'
+JSON_FUNCTION_POLICY = 'json-function-v1'
+
+
+def _json_value(value, depth=0):
+    """Bound comparison work and keep JSON types distinct (True is not 1)."""
+    if depth > 16:
+        raise ValueError('INVALID_FUNCTION_CASES')
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is int and abs(value) <= 2**53 - 1:
+        return value
+    if type(value) is float and math.isfinite(value) and abs(value) <= 2**53 - 1:
+        return value
+    if type(value) is str and len(value) <= 4096:
+        return value
+    if type(value) is list and len(value) <= 256:
+        return [_json_value(item, depth+1) for item in value]
+    if type(value) is dict and len(value) <= 256 and all(type(k) is str and len(k) <= 256 for k in value):
+        return {k: _json_value(v, depth+1) for k, v in value.items()}
+    raise ValueError('INVALID_FUNCTION_CASES')
+
+
+def _strict_json(data):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('DUPLICATE_JSON_KEY')
+            result[key] = value
+        return result
+    def constant(_):
+        raise ValueError('NONFINITE_JSON')
+    return json.loads(data, object_pairs_hook=pairs, parse_constant=constant)
+
+
+def _function_cases(data):
+    """The operator's expected results never enter the candidate container."""
+    try:
+        contract = _strict_json(data)
+        if (type(contract) is not dict or set(contract) != {'schema', 'function', 'cases'}
+                or contract['schema'] != JSON_FUNCTION_POLICY
+                or not isinstance(contract['function'], str)
+                or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', contract['function'])
+                or '__' in contract['function']
+                or type(contract['cases']) is not list or not 1 <= len(contract['cases']) <= 128):
+            raise ValueError('INVALID_FUNCTION_CASES')
+        for case in contract['cases']:
+            if (type(case) is not dict or set(case) != {'args', 'kwargs', 'expected'}
+                    or type(case['args']) is not list or len(case['args']) > 16
+                    or type(case['kwargs']) is not dict or len(case['kwargs']) > 16
+                    or any(not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', k) or '__' in k for k in case['kwargs'])):
+                raise ValueError('INVALID_FUNCTION_CASES')
+            _json_value(case)
+        return contract
+    except (ValueError, TypeError, RecursionError, UnicodeError) as error:
+        raise ValueError('INVALID_FUNCTION_CASES') from error
+
+
+def _function_results_match(stdout, contract):
+    # No completion token or candidate-supplied "passed" flag is authoritative.
+    # The harness itself is untrusted after importing general candidate Python.
+    try:
+        if type(stdout) is not str or len(stdout.encode('utf-8')) > 32768:
+            return False
+        values = _strict_json(stdout)
+        if type(values) is not list or len(values) != len(contract['cases']):
+            return False
+        def canonical(value):
+            return json.dumps(_json_value(value), sort_keys=True, separators=(',', ':'), allow_nan=False)
+        return all(canonical(value) == canonical(case['expected'])
+                   for value, case in zip(values, contract['cases']))
+    except (ValueError, TypeError, RecursionError, UnicodeError):
+        return False
+
+
+def _function_harness(contract):
+    """Only inputs are disclosed. This is a protocol adapter, not a test oracle."""
+    inputs = {'function': contract['function'],
+              'cases': [{'args': c['args'], 'kwargs': c['kwargs']} for c in contract['cases']]}
+    return ("import json, runpy\n"
+            + "request = json.loads(" + repr(json.dumps(inputs, allow_nan=False)) + ")\n"
+            + "namespace = runpy.run_path('/sandbox/candidate.py')\n"
+            + "function = namespace[request['function']]\n"
+            + "results = [function(*case['args'], **case['kwargs']) for case in request['cases']]\n"
+            + "print(json.dumps(results, allow_nan=False, separators=(',', ':')))\n")
+
+
+def _bounded_capture(command, *, capture_output, text, timeout, check):
+    """Bound pipe memory for arbitrary candidate output; caller owns Docker cleanup."""
+    import selectors
+    import time
+    if capture_output is not True or text is not True or check is not False:
+        raise ValueError('INVALID_CAPTURE_OPTIONS')
+    limit = 32768 if '--entrypoint' in command else 131072
+    chunks = [bytearray(), bytearray()]
+    deadline = time.monotonic() + timeout
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, 0)
+                selector.register(process.stderr, selectors.EVENT_READ, 1)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    for key, _ in selector.select(remaining):
+                        chunk = os.read(key.fileobj.fileno(), 8192)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        output = chunks[key.data]
+                        if len(output) + len(chunk) > limit:
+                            process.kill()
+                            process.wait(timeout=5)
+                            return subprocess.CompletedProcess(command, 125, '', '')
+                        output.extend(chunk)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                code = process.wait(timeout=remaining)
+            try:
+                stdout, stderr = (chunk.decode('utf-8') for chunk in chunks)
+            except UnicodeError:
+                return subprocess.CompletedProcess(command, 125, '', '')
+            return subprocess.CompletedProcess(command, code, stdout, stderr)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
 
 
 def _validate_bounded_candidate(data):
@@ -199,11 +329,24 @@ def _confirm_container_absent(run, container_name):
 
 def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, image,
                          expected_test_sha256=None, timeout=30, run=subprocess.run,
-                         record_resources=None):
+                         record_resources=None, execution_policy=EXECUTION_POLICY,
+                         runner_policy=None):
+    """Verify a pinned candidate; the legacy runtime still accepts arithmetic only.
+
+    json-function-v1 is an explicit, rootless-only function contract. It accepts
+    one Python file and a pinned JSON oracle, not repository patches. Only case
+    inputs reach the container; host comparison supplies the result. A pass
+    proves the supplied observations, not internal harness execution or general
+    correctness. Exact JSON types/numeric representations must match. No new
+    generation, runtime-config, revision or promotion authority is implied.
+    """
     if enabled != "YES":
         raise ValueError("FUNCTIONAL_TESTS_DISABLED")
+    if execution_policy not in (EXECUTION_POLICY, JSON_FUNCTION_POLICY):
+        raise ValueError('UNKNOWN_EXECUTION_POLICY')
+    json_function = execution_policy == JSON_FUNCTION_POLICY
     paths = [Path(candidate), Path(test_file)]
-    contents = [_read_input(path) for path in paths]
+    contents = [_read_input(paths[0]), _read_input(paths[1], suffix='.json' if json_function else '.py')]
     if paths[0].resolve() == paths[1].resolve():
         raise ValueError("TEST_FILE_MUST_BE_SEPARATE")
     if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
@@ -222,14 +365,24 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
         raise ValueError("INVALID_TIMEOUT")
     if record_resources is not None and not callable(record_resources):
         raise ValueError("INVALID_RESOURCE_RECORDER")
-    _validate_bounded_candidate(contents[0])
+    contract = None
+    if json_function:
+        contract = _function_cases(contents[1])
+        # General Python must not use an inherited/default production daemon.
+        # Identity/image checks occur before any candidate execution or mount.
+        run = make_isolated_docker_runner(runner_policy, [image],
+                                         run=_bounded_capture if run is subprocess.run else run)
+    else:
+        if runner_policy is not None:
+            raise ValueError('UNEXPECTED_RUNNER_POLICY')
+        _validate_bounded_candidate(contents[0])
     # Never bind caller-owned paths after checking their hashes.
     # The dedicated runner account/host is trusted; this is not host-root isolation.
     snapshot_root = Path(tempfile.mkdtemp(prefix="central-ai-input-"))
     cleanup_confirmed = True
     try:
         snapshot_paths = [snapshot_root / "candidate.py", snapshot_root / "test_candidate.py"]
-        for path, data in zip(snapshot_paths, contents):
+        for path, data in zip(snapshot_paths, contents[:1] if json_function else contents):
             path.write_bytes(data)
             path.chmod(0o444)
         completion_record = ('CENTRAL_AI_COMPLETED_V1:' + secrets.token_hex(32) + ':'
@@ -238,7 +391,7 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
         # Candidate policy excludes imports/calls/attributes and all executable
         # module statements except undecorated arithmetic function definitions.
         # Operator-supplied tests and the Python/image/host remain trusted.
-        harness.write_text("import os\nimport runpy\n"
+        harness.write_text(_function_harness(contract) if json_function else "import os\nimport runpy\n"
                            "runpy.run_path('/sandbox/test_candidate.py', run_name='__main__')\n"
                            + "os.write(1, " + repr(('\n' + completion_record + '\n').encode()) + ")\n")
         harness.chmod(0o444)
@@ -255,6 +408,12 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
             "--workdir", "/tmp", "--entrypoint", "python",
             image, "-I", "-B", "/sandbox/harness.py",
         ]
+        if json_function:
+            # Do not copy or mount the oracle, even read-only. Do not mount a
+            # repository, host environment, authority files or a Docker socket.
+            oracle_mount = 'type=bind,src=' + str(snapshot_paths[1]) + ',dst=/sandbox/test_candidate.py,readonly'
+            index = cmd.index(oracle_mount)
+            del cmd[index-1:index+1]
         resources = {"snapshot_directory": str(snapshot_root), "container_name": container_name}
         # A durable journal callback must return before Docker can see a command.
         if record_resources is not None:
@@ -265,10 +424,12 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
             lines = result.stdout.splitlines() if isinstance(getattr(result, "stdout", None), str) else []
             completed = (result.returncode == 0 and bool(lines)
                          and lines[-1] == completion_record and lines.count(completion_record) == 1)
+            if json_function:
+                completed = result.returncode == 0 and _function_results_match(result.stdout, contract)
             report = {"test_sha256": expected_test_sha256,
                       "status": ("passed" if completed else "completion_unconfirmed") if result.returncode == 0 else "failed",
                       "passed": completed, "executed_candidate": True,
-                      "completion_confirmed": completed, "execution_policy": EXECUTION_POLICY,
+                      "completion_confirmed": completed, "execution_policy": execution_policy,
                       "returncode": result.returncode}
         except subprocess.TimeoutExpired:
             report = {"status": "timeout", "passed": False, "executed_candidate": True}
@@ -280,8 +441,8 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
             cleanup_confirmed = _confirm_container_absent(run, container_name)
         if not cleanup_confirmed:
             return dict(resources, status="cleanup_unconfirmed", passed=False, executed_candidate=True,
-                        execution_policy=EXECUTION_POLICY, completion_confirmed=False)
-        return dict(report, execution_policy=EXECUTION_POLICY,
+                        execution_policy=execution_policy, completion_confirmed=False)
+        return dict(report, execution_policy=execution_policy,
                     completion_confirmed=report.get("completion_confirmed", False))
 
     finally:

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import subprocess
 import os
 import shutil
@@ -9,6 +10,187 @@ import pytest
 from central_ai.isolated_functional_verifier import run_functional_tests
 
 IMAGE="python@sha256:"+"a"*64
+
+
+def json_function_fixture(tmp_path):
+    candidate = tmp_path / 'candidate.py'
+    # Fixed benign project-like transformation; not model output on the host.
+    candidate.write_text('def summarize(rows):\n    return {"count": len(rows), "total": sum(row["value"] for row in rows)}\n')
+    trusted = tmp_path / 'cases.json'
+    contract = {'schema': 'json-function-v1', 'function': 'summarize', 'cases': [
+        {'args': [[{'value': 3}, {'value': -1}]], 'kwargs': {}, 'expected': {'count': 2, 'total': 2}},
+        {'args': [[]], 'kwargs': {}, 'expected': {'count': 0, 'total': 0}}]}
+    trusted.write_text(json.dumps(contract))
+    candidate.chmod(0o600)
+    trusted.chmod(0o600)
+    return candidate, trusted, contract
+
+
+def json_function_params(candidate, trusted):
+    return dict(enabled='YES', candidate=str(candidate),
+                expected_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                test_file=str(trusted), expected_test_sha256=hashlib.sha256(trusted.read_bytes()).hexdigest(),
+                image=IMAGE, execution_policy='json-function-v1', runner_policy={'fixture': True})
+
+
+def test_json_function_protocol_real_benign_subprocess_and_hidden_oracle(tmp_path, monkeypatch):
+    import sys
+    import central_ai.isolated_functional_verifier as verifier
+    candidate, trusted, contract = json_function_fixture(tmp_path)
+    observed = []
+    def factory(policy, images, *, run):
+        assert policy == {'fixture': True} and images == [IMAGE]
+        def bound(args, **kwargs):
+            if args[1] != 'run':
+                return SimpleNamespace(returncode=0, stdout='')
+            observed.append(args)
+            mounts = [arg for arg in args if arg.startswith('type=bind,src=')]
+            assert len(mounts) == 2
+            assert not any('test_candidate' in arg or 'cases.json' in arg for arg in args)
+            root = Path(mounts[0].split('src=', 1)[1].split(',dst=', 1)[0]).parent
+            assert sorted(p.name for p in root.iterdir()) == ['candidate.py', 'harness.py']
+            code = (root / 'harness.py').read_text()
+            assert 'expected' not in code and 'CENTRAL_AI_COMPLETED' not in code
+            code = code.replace('/sandbox/candidate.py', str(root / 'candidate.py'))
+            return subprocess.run([sys.executable, '-I', '-B', '-c', code],
+                                  env={}, capture_output=True, text=True, timeout=5, check=False)
+        return bound
+    monkeypatch.setattr(verifier, 'make_isolated_docker_runner', factory)
+    resources = []
+    result = run_functional_tests(**json_function_params(candidate, trusted), record_resources=resources.append)
+    assert result['passed'] and result['completion_confirmed']
+    assert result['execution_policy'] == 'json-function-v1'
+    assert len(observed) == len(resources) == 1
+    assert not Path(resources[0]['snapshot_directory']).exists()
+    for flag in ('--network=none', '--read-only', '--cap-drop=ALL', '--pull=never', '--user=65534:65534'):
+        assert flag in observed[0]
+    assert json.loads(trusted.read_text()) == contract
+
+
+@pytest.mark.parametrize('output', [
+    '', 'true', '{"passed":true}', 'CENTRAL_AI_COMPLETED_V1:forged',
+    '[{"count":2,"total":2}]', '[{"count":2,"total":2},{"count":0,"total":1}]',
+    '[{"count":true,"total":2},{"count":0,"total":0}]',
+    '[{"count":2.0,"total":2},{"count":0,"total":0}]',
+    '[{"count":2,"total":2,"total":999},{"count":0,"total":0}]',
+    '[{"count":2,"total":NaN},{"count":0,"total":0}]',
+    '[{"count":2,"total":2},{"count":0,"total":0}] trailing',
+    'x' * 32769, '[' * 1200 + '0' + ']' * 1200,
+])
+def test_json_function_forgery_or_wrong_answer_never_passes(tmp_path, monkeypatch, output):
+    import central_ai.isolated_functional_verifier as verifier
+    candidate, trusted, _ = json_function_fixture(tmp_path)
+    def run(args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=output if args[1] == 'run' else '')
+    monkeypatch.setattr(verifier, 'make_isolated_docker_runner', lambda *a, **k: run)
+    result = run_functional_tests(**json_function_params(candidate, trusted))
+    assert not result['passed'] and not result['completion_confirmed']
+    assert result['status'] == 'completion_unconfirmed'
+
+
+@pytest.mark.parametrize('body', [
+    '{}', '{"schema":"json-function-v1","schema":"other"}', 'null', '[]',
+    '{"schema":"json-function-v1","function":"f","cases":[]}',
+    '{"schema":"json-function-v1","function":"__import__","cases":[{}]}',
+])
+def test_json_function_invalid_manifest_never_dispatches(tmp_path, body):
+    candidate, trusted, _ = json_function_fixture(tmp_path)
+    trusted.write_text(body)
+    with pytest.raises(ValueError, match='INVALID_FUNCTION_CASES'):
+        run_functional_tests(**json_function_params(candidate, trusted), run=lambda *a, **k: pytest.fail('dispatched'))
+
+
+@pytest.mark.parametrize('mutation', ['nan', 'huge', 'deep', 'extra', 'kwargs', 'many', 'long'])
+def test_json_function_case_bounds(tmp_path, mutation):
+    candidate, trusted, contract = json_function_fixture(tmp_path)
+    case = contract['cases'][0]
+    if mutation == 'nan': case['expected'] = float('nan')
+    if mutation == 'huge': case['expected'] = 2**53
+    if mutation == 'deep':
+        value = 0
+        for _ in range(18): value = [value]
+        case['expected'] = value
+    if mutation == 'extra': case['approved'] = True
+    if mutation == 'kwargs': case['kwargs'] = {'__builtins__': {}}
+    if mutation == 'many': contract['cases'] = [case] * 129
+    if mutation == 'long': case['expected'] = 'x' * 4097
+    trusted.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match='INVALID_FUNCTION_CASES'):
+        run_functional_tests(**json_function_params(candidate, trusted), run=lambda *a, **k: pytest.fail('dispatched'))
+
+
+def test_json_function_requires_rootless_identity_before_snapshot(tmp_path, monkeypatch):
+    import central_ai.isolated_functional_verifier as verifier
+    candidate, trusted, _ = json_function_fixture(tmp_path)
+    monkeypatch.setattr(verifier.tempfile, 'mkdtemp', lambda **k: pytest.fail('snapshot before identity check'))
+    params = json_function_params(candidate, trusted)
+    params['runner_policy'] = None
+    with pytest.raises(ValueError, match='ISOLATED_RUNNER_REQUIRED'):
+        run_functional_tests(**params, run=lambda *a, **k: pytest.fail('dispatched'))
+
+
+@pytest.mark.parametrize('uncertain', [False, True])
+def test_json_function_timeout_and_cleanup_remain_fail_closed(tmp_path, monkeypatch, uncertain):
+    import central_ai.isolated_functional_verifier as verifier
+    candidate, trusted, _ = json_function_fixture(tmp_path)
+    resources = []
+    def run(args, **kwargs):
+        if args[1] == 'run':
+            assert resources
+            raise subprocess.TimeoutExpired('fixture', 5)
+        return SimpleNamespace(returncode=int(uncertain), stdout='')
+    monkeypatch.setattr(verifier, 'make_isolated_docker_runner', lambda *a, **k: run)
+    result = run_functional_tests(**json_function_params(candidate, trusted), record_resources=resources.append)
+    assert not result['passed']
+    assert result['status'] == ('cleanup_unconfirmed' if uncertain else 'timeout')
+    path = Path(resources[0]['snapshot_directory'])
+    assert path.exists() is uncertain
+    if uncertain: shutil.rmtree(path)
+
+
+@pytest.mark.parametrize('stream', ['stdout', 'stderr'])
+def test_json_function_capture_limits_real_pipe_output(stream):
+    import sys
+    from central_ai.isolated_functional_verifier import _bounded_capture
+    result = _bounded_capture([sys.executable, '-c',
+        f'import sys; sys.{stream}.write("x" * 300000)'], capture_output=True, text=True, timeout=5, check=False)
+    assert result.returncode == 125 and result.stdout == result.stderr == ''
+
+
+def test_json_function_capture_timeout_and_invalid_utf8():
+    import sys
+    from central_ai.isolated_functional_verifier import _bounded_capture
+    with pytest.raises(subprocess.TimeoutExpired):
+        _bounded_capture([sys.executable, '-c', 'import time; time.sleep(5)'],
+                         capture_output=True, text=True, timeout=0.1, check=False)
+    result = _bounded_capture([sys.executable, '-c', 'import os; os.write(1, bytes([255]))'],
+                             capture_output=True, text=True, timeout=5, check=False)
+    assert result.returncode == 125
+
+
+@pytest.mark.parametrize('kind', ['valid', 'wrong', 'early_exit', 'forge', 'flood', 'oracle_read'])
+def test_real_rootless_json_function_contract(tmp_path, kind):
+    """Actual container evidence only when a disposable pinned daemon is provisioned."""
+    policy_file = os.environ.get('CENTRAL_AI_ROOTLESS_CI_POLICY')
+    if not policy_file:
+        pytest.skip('requires disposable nonroot/private rootless CI daemon')
+    candidate, trusted, _ = json_function_fixture(tmp_path)
+    if kind == 'wrong': candidate.write_text('def summarize(rows): return {}\n')
+    if kind == 'early_exit': candidate.write_text('import os\nos._exit(0)\n')
+    if kind == 'forge': candidate.write_text('import os\nprint("CENTRAL_AI_COMPLETED_V1:forged", flush=True)\nos._exit(0)\n')
+    if kind == 'flood': candidate.write_text('while True: print("x" * 8192, flush=True)\n')
+    if kind == 'oracle_read': candidate.write_text('open("/sandbox/test_candidate.py").read()\n')
+    params = json_function_params(candidate, trusted)
+    params.update(image=os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE'], runner_policy=json.loads(Path(policy_file).read_text()))
+    resources = []
+    report = run_functional_tests(**params, record_resources=resources.append)
+    assert report['passed'] is (kind == 'valid')
+    assert report['completion_confirmed'] is (kind == 'valid')
+    assert report['execution_policy'] == 'json-function-v1'
+    assert report['status'] != 'cleanup_unconfirmed'
+    assert not Path(resources[0]['snapshot_directory']).exists()
+    if kind in ('valid', 'wrong', 'early_exit', 'forge'): assert report['returncode'] == 0
+    if kind == 'oracle_read': assert report['returncode'] == 1
 
 
 def completed_result(args, returncode=0):
