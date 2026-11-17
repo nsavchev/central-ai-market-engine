@@ -69,15 +69,16 @@ def test_json_function_protocol_real_benign_subprocess_and_hidden_oracle(tmp_pat
 
 @pytest.mark.parametrize('output', [
     '', 'true', '{"passed":true}', 'CENTRAL_AI_COMPLETED_V1:forged',
-    '[{"count":2,"total":2}]', '[{"count":2,"total":2},{"count":0,"total":1}]',
-    '[{"count":true,"total":2},{"count":0,"total":0}]',
-    '[{"count":2.0,"total":2},{"count":0,"total":0}]',
+    '[{"count":2,"total":2}]', '[{"count":2,"total":2},{"count":0,"total":0},null]',
     '[{"count":2,"total":2,"total":999},{"count":0,"total":0}]',
     '[{"count":2,"total":NaN},{"count":0,"total":0}]',
+    '[{}, {"count":0,"total":9007199254740992}]',
+    json.dumps([{}, {'count': 0, 'total': 'x' * 4097}]),
+    json.dumps([{}, {'count': 0, 'total': list(range(257))}]),
     '[{"count":2,"total":2},{"count":0,"total":0}] trailing',
     'x' * 32769, '[' * 1200 + '0' + ']' * 1200,
 ])
-def test_json_function_forgery_or_wrong_answer_never_passes(tmp_path, monkeypatch, output):
+def test_json_function_forgery_or_malformed_response_is_unconfirmed(tmp_path, monkeypatch, output):
     import central_ai.isolated_functional_verifier as verifier
     candidate, trusted, _ = json_function_fixture(tmp_path)
     def run(args, **kwargs):
@@ -86,6 +87,29 @@ def test_json_function_forgery_or_wrong_answer_never_passes(tmp_path, monkeypatc
     result = run_functional_tests(**json_function_params(candidate, trusted))
     assert not result['passed'] and not result['completion_confirmed']
     assert result['status'] == 'completion_unconfirmed'
+
+
+@pytest.mark.parametrize('output', [
+    '[{"count":2,"total":2},{"count":0,"total":1}]',
+    '[{"count":true,"total":2},{"count":0,"total":0}]',
+    '[{"count":2.0,"total":2},{"count":0,"total":0}]',
+    '[{}, {}]', '[null, null]',
+])
+def test_json_function_complete_wrong_answers_fail_with_zero_exit(tmp_path, monkeypatch, output):
+    import central_ai.isolated_functional_verifier as verifier
+    candidate, trusted, contract = json_function_fixture(tmp_path)
+    resources = []
+    def run(args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=output if args[1] == 'run' else '')
+    monkeypatch.setattr(verifier, 'make_isolated_docker_runner', lambda *a, **k: run)
+    result = run_functional_tests(**json_function_params(candidate, trusted), record_resources=resources.append)
+    assert result['status'] == 'failed' and result['returncode'] == 0
+    assert result['passed'] is False and result['completion_confirmed'] is False
+    assert result['execution_policy'] == 'json-function-v1'
+    assert not Path(resources[0]['snapshot_directory']).exists()
+    assert json.loads(trusted.read_text()) == contract
+    assert set(result) == {'test_sha256', 'status', 'passed', 'executed_candidate',
+                           'completion_confirmed', 'execution_policy', 'returncode'}
 
 
 @pytest.mark.parametrize('body', [
@@ -127,6 +151,62 @@ def test_json_function_requires_rootless_identity_before_snapshot(tmp_path, monk
     params['runner_policy'] = None
     with pytest.raises(ValueError, match='ISOLATED_RUNNER_REQUIRED'):
         run_functional_tests(**params, run=lambda *a, **k: pytest.fail('dispatched'))
+
+
+@pytest.mark.parametrize('field,value', [
+    ('CgroupDriver', None), ('CgroupDriver', 'none'), ('CgroupDriver', 'cgroupfs'),
+    ('CgroupVersion', None), ('CgroupVersion', '1'), ('CgroupVersion', 2),
+    *[(field, value) for field in ('MemoryLimit', 'PidsLimit', 'CpuCfsPeriod', 'CpuCfsQuota')
+      for value in (None, False, 1)],
+])
+def test_json_function_unsupported_limits_reject_before_snapshot_or_image(tmp_path, monkeypatch, field, value):
+    import central_ai.isolated_functional_verifier as verifier
+    candidate, trusted, _ = json_function_fixture(tmp_path)
+    params = json_function_params(candidate, trusted)
+    policy = dict(uid=10001, socket='/private/docker.sock', config_directory='/private/empty',
+                  daemon_id='fixture-daemon-id', data_root='/private/docker-data')
+    params['runner_policy'] = policy
+    info = dict(ID=policy['daemon_id'], DockerRootDir=policy['data_root'],
+                SecurityOptions=['name=rootless'], CgroupDriver='systemd', CgroupVersion='2',
+                MemoryLimit=True, PidsLimit=True, CpuCfsPeriod=True, CpuCfsQuota=True)
+    if value is None:
+        del info[field]
+    else:
+        info[field] = value
+    commands = []
+    monkeypatch.setattr(verifier, '_checked_runner_host', lambda _: (1, 2))
+    monkeypatch.setattr(verifier.tempfile, 'mkdtemp', lambda **k: pytest.fail('snapshot before limits check'))
+    def docker(args, **kwargs):
+        commands.append(args)
+        assert args[5:] == ['info', '--format', '{{json .}}']
+        return SimpleNamespace(returncode=0, stdout=json.dumps(info))
+    with pytest.raises(ValueError, match='ISOLATED_RUNNER_LIMITS_UNAVAILABLE'):
+        run_functional_tests(**params, run=docker,
+                             record_resources=lambda _: pytest.fail('resources before limits check'))
+    assert len(commands) == 1
+
+
+def test_isolated_runner_accepts_supported_resource_limits(monkeypatch):
+    import central_ai.isolated_functional_verifier as verifier
+    policy = dict(uid=10001, socket='/private/docker.sock', config_directory='/private/empty',
+                  daemon_id='fixture-daemon-id', data_root='/private/docker-data')
+    monkeypatch.setattr(verifier, '_checked_runner_host', lambda _: (1, 2))
+    commands = []
+    def docker(args, **kwargs):
+        commands.append(args)
+        if args[5] == 'info':
+            value = dict(ID=policy['daemon_id'], DockerRootDir=policy['data_root'],
+                         SecurityOptions=['name=rootless'], CgroupDriver='systemd', CgroupVersion='2',
+                         MemoryLimit=True, PidsLimit=True, CpuCfsPeriod=True, CpuCfsQuota=True)
+        elif args[5:7] == ['image', 'inspect']:
+            value = [dict(RepoDigests=[IMAGE])]
+        else:
+            assert args[5:] == ['container', 'ls']
+            return SimpleNamespace(returncode=0, stdout='')
+        return SimpleNamespace(returncode=0, stdout=json.dumps(value))
+    runner = verifier.make_isolated_docker_runner(policy, [IMAGE], run=docker)
+    assert runner(['docker', 'container', 'ls'], timeout=10).returncode == 0
+    assert len(commands) == 3
 
 
 @pytest.mark.parametrize('uncertain', [False, True])
@@ -188,6 +268,8 @@ def test_real_rootless_json_function_contract(tmp_path, kind):
     assert report['completion_confirmed'] is (kind == 'valid')
     assert report['execution_policy'] == 'json-function-v1'
     assert report['status'] != 'cleanup_unconfirmed'
+    if kind == 'wrong': assert report['status'] == 'failed'
+    if kind in ('early_exit', 'forge'): assert report['status'] == 'completion_unconfirmed'
     assert not Path(resources[0]['snapshot_directory']).exists()
     if kind in ('valid', 'wrong', 'early_exit', 'forge'): assert report['returncode'] == 0
     if kind == 'oracle_read': assert report['returncode'] == 1

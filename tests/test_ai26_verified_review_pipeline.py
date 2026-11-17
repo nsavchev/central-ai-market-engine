@@ -2899,7 +2899,9 @@ def test_isolated_runner_daemon_rejection_and_explicit_endpoint(monkeypatch,bad)
         if args[5]=='info':
             data=dict(ID='other-daemon' if bad=='id' else policy['daemon_id'],
                 DockerRootDir='/other' if bad=='root' else policy['data_root'],
-                SecurityOptions=[] if bad=='rootful' else ['name=rootless'])
+                SecurityOptions=[] if bad=='rootful' else ['name=rootless'],
+                CgroupDriver='systemd',CgroupVersion='2',MemoryLimit=True,
+                PidsLimit=True,CpuCfsPeriod=True,CpuCfsQuota=True)
         else:data=[dict(RepoDigests=[] if bad=='image' else [image])]
         return SimpleNamespace(returncode=1 if bad=='unavailable' else 0,stdout=json.dumps(data))
     with pytest.raises(ValueError):vf.make_isolated_docker_runner(policy,[image],run=docker)
@@ -2916,7 +2918,9 @@ def test_isolated_runner_binds_all_commands_and_detects_socket_change(monkeypatc
     monkeypatch.setattr(vf,'_checked_runner_host',lambda _:identity[0])
     def docker(args,**kwargs):
         commands.append(args)
-        data=(dict(ID=p['daemon_id'],DockerRootDir=p['data_root'],SecurityOptions=['name=rootless'])
+        data=(dict(ID=p['daemon_id'],DockerRootDir=p['data_root'],SecurityOptions=['name=rootless'],
+                   CgroupDriver='systemd',CgroupVersion='2',MemoryLimit=True,
+                   PidsLimit=True,CpuCfsPeriod=True,CpuCfsQuota=True)
               if args[5]=='info' else [dict(RepoDigests=[image])])
         return SimpleNamespace(returncode=0,stdout=json.dumps(data))
     bound=vf.make_isolated_docker_runner(p,[image],run=docker)
@@ -2998,7 +3002,9 @@ def test_runtime_v2_synthetic_runner_full_flow_and_preadmission_drift(monkeypatc
     monkeypatch.setattr(vf,'_checked_runner_host',lambda p:(1,2))  # Synthetic host observations, not rootless acceptance.
     def docker(args,**kwargs):
         commands.append(args)
-        if args[5]=='info':data=dict(ID=daemon[0],DockerRootDir='/private/root',SecurityOptions=['name=rootless'])
+        if args[5]=='info':data=dict(ID=daemon[0],DockerRootDir='/private/root',SecurityOptions=['name=rootless'],
+            CgroupDriver='systemd',CgroupVersion='2',MemoryLimit=True,
+            PidsLimit=True,CpuCfsPeriod=True,CpuCfsQuota=True)
         elif args[5]=='image':data=[dict(RepoDigests=[config['jobs'][params['task_id']]['image']])]
         else:data=[]
         return SimpleNamespace(returncode=0,stdout=json.dumps(data))
@@ -3668,3 +3674,439 @@ def test_real_rootless_cleanup_probe_failure_quarantines_snapshot(tmp_path):
             last = probe()
             assert last.returncode == 0 and not last.stdout.strip(), 'retain snapshot'
             shutil.rmtree(recorded[0]['snapshot_directory'])
+
+
+def json_policy_fixture(monkeypatch, tmp_path, **result_changes):
+    """Synthetic verifier/host observations; actual rootless coverage is separate."""
+    import hashlib, json
+    import central_ai.isolated_functional_verifier as isolated
+    result = valid_result(execution_policy='json-function-v1', **result_changes)
+    params = verification_fixture(monkeypatch, result, tmp_path)
+    contract = tmp_path / 'trusted-contract.json'
+    contract.write_text(json.dumps(dict(schema='json-function-v1', function='summarize',
+        cases=[dict(args=[[dict(amount=3), dict(amount=7)]], kwargs={},
+                    expected=dict(count=2, total=10))])))
+    contract.chmod(0o600)
+    digest = hashlib.sha256(contract.read_bytes()).hexdigest()
+    result['test_sha256'] = digest
+    params.update(execution_policy='json-function-v1', trusted_test_file=str(contract),
+        trusted_test_sha256=digest,
+        runner_policy=dict(uid=10001, socket='/synthetic/private.sock',
+            config_directory='/synthetic/empty', daemon_id='synthetic-daemon',
+            data_root='/synthetic/data'))
+    monkeypatch.setattr(isolated, 'make_isolated_docker_runner',
+                        lambda *args, **kwargs: lambda *a, **k: None)
+    return params
+
+
+@pytest.mark.parametrize('outcome,code', [('passed', 0), ('failed', 0), ('failed', 1),
+                                        ('completion_unconfirmed', 0)])
+def test_json_policy_binding_and_restart_preserve_exact_mode(monkeypatch, tmp_path, outcome, code):
+    from central_ai.task_storage import TaskStorage
+    params = json_policy_fixture(monkeypatch, tmp_path, passed=outcome == 'passed',
+                                 status=outcome, returncode=code)
+    report = prepare_and_verify(**params)
+    audit = TaskStorage(params['database']).get(params['task_id'])['verification']
+    assert audit['schema'] == 'task-verification-v2'
+    assert audit['execution_policy'] == report['execution_policy'] == 'json-function-v1'
+    assert audit['binding']['schema'] == 'verification-request-v2'
+    assert audit['binding']['execution_policy'] == 'json-function-v1'
+    assert audit['outcome']['test_status'] == outcome
+    assert report['completion_confirmed'] is (outcome == 'passed')
+    assert report['approved'] is report['deployment_allowed'] is False
+    with pytest.raises(ValueError, match='VERIFICATION_ALREADY_STARTED'):
+        prepare_and_verify(**params)
+    assert TaskStorage.review_status(params['database'], (params['task_id'],))['state'] == {
+        'passed': 'verified', 'failed': 'candidate_failed', 'completion_unconfirmed': 'blocked',
+    }[outcome]
+
+
+@pytest.mark.parametrize('change', ['legacy', 'policy', 'missing', 'nonce'])
+def test_json_policy_rejects_cross_policy_or_replayed_review_before_execution(monkeypatch, tmp_path, change):
+    params = json_policy_fixture(monkeypatch, tmp_path)
+    original = params['authorization_check']
+    def authorize(binding):
+        receipt = original(binding)
+        if change == 'legacy':
+            receipt['binding']['schema'] = 'verification-request-v1'
+            receipt['binding'].pop('execution_policy')
+        elif change == 'missing':
+            receipt['binding'].pop('execution_policy')
+        else:
+            receipt['binding']['execution_policy' if change == 'policy' else 'nonce'] = (
+                'bounded-arithmetic-v1' if change == 'policy' else 'e'*32)
+        return receipt
+    params.update(authorization_check=authorize, verifier=lambda **kw: pytest.fail('must not execute'))
+    with pytest.raises(ValueError, match='REVIEW_AUTHORIZATION_DENIED'):
+        prepare_and_verify(**params)
+
+
+@pytest.mark.parametrize('change', ['runner', 'contract', 'digest', 'unknown'])
+def test_json_preflight_rejects_before_journal_or_generator(monkeypatch, tmp_path, change):
+    from pathlib import Path
+    import central_ai.isolated_functional_verifier as isolated
+    from central_ai.task_storage import TaskStorage
+    params = json_policy_fixture(monkeypatch, tmp_path)
+    if change == 'runner':
+        def refuse(*args, **kwargs): raise ValueError('ISOLATED_RUNNER_REQUIRED')
+        monkeypatch.setattr(isolated, 'make_isolated_docker_runner', refuse)
+    elif change == 'contract':
+        import hashlib
+        path = Path(params['trusted_test_file'])
+        path.write_text('{"schema":"json-function-v1","function":"summarize","cases":[]}')
+        params['trusted_test_sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+    elif change == 'digest':
+        params['trusted_test_sha256'] = 'a'*64
+    else:
+        params['execution_policy'] = 'unreviewed-policy'
+    params.pop('recommendation')
+    params.update(generator=lambda request: pytest.fail('must not dispatch'), generator_id='ci-only')
+    before = Path(params['database']).read_bytes()
+    with pytest.raises(ValueError):
+        prepare_and_verify(**params)
+    assert Path(params['database']).read_bytes() == before
+    assert 'verification' not in TaskStorage(params['database']).get(params['task_id'])
+
+
+def test_json_generation_admission_binds_policy_before_callback(monkeypatch, tmp_path):
+    from central_ai.task_storage import TaskStorage
+    params = json_policy_fixture(monkeypatch, tmp_path)
+    params.pop('recommendation')
+    def admit(binding):
+        assert binding['execution_policy'] == 'json-function-v1'
+        receipt = generation_admission_fixture(binding)
+        receipt['binding']['execution_policy'] = 'bounded-arithmetic-v1'
+        return receipt
+    params.update(generator=lambda request: pytest.fail('must not dispatch'), generator_id='ci-json',
+                  generation_authorization_check=admit)
+    with pytest.raises(ValueError):
+        prepare_and_verify(**params)
+    saved = TaskStorage(params['database']).get(params['task_id'])
+    assert saved['generation']['binding']['execution_policy'] == 'json-function-v1'
+    assert 'admission' not in saved['generation']
+    assert saved['verification']['phase'] == 'blocked'
+
+
+def test_json_result_cannot_claim_legacy_policy(monkeypatch, tmp_path):
+    params = json_policy_fixture(monkeypatch, tmp_path)
+    def verify(**kwargs):
+        record_fixture_resources(kwargs)
+        return valid_result(test_sha256=kwargs['expected_test_sha256'])
+    params['verifier'] = verify
+    with pytest.raises(ValueError, match='INVALID_VERIFIER_RESULT'):
+        prepare_and_verify(**params)
+
+
+def test_json_review_hmac_covers_explicit_policy():
+    import secrets
+    from central_ai.verifier_gate import make_hmac_review_authorizer
+    key = secrets.token_bytes(32)
+    binding = dict(schema='verification-request-v2', execution_policy='json-function-v1',
+        nonce='1'*32, task_id='ci-json', candidate_sha256='a'*64, test_sha256='b'*64,
+        image='python@sha256:'+'c'*64, scope='verify_only')
+    receipt = signed_review_fixture(binding, key)
+    authorize = make_hmac_review_authorizer(reviewer_keys={'ci-reviewer': key},
+        request_receipt=lambda request: receipt, clock=lambda: 1050)
+    assert authorize(binding)['binding'] == binding
+    altered = dict(binding, execution_policy='bounded-arithmetic-v1')
+    with pytest.raises(ValueError, match='REVIEW_AUTHORIZATION_DENIED'):
+        authorize(altered)
+    receipt['binding'] = altered
+    with pytest.raises(ValueError, match='REVIEW_MAC_MISMATCH'):
+        authorize(altered)
+
+
+@pytest.mark.parametrize('backend', ['synthetic', 'rootless'])
+def test_json_function_developer_revision_lifecycle(monkeypatch, tmp_path, backend):
+    """Real existing lifecycle; only rootless backend is actual container evidence."""
+    import hashlib, httpx, json, os, secrets
+    from pathlib import Path
+    from types import SimpleNamespace
+    import central_ai.isolated_functional_verifier as isolated
+    from central_ai.app import make_openai_generator
+    from central_ai.persistent_bridge import PersistentTaskBridge
+    from central_ai.task_storage import TaskStorage
+    from central_ai.verifier_gate import make_hmac_review_authorizer
+    from central_ai.worker_batch import run_batch
+    runner_file = os.environ.get('CENTRAL_AI_ROOTLESS_CI_POLICY')
+    if backend == 'rootless' and not runner_file:
+        pytest.skip('requires disposable nonroot/private rootless CI daemon')
+    image = os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE'] if backend == 'rootless' else 'python@sha256:'+'c'*64
+    runner = json.loads(Path(runner_file).read_text()) if backend == 'rootless' else dict(
+        uid=10001, socket='/synthetic/private.sock', config_directory='/synthetic/empty',
+        daemon_id='synthetic-daemon', data_root='/synthetic/data')
+    database, task_id = analyzed_task(tmp_path)
+    root_id = task_id
+    original = tmp_path/'source/sample.py'
+    original.chmod(0o600)
+    source_before = original.read_bytes()
+    contract = tmp_path/'trusted-contract.json'
+    expected = [dict(count=2, total=10), dict(count=0, total=0), dict(count=2, total=-1)]
+    contract.write_text(json.dumps(dict(schema='json-function-v1', function='summarize',
+        cases=[dict(args=[rows], kwargs={}, expected=value) for rows, value in zip(
+            [[dict(amount=3), dict(amount=7)], [], [dict(amount=-4), dict(amount=3)]], expected)])))
+    contract.chmod(0o600)
+    contract_before = contract.read_bytes()
+    digest = hashlib.sha256(contract_before).hexdigest()
+    iteration = [0]
+    observed = []
+    if backend == 'synthetic':
+        def execute(args, **kwargs):
+            if args[:2] == ['docker', 'run']:
+                return SimpleNamespace(returncode=0,
+                    stdout=json.dumps([{} for _ in expected] if iteration[0] == 1 else expected))
+            return SimpleNamespace(returncode=0, stdout='')
+        monkeypatch.setattr(isolated, 'make_isolated_docker_runner',
+                            lambda *args, **kwargs: execute)
+    def containers():
+        bound = isolated.make_isolated_docker_runner(runner, [image])
+        result = bound(['docker', 'container', 'ls', '--all', '--format', '{{.Names}}'],
+                       capture_output=True, text=True, timeout=10, check=False)
+        assert result.returncode == 0
+        return set(result.stdout.splitlines())
+    before_containers = containers()
+    key = secrets.token_bytes(32)
+    authorize = make_hmac_review_authorizer(reviewer_keys={'ci-reviewer': key},
+        request_receipt=lambda binding: signed_review_fixture(binding, key), clock=lambda: 1050)
+    calls = []
+    def response(request):
+        body = json.loads(request.content)
+        prompt = body['messages'][0]['content']
+        calls.append(body)
+        assert contract.name not in prompt and contract_before.decode() not in prompt
+        journal = TaskStorage(database).get(task_id)['generation']
+        assert journal['binding']['execution_policy'] == 'json-function-v1'
+        assert journal['dispatch']['admission_sha256'] == journal['admission_sha256']
+        if iteration[0] == 2:
+            assert journal['binding']['schema'] == 'generation-request-v2'
+            assert journal['revision_parent']['execution_policy'] == 'json-function-v1'
+            assert 'candidate_code' in prompt and 'expected' not in prompt
+        code = ('def summarize(rows):\n    return {}\n' if iteration[0] == 1 else
+                "def summarize(rows):\n    return {'count': len(rows), 'total': sum(row['amount'] for row in rows)}\n")
+        fenced = chr(96)*3 + 'python\n' + code + chr(96)*3
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(
+            dict(choices=[dict(message=dict(content=fenced))])).encode()))
+    monkeypatch.setenv('OPENAI_API_KEY', 'synthetic-ci-only')
+    generate = make_openai_generator(enabled='YES', database=database,
+                                    transport=httpx.MockTransport(response))
+    def admit(binding):
+        assert binding['execution_policy'] == 'json-function-v1'
+        receipt = usd_budget_authorizer(calls=2)(binding)
+        if binding['schema'] == 'generation-request-v2':
+            receipt['disclosure'] = 'task_description_and_parent_candidate'
+        return receipt
+    def verify(**kwargs):
+        result = isolated.run_functional_tests(**kwargs)
+        observed.append(result)
+        return result
+    bridge = PersistentTaskBridge(database)
+    failed_candidate = None
+    for ordinal in (1, 2):
+        iteration[0] = ordinal
+        if ordinal == 2:
+            assert run_batch(enabled='YES', database=database, agent='ci-json-revision',
+                             max_tasks=1, idle_checks=1, sleep=lambda _: None)['processed'] == 1
+        paths = {}
+        for name in ('handoffs', 'proposals', 'candidates'):
+            path = tmp_path/(str(ordinal)+'-'+name)
+            path.mkdir(mode=0o700)
+            paths[name] = str(path)
+        params = dict(enabled='YES', database=database, task_id=task_id, **paths,
+            trusted_test_file=str(contract), trusted_test_sha256=digest, image=image,
+            execution_policy='json-function-v1', runner_policy=runner,
+            authorization_check=authorize, generator=generate, generator_id=generate.generator_id,
+            generation_authorization_check=admit, verifier=verify,
+            revision_candidate_file=failed_candidate)
+        report = prepare_and_verify(**params)
+        saved = TaskStorage(database).get(task_id)
+        assert report['test_status'] == ('failed' if ordinal == 1 else 'passed')
+        assert observed[-1]['returncode'] == 0
+        assert saved['verification']['schema'] == 'task-verification-v2'
+        assert report['verification_binding']['schema'] == 'verification-request-v2'
+        assert report['verification_binding']['execution_policy'] == 'json-function-v1'
+        assert report['approved'] is report['deployment_allowed'] is False
+        assert not Path(saved['verification']['resources']['snapshot_directory']).exists()
+        assert original.read_bytes() == source_before and contract.read_bytes() == contract_before
+        assert containers() == before_containers
+        with pytest.raises(ValueError, match='VERIFICATION_ALREADY_STARTED'):
+            prepare_and_verify(**params)
+        if ordinal == 1:
+            failed_candidate = str(Path(paths['candidates'])/('candidate_'+task_id+'.py'))
+            task_id = bridge.submit_revision(task_id, report['verification_nonce'])['task_id']
+    family = TaskStorage(database).get(root_id)['revision_family']
+    assert family['schema'] == 'revision-family-v2'
+    assert family['execution_policy'] == 'json-function-v1' and family['image'] == image
+    assert family['members'] == [root_id, task_id]
+    assert len(calls) == 2 and TaskStorage.generation_budget_snapshot(database)['admitted_calls'] == 2
+    with pytest.raises(ValueError):
+        bridge.submit_revision(task_id, report['verification_nonce'])
+
+
+def json_runtime_policy_fixture(monkeypatch, tmp_path):
+    """Private disposable config with a synthetic historical admission; no HTTP."""
+    import hashlib, json
+    from pathlib import Path
+    import central_ai.isolated_functional_verifier as isolated
+    from central_ai.task_storage import TaskStorage, DEVELOPER_MODEL_PROFILES
+    params, config, path, key, save = runtime_policy_fixture(monkeypatch, tmp_path)
+    params['generation_authorization_check'] = usd_budget_authorizer()
+    prepare_and_verify(**params)
+    old_task_id = params['task_id']
+    snapshot = TaskStorage.generation_budget_snapshot(params['database'])
+    policy = TaskStorage.prepare_generation_model_amendment(params['database'],
+        expected_history_sha256=snapshot['admission_history_sha256'], new_call_limit=3,
+        amendment_id='ci-json-model-policy')
+    TaskStorage.record_generation_budget_amendment(params['database'], enabled='YES',
+        amendment=dict(policy, operator_authorized=True))
+    params = add_analyzed_generation_task(params)
+    task = TaskStorage(params['database']).get(params['task_id'])
+    contract = Path(params['database']).parent/'trusted-contract.json'
+    contract.write_text(json.dumps(dict(schema='json-function-v1', function='f',
+                                      cases=[dict(args=[], kwargs={}, expected=2)])))
+    contract.chmod(0o600)
+    grant = dict(config['jobs'][old_task_id],
+        spec_sha256=hashlib.sha256(task['task']['task'].encode()).hexdigest(),
+        trusted_test_file=str(contract), trusted_test_sha256=hashlib.sha256(contract.read_bytes()).hexdigest())
+    config.update(schema='worker-review-runtime-v4', execution_policy='json-function-v1',
+        default_profile='primary', model_profiles=json.loads(json.dumps(DEVELOPER_MODEL_PROFILES)),
+        runner=dict(uid=10001, socket='/synthetic/private.sock', config_directory='/synthetic/empty',
+                    daemon_id='synthetic-daemon', data_root='/synthetic/data'),
+        jobs={params['task_id']:grant},
+        budget=dict(currency='USD', limit_microusd=20000000, call_limit=3))
+    config.pop('model')
+    config.pop('max_output_tokens')
+    root = Path(__file__).resolve().parents[1]/'central_ai'
+    for name in ('isolated_functional_verifier.py', 'task_queue.py', 'persistent_bridge.py'):
+        config['runtime_sha256'][name] = hashlib.sha256((root/name).read_bytes()).hexdigest()
+    monkeypatch.setattr(isolated, 'make_isolated_docker_runner',
+                        lambda *args, **kwargs: lambda *a, **k: None)
+    save()
+    return params, config, path, key, save, old_task_id
+
+
+def test_runtime_v4_disabled_validation_preserves_ledger_and_builds_no_provider(monkeypatch, tmp_path):
+    from pathlib import Path
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    from central_ai.task_storage import TaskStorage
+    params, config, path, key, save, _ = json_runtime_policy_fixture(monkeypatch, tmp_path)
+    config['execution_authorized'] = False
+    save()
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.setattr(provider, 'make_openai_generator', lambda **kw: pytest.fail('must not construct provider'))
+    before = Path(params['database']).read_bytes()
+    before_key = key.read_bytes()
+    snapshot = TaskStorage.generation_budget_snapshot(params['database'])
+    result = pipeline.load_worker_review_config(enabled='YES', config_path=path,
+        database=params['database'], validation_only=True)
+    assert result['config_validated'] and result['execution_authorized'] is False
+    assert result['generation_started'] is result['worker_started'] is result['database_modified'] is False
+    assert Path(params['database']).read_bytes() == before and key.read_bytes() == before_key
+    assert TaskStorage.generation_budget_snapshot(params['database']) == snapshot
+    with pytest.raises(ValueError, match='WORKER_REVIEW_CONFIG_INVALID'):
+        pipeline.load_worker_review_config(enabled='YES', config_path=path, database=params['database'])
+
+
+@pytest.mark.parametrize('change', ['schema', 'policy', 'bridge_pin', 'hash', 'contract', 'legacy_task', 'runner'])
+def test_runtime_v4_rejects_implicit_upgrade_and_unpinned_grants(monkeypatch, tmp_path, change):
+    import hashlib, json
+    from pathlib import Path
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    import central_ai.isolated_functional_verifier as isolated
+    from central_ai.task_storage import TaskStorage
+    params, config, path, key, save, old_task_id = json_runtime_policy_fixture(monkeypatch, tmp_path)
+    if change == 'schema':
+        config['schema'] = 'worker-review-runtime-v3'
+    elif change == 'policy':
+        config['execution_policy'] = 'bounded-arithmetic-v1'
+    elif change == 'bridge_pin':
+        config['runtime_sha256'].pop('persistent_bridge.py')
+    elif change == 'hash':
+        config['runtime_sha256']['persistent_bridge.py'] = 'a'*64
+    elif change == 'contract':
+        grant = config['jobs'][params['task_id']]
+        contract = Path(grant['trusted_test_file'])
+        contract.write_text('{"schema":"json-function-v1","function":"f","cases":[]}')
+        grant['trusted_test_sha256'] = hashlib.sha256(contract.read_bytes()).hexdigest()
+    elif change == 'legacy_task':
+        grant = config['jobs'].pop(params['task_id'])
+        old_task = TaskStorage(params['database']).get(old_task_id)
+        grant['spec_sha256'] = hashlib.sha256(old_task['task']['task'].encode()).hexdigest()
+        config['jobs'][old_task_id] = grant
+    else:
+        def refuse(*args, **kwargs): raise ValueError('ISOLATED_RUNNER_REQUIRED')
+        monkeypatch.setattr(isolated, 'make_isolated_docker_runner', refuse)
+    save()
+    before = Path(params['database']).read_bytes()
+    monkeypatch.setattr(provider, 'make_openai_generator', lambda **kw: pytest.fail('must not construct provider'))
+    with pytest.raises(ValueError):
+        pipeline.load_worker_review_config(enabled='YES', config_path=path,
+            database=params['database'], validation_only=True)
+    assert Path(params['database']).read_bytes() == before
+
+
+@pytest.mark.parametrize('backend', ['synthetic', 'rootless'])
+def test_runtime_v4_worker_mock_provider_uses_json_without_nested_runner_or_replay(monkeypatch, tmp_path, backend):
+    import json, httpx, os
+    from pathlib import Path
+    import central_ai.app as provider
+    import central_ai.verified_review_pipeline as pipeline
+    import central_ai.isolated_functional_verifier as isolated
+    from central_ai.task_storage import TaskStorage
+    from central_ai.worker_batch import run_batch
+    runner_file = os.environ.get('CENTRAL_AI_ROOTLESS_CI_POLICY')
+    if backend == 'rootless' and not runner_file:
+        pytest.skip('requires disposable nonroot/private rootless CI daemon')
+    prepare = pipeline.prepare_review_pipeline
+    real_runner = isolated.make_isolated_docker_runner
+    real_verifier = isolated.run_functional_tests
+    params, config, path, key, save, _ = json_runtime_policy_fixture(monkeypatch, tmp_path)
+    if backend == 'rootless':
+        monkeypatch.setattr(pipeline, 'prepare_review_pipeline', prepare)
+        monkeypatch.setattr(isolated, 'make_isolated_docker_runner', real_runner)
+        config['runner'] = json.loads(Path(runner_file).read_text())
+        job = config['jobs'][params['task_id']]
+        job['image'] = os.environ['CENTRAL_AI_ROOTLESS_CI_IMAGE']
+        Path(job['source_file']).chmod(0o600)
+        for name in ('handoffs', 'proposals', 'candidates'):
+            Path(job[name]).chmod(0o700)
+        save()
+    calls, verified = [], []
+    original_factory = provider.make_openai_generator
+    def response(request):
+        calls.append(json.loads(request.content))
+        return modern_http_response(modern_response())
+    monkeypatch.setenv('OPENAI_API_KEY', 'synthetic-ci-only')
+    monkeypatch.setattr(provider, 'make_openai_generator',
+        lambda **kw: original_factory(**kw, transport=httpx.MockTransport(response)))
+    def verify(**kwargs):
+        assert kwargs['execution_policy'] == 'json-function-v1'
+        assert kwargs['runner_policy'] == config['runner'] and 'run' not in kwargs
+        verified.append(kwargs['expected_test_sha256'])
+        if backend == 'rootless':
+            return real_verifier(**kwargs)
+        record_fixture_resources(kwargs)
+        return valid_result(execution_policy='json-function-v1', test_sha256=kwargs['expected_test_sha256'])
+    monkeypatch.setattr(pipeline, 'run_functional_tests', verify)
+    loaded = pipeline.load_worker_review_config(enabled='YES', config_path=path, database=params['database'])
+    assert run_batch(enabled='YES', database=params['database'], agent='ci-json-runtime',
+        max_tasks=1, idle_checks=1, review_handler=loaded)['processed'] == 1
+    saved = TaskStorage(params['database']).get(params['task_id'])
+    assert saved['verification']['outcome']['execution_policy'] == 'json-function-v1'
+    assert saved['verification']['outcome']['test_status'] == 'passed'
+    if backend == 'rootless':
+        assert not Path(saved['verification']['resources']['snapshot_directory']).exists()
+        bound = real_runner(config['runner'], [job['image']])
+        absent = bound(['docker', 'container', 'ls', '--all', '--format', '{{.Names}}'],
+                       capture_output=True, text=True, timeout=10, check=False)
+        assert absent.returncode == 0 and not absent.stdout.strip()
+    assert len(verified) == len(calls) == 1 and calls[0]['model'] == 'gpt-6.1-sol'
+    assert TaskStorage.generation_budget_snapshot(params['database'])['admitted_calls'] == 2
+    monkeypatch.delenv('OPENAI_API_KEY')
+    monkeypatch.setattr(provider, 'make_openai_generator', lambda **kw: pytest.fail('must not replay'))
+    before = Path(params['database']).read_bytes()
+    loaded = pipeline.load_worker_review_config(enabled='YES', config_path=path, database=params['database'])
+    assert run_batch(enabled='YES', database=params['database'], agent='ci-json-runtime',
+        max_tasks=1, idle_checks=1, review_handler=loaded)['processed'] == 0
+    assert Path(params['database']).read_bytes() == before

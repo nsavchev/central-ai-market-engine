@@ -671,3 +671,250 @@ def test_revision_commit_uncertainty_clears_transient_registry(monkeypatch,tmp_p
             reopened.submit_revision(params['task_id'],report['verification_nonce'])
     else:
         assert 'revision_family' not in reopened.status(params['task_id'])
+
+
+def policy_storage_fixture(tmp_path):
+    """Authored storage records only: no model, generated-code execution or Docker."""
+    from central_ai.task_storage import TaskStorage
+    db = tmp_path / 'tasks.sqlite'
+    workspace = tmp_path / 'source'
+    workspace.mkdir()
+    (workspace / 'original.py').write_text('def original(): return 1\n')
+    bridge = PersistentTaskBridge(db)
+    task_id = bridge.submit('Summarize supplied JSON rows')['task_id']
+    targets = TaskFileTargets(db)
+    targets.initialize()
+    targets.register(task_id, str(workspace), 'original.py')
+    assert run_batch(enabled='YES', database=str(db), agent='policy-storage-fixture', max_tasks=1,
+                     idle_checks=1, sleep=lambda _: None)['processed'] == 1
+    return TaskStorage(db), bridge, task_id
+
+
+def policy_binding_fixture(task_id, nonce, policy='json-function-v1', image=None):
+    binding = dict(schema='verification-request-v1', task_id=task_id, nonce=nonce,
+        candidate_sha256='b' * 64, test_sha256='c' * 64,
+        image=image or 'python@sha256:' + 'a' * 64, scope='verify_only')
+    if policy == 'json-function-v1':
+        binding.update(schema='verification-request-v2', execution_policy=policy)
+    return binding
+
+
+def complete_policy_storage_fixture(store, task_id, nonce='a' * 32, policy='json-function-v1', passed=False):
+    store.begin_verification(task_id, nonce, execution_policy=policy)
+    binding = policy_binding_fixture(task_id, nonce, policy)
+    store.authorize_verification(task_id, nonce, binding, 'synthetic-review', 'synthetic-' + nonce)
+    store.record_verification_resources(task_id, nonce, dict(
+        snapshot_directory='/tmp/central-ai-input-policy-fixture',
+        container_name='central-ai-verifier-' + nonce))
+    report = dict(task_id=task_id, candidate_sha256=binding['candidate_sha256'],
+        test_sha256=binding['test_sha256'], reviewer_id='synthetic-review',
+        authorization_id='synthetic-' + nonce, verification_nonce=nonce,
+        verification_binding=binding, test_status='passed' if passed else 'failed',
+        tests_passed=passed, completion_confirmed=passed, execution_policy=policy,
+        quarantine_required=False, quarantine_resources=None, approved=False, deployment_allowed=False)
+    store.complete_verification(task_id, nonce, report)
+    return report
+
+
+@pytest.mark.parametrize('policy', ['bounded-arithmetic-v1', 'json-function-v1'])
+def test_execution_policy_storage_survives_reopen_without_upgrading_old_rows(tmp_path, policy):
+    from central_ai.task_storage import TaskStorage
+    store, _, task_id = policy_storage_fixture(tmp_path)
+    report = complete_policy_storage_fixture(store, task_id, policy=policy, passed=True)
+    before = store.get(task_id)
+    assert before['verification']['schema'] == ('task-verification-v1' if policy == 'bounded-arithmetic-v1' else 'task-verification-v2')
+    if policy == 'bounded-arithmetic-v1':
+        assert 'execution_policy' not in before['verification']
+        assert 'execution_policy' not in report['verification_binding']
+    assert TaskStorage.review_status(str(store.db_path), (task_id,))['state'] == 'verified'
+    reopened = TaskStorage(store.db_path)
+    assert reopened.get(task_id) == before
+    with pytest.raises(ValueError, match='VERIFICATION_ALREADY_STARTED'):
+        reopened.begin_verification(task_id, 'd' * 32, execution_policy=policy)
+    assert reopened.get(task_id) == before
+
+
+@pytest.mark.parametrize('intent,binding_policy', [
+    ('bounded-arithmetic-v1', 'json-function-v1'), ('json-function-v1', 'bounded-arithmetic-v1')])
+def test_cross_policy_verification_receipt_cannot_authorize_existing_intent(tmp_path, intent, binding_policy):
+    store, _, task_id = policy_storage_fixture(tmp_path)
+    nonce = 'a' * 32
+    store.begin_verification(task_id, nonce, execution_policy=intent)
+    before = store.get(task_id)
+    with pytest.raises(ValueError, match='VERIFICATION_POLICY_CONFLICT'):
+        store.authorize_verification(task_id, nonce, policy_binding_fixture(task_id, nonce, binding_policy),
+                                     'synthetic-review', 'synthetic-authorization')
+    assert store.get(task_id) == before
+
+
+@pytest.mark.parametrize('mutation', ['missing_policy', 'old_schema', 'unknown_policy', 'arithmetic_v2'])
+def test_modern_verification_binding_requires_unambiguous_version_and_policy(tmp_path, mutation):
+    store, _, task_id = policy_storage_fixture(tmp_path)
+    nonce = 'a' * 32
+    store.begin_verification(task_id, nonce, execution_policy='json-function-v1')
+    binding = policy_binding_fixture(task_id, nonce)
+    if mutation == 'missing_policy': binding.pop('execution_policy')
+    if mutation == 'old_schema': binding['schema'] = 'verification-request-v1'
+    if mutation == 'unknown_policy': binding['execution_policy'] = 'general-python'
+    if mutation == 'arithmetic_v2': binding['execution_policy'] = 'bounded-arithmetic-v1'
+    with pytest.raises(ValueError, match='INVALID_VERIFICATION_BINDING'):
+        store.authorize_verification(task_id, nonce, binding, 'synthetic-review', 'synthetic-authorization')
+    assert store.get(task_id)['verification']['phase'] == 'preparing'
+    assert 'resources' not in store.get(task_id)['verification']
+
+
+def test_json_revision_keeps_policy_image_and_three_candidate_budget_after_reopen(tmp_path):
+    from central_ai.task_storage import TaskStorage
+    store, bridge, task_id = policy_storage_fixture(tmp_path)
+    root = task_id
+    for ordinal in (1, 2, 3):
+        report = complete_policy_storage_fixture(store, task_id, nonce=str(ordinal) * 32)
+        if ordinal == 3:
+            with pytest.raises(ValueError, match='REVISION_BUDGET_EXHAUSTED'):
+                PersistentTaskBridge(store.db_path).submit_revision(task_id, report['verification_nonce'])
+            break
+        child = PersistentTaskBridge(store.db_path).submit_revision(task_id, report['verification_nonce'])
+        assert child['revision']['schema'] == 'revision-v2'
+        assert child['revision']['execution_policy'] == 'json-function-v1'
+        assert child['revision']['image'] == report['verification_binding']['image']
+        assert child['revision']['ordinal'] == ordinal + 1
+        assert run_batch(enabled='YES', database=str(store.db_path), agent='json-revision-fixture', max_tasks=1,
+                         idle_checks=1, sleep=lambda _: None)['processed'] == 1
+        task_id = child['task_id']
+        store = TaskStorage(store.db_path)
+    family = store.get(root)['revision_family']
+    assert family['schema'] == 'revision-family-v2' and family['execution_policy'] == 'json-function-v1'
+    assert len(family['members']) == 3 and family['members'][-1] == task_id
+    assert len(bridge.list_tasks()) == 3
+
+
+@pytest.mark.parametrize('change', ['policy', 'image', 'tests'])
+def test_json_revision_cannot_change_authorized_execution_scope(tmp_path, change):
+    store, bridge, task_id = policy_storage_fixture(tmp_path)
+    report = complete_policy_storage_fixture(store, task_id)
+    child = bridge.submit_revision(task_id, report['verification_nonce'])['task_id']
+    run_batch(enabled='YES', database=str(store.db_path), agent='json-revision-fixture', max_tasks=1,
+              idle_checks=1, sleep=lambda _: None)
+    nonce = 'd' * 32
+    if change == 'policy':
+        with pytest.raises(ValueError, match='REVISION_POLICY_CHANGED'):
+            store.begin_verification(child, nonce)
+        assert 'verification' not in store.get(child)
+    else:
+        store.begin_verification(child, nonce, execution_policy='json-function-v1')
+        binding = policy_binding_fixture(child, nonce)
+        if change == 'image': binding['image'] = 'python@sha256:' + 'e' * 64
+        else: binding['test_sha256'] = 'f' * 64
+        with pytest.raises(ValueError, match='REVISION_POLICY_CHANGED|REVISION_TESTS_CHANGED'):
+            store.authorize_verification(child, nonce, binding, 'synthetic-review', 'synthetic-authorization')
+        assert store.get(child)['verification']['phase'] == 'preparing'
+
+
+@pytest.mark.parametrize('stage', ['admission', 'dispatch', 'completion'])
+def test_json_generation_rechecks_durable_policy_before_each_effect(tmp_path, stage):
+    import sqlite3
+    from test_ai26_verified_review_pipeline import generation_admission_fixture
+    from central_ai.task_storage import OPENAI_GENERATOR_ID
+    store, _, task_id = policy_storage_fixture(tmp_path)
+    nonce = 'a' * 32
+    store.begin_verification(task_id, nonce, execution_policy='json-function-v1')
+    request = store.begin_generation(task_id, nonce,
+        OPENAI_GENERATOR_ID if stage == 'dispatch' else 'synthetic-generator', 'c' * 64,
+        'python@sha256:' + 'a' * 64, execution_policy='json-function-v1')
+    receipt = generation_admission_fixture(request['binding'])
+    if stage != 'admission':
+        request['admission'] = store.authorize_generation(task_id, nonce, receipt)
+    with sqlite3.connect(store.db_path) as conn:
+        task = store.get(task_id)
+        task['revision_family']['image'] = 'python@sha256:' + 'e' * 64
+        conn.execute('UPDATE tasks SET payload=? WHERE task_id=?', (json.dumps(task), task_id))
+    with pytest.raises(ValueError, match='GENERATION_POLICY_CONFLICT'):
+        if stage == 'admission': store.authorize_generation(task_id, nonce, receipt)
+        elif stage == 'dispatch': store.begin_openai_dispatch(request)
+        else: store.complete_generation(task_id, nonce, '```python\ndef summarize(rows): return {}\n```',
+                                         request['admission']['admission_sha256'])
+    saved = store.get(task_id)['generation']
+    assert saved['phase'] == 'requested' and 'dispatch' not in saved and 'response_sha256' not in saved
+    assert ('admission' in saved) is (stage != 'admission')
+
+
+def test_json_generation_and_verification_must_use_identical_test_and_image(tmp_path):
+    from test_ai26_verified_review_pipeline import generation_admission_fixture
+    store, _, task_id = policy_storage_fixture(tmp_path)
+    nonce = 'a' * 32
+    store.begin_verification(task_id, nonce, execution_policy='json-function-v1')
+    request = store.begin_generation(task_id, nonce, 'synthetic-generator', 'c' * 64,
+        'python@sha256:' + 'a' * 64, execution_policy='json-function-v1')
+    admission = store.authorize_generation(task_id, nonce, generation_admission_fixture(request['binding']))
+    store.complete_generation(task_id, nonce, '```python\ndef summarize(rows): return {}\n```', admission['admission_sha256'])
+    for key, value in [('test_sha256', 'f' * 64), ('image', 'python@sha256:' + 'e' * 64)]:
+        binding = policy_binding_fixture(task_id, nonce)
+        binding[key] = value
+        with pytest.raises(ValueError, match='VERIFICATION_GENERATION_CONFLICT'):
+            store.authorize_verification(task_id, nonce, binding, 'synthetic-review', 'synthetic-authorization')
+    assert store.get(task_id)['verification']['phase'] == 'preparing'
+
+
+def test_json_completed_journal_policy_tampering_is_not_read_as_verified(tmp_path):
+    import sqlite3
+    from central_ai.task_storage import TaskStorage
+    store, bridge, task_id = policy_storage_fixture(tmp_path)
+    complete_policy_storage_fixture(store, task_id, passed=True)
+    with sqlite3.connect(store.db_path) as conn:
+        task = store.get(task_id)
+        task['verification']['outcome']['execution_policy'] = 'bounded-arithmetic-v1'
+        conn.execute('UPDATE tasks SET payload=? WHERE task_id=?', (json.dumps(task), task_id))
+    with pytest.raises(ValueError, match='INVALID_VERIFICATION_REPORT'):
+        TaskStorage.review_status(str(store.db_path), (task_id,))
+    with pytest.raises(ValueError, match='REVISION_PARENT_NOT_ELIGIBLE'):
+        bridge.submit_revision(task_id, 'a' * 32)
+    assert len(bridge.list_tasks()) == 1
+
+
+@pytest.mark.parametrize('stage,mutation', [
+    (stage, mutation) for stage in ('authorization', 'resources', 'completion')
+    for mutation in ('family_image', 'family_policy', 'parent_nonce')
+] + [('authorization', mutation) for mutation in (
+    'family_tests', 'child_source', 'child_spec', 'ordinal', 'parent_passed')])
+def test_supplied_json_revision_rechecks_family_without_generation_record(tmp_path, stage, mutation):
+    import sqlite3
+    store, bridge, root = policy_storage_fixture(tmp_path)
+    parent_report = complete_policy_storage_fixture(store, root)
+    child = bridge.submit_revision(root, parent_report['verification_nonce'])['task_id']
+    run_batch(enabled='YES', database=str(store.db_path), agent='supplied-json-revision', max_tasks=1,
+              idle_checks=1, sleep=lambda _: None)
+    nonce = 'd' * 32
+    store.begin_verification(child, nonce, execution_policy='json-function-v1')
+    binding = policy_binding_fixture(child, nonce)
+    resources = dict(snapshot_directory='/tmp/central-ai-input-policy-fixture',
+                     container_name='central-ai-verifier-' + nonce)
+    if stage != 'authorization':
+        store.authorize_verification(child, nonce, binding, 'synthetic-review', 'synthetic-child')
+    if stage == 'completion':
+        store.record_verification_resources(child, nonce, resources)
+    with sqlite3.connect(store.db_path) as conn:
+        parent, task = store.get(root), store.get(child)
+        assert 'generation' not in task and 'generation' not in parent
+        if mutation == 'family_image': parent['revision_family']['image'] = 'python@sha256:' + 'e' * 64
+        if mutation == 'family_policy': parent['revision_family']['execution_policy'] = 'bounded-arithmetic-v1'
+        if mutation == 'parent_nonce': task['revision']['parent_verification_nonce'] = 'f' * 32
+        if mutation == 'family_tests': parent['revision_family']['test_sha256'] = 'f' * 64
+        if mutation == 'child_source': task['analysis']['source_sha256'] = 'f' * 64
+        if mutation == 'child_spec': task['task']['task'] = 'Substituted task'
+        if mutation == 'ordinal': task['revision']['ordinal'] = 3
+        if mutation == 'parent_passed':
+            parent['verification']['outcome'].update(test_status='passed', tests_passed=True, completion_confirmed=True)
+        for task_id, record in ((root, parent), (child, task)):
+            conn.execute('UPDATE tasks SET payload=? WHERE task_id=?', (json.dumps(record), task_id))
+    before = store.get(child)
+    with pytest.raises(ValueError, match='REVISION_CONTEXT_INVALID|REVISION_POLICY_INVALID'):
+        if stage == 'authorization':
+            store.authorize_verification(child, nonce, binding, 'synthetic-review', 'synthetic-child')
+        elif stage == 'resources':
+            store.record_verification_resources(child, nonce, resources)
+        else:
+            report = dict(parent_report, task_id=child, verification_nonce=nonce,
+                authorization_id='synthetic-child', verification_binding=binding)
+            store.complete_verification(child, nonce, report)
+    assert store.get(child) == before
+    assert 'outcome' not in store.get(child)['verification']

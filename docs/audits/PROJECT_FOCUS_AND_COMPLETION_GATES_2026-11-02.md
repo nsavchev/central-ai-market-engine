@@ -1,6 +1,6 @@
 # Project focus and completion gates
 
-**Living plan; created 2026-11-02, source-task pointer updated 2026-11-08.** Current statuses, decisions and evidence live in [the architecture/progress register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). This file defines scope and ordering; historical audit snapshots do not override that register.
+**Living plan; created 2026-11-02, source-task pointer updated 2026-11-17.** Current statuses, decisions and evidence live in [the architecture/progress register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). This file defines scope and ordering; historical audit snapshots do not override that register.
 
 ## Project objective
 
@@ -9,7 +9,15 @@
 
 Retain the existing VPS/Docker/PostgreSQL/queue architecture. Budget target EUR 50–150 monthly. Provider adapters in source do not prove connected accounts or successful external calls; detailed runtime/provider configuration is outside this public checkpoint.
 
-## Current checkpoint — facts rather than completion percentages
+## Current checkpoint — 2026-11-17
+
+**P1-JSON-POLICY-BINDING-01 is the active source task.** PR [#130](https://github.com/nsavchev/central-ai-market-engine/pull/130) remains draft/unmerged. Its inspected parent `9f90fe9199d0532b7fd1b00b762ef8b7ee2245f5`, base `7fd9c850f73edea70988b017d8dda2a4b70f3fc3`, has **33/33 successful CI workflows**, including [AI-19 run 44051949273](https://github.com/nsavchev/central-ai-market-engine/actions/runs/44051949273). That parent adds the rootless JSON function verifier with expected results retained on the trusted host. The new candidate binds that policy into existing task intents, generation/verification grants, revision families, feedback and explicit runtime configuration. Candidate tests and exact-source CI remain pending; the parent's successful checks do not accept new bytes.
+
+The new scope is one Python file and one pinned JSON input/output contract. Runtime v4 grants only explicit root tasks; linked corrections are host-initiated and separately granted. There is no automatic scheduled repair or repository-wide patch/dependency capability. Existing arithmetic runtime v1–v3 behavior and persisted records remain compatible. The work preserves one queue, controller, verifier and ledger, with no new table. New VPS acceptance, measured service start/stop/recovery and Issue #90 reconciliation remain separate gates. No worker activation, paid request, history/key/budget change, merge or trading occurs in this source task.
+
+## Historical checkpoints — 2026-11-04 source snapshot
+
+The following dated results retain their original scope; later entries in the canonical register supersede their pending/next-task statements.
 
 - Source inspected: PR #130, `a2aee7b81dc44e9ad0e566d215c38daa74dffee1`, **298 commits / 194 changed files** ahead of main `d987387f45dbe25940502ea25542e7ad99673359`. All 128 open PRs are draft/unmerged: 87 heads in candidate ancestry, 41 outside; all bases are ancestors of their own heads. No mass merge or branch closure.
 - PR #128 source `c38f12b9f7b1d6d61ab469c90c9ce2af8068ac1b`: **33/33 CI runs successful**. Public build evidence is not permission to activate the developer loop.
@@ -45,7 +53,9 @@ P0/P1 precede new P2 features. DB inventory/restore work is prerequisite evidenc
 
 ## Next active task and handoff rule
 
-**Active acceptance task: P1-SCHEDULED-CANCEL-CLEANUP-01.** [AI-19 run 42676415543](https://github.com/nsavchev/central-ai-market-engine/actions/runs/42676415543) **passed** on disposable GitHub CI: 4 AI-18 synthetic interruption cases plus 5 AI-26 real rootless cases (success, negative test, timeout, actual Docker CLI SIGTERM/cleanup and simulated failed cleanup query retaining evidence), all with mocked model transport and no approval/promotion. This is **not** VPS/production acceptance. The next existing-owner regression candidate in `a7875996...` applies actual POSIX SIGKILL to the `run_supervised` Python child after generation admission; restart must remain blocked with no duplicate provider call. Existing AI-19 selector `63e2a8a...` includes it; exact-source CI is pending and must be inspected before acceptance. In parallel, **P1-SCHEDULED-SERVICE-BOUND-01 remains OPEN**: the tracked legacy AI-08 one-shot service has `TimeoutStartSec=120`/`TimeoutStopSec=30` and is not the intended rootless review unit. The [rollout runbook](worker-review-rollout-runbook.md#service-bound-review-contract--p1-scheduled-service-bound-01-2026-11-09-source-assessment) specifies full cycle, cleanup and shutdown measurements; do not change installed service/timers without reviewed VPS evidence. **P0-OPS-RECON-01 / Issue #90 remains OPEN**. Reuse the existing supervisor, queue, TaskStorage and verifier, record exact source CI and VPS evidence separately, preserve paper-only operation, and do not merge, deploy, increase paid-call budget, reset ledger, or enable real trading.
+**Active task: P1-JSON-POLICY-BINDING-01.** Finish the focused local/mock-provider regressions and inspect exact-source CI, including the new JSON lifecycle in the existing AI-19 rootless job. Acceptance must demonstrate an incorrect result, an explicitly granted linked correction, durable outcomes, cleanup and blocked replay, with no real provider call. Do not repeat unchanged accepted arithmetic fixtures to claim acceptance of the new policy.
+
+After source acceptance, prepare one disposable intended-runner acceptance for the new JSON path, then complete the concrete disabled service proposal using the existing supervisor/scheduler and retained state. **P1-SCHEDULED-SERVICE-BOUND-01 remains OPEN**: the tracked legacy AI-08 one-shot service has `TimeoutStartSec=120`/`TimeoutStopSec=30`; these values do not establish an adequate review-service budget. The [rollout runbook](worker-review-rollout-runbook.md#service-bound-review-contract--p1-scheduled-service-bound-01-2026-11-09-source-assessment) specifies total cycle, cleanup and shutdown measurements. **P0-OPS-RECON-01 / Issue #90 remains OPEN** for deployment provenance, database/permissions, restore and remaining stack reconciliation. Source checks, operator VPS observations and unverified gates must stay distinct. Keep paper-only operation, explicit task grants, unchanged accounting history and false promotion flags; a new configuration schema does not install, upgrade or activate a service.
 
 For every change record TASK_ID, objective, existing owner/functions, files, PR/base/head, exact test SHA and result, GitHub/CI versus VPS evidence, blockers and one next action in the canonical register. The Git commit/diff preserves exact edits; the register explains why. Refresh the generated inventory on source-review checkpoints. No new dated master register, duplicated runtime module or percentage-based readiness claim.
 

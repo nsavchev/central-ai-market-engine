@@ -2,7 +2,8 @@
   "analysis_limits": [
     "Static AST definitions/imports only; not a live runtime call graph.",
     "Same-named definitions are review candidates, not proof of semantic duplication.",
-    "Snapshot of the unmerged PR #129 source; not a claim that main or VPS matches it."
+    "Current source hashes do not establish installed VPS identity or full PR-stack reconciliation.",
+    "Historical dependency and CI fields retain the dated provenance in historical_dependency_evidence; parent CI does not accept the new candidate."
   ],
   "ci_evidence": {
     "production_migration_authorized": false,
@@ -10,6 +11,17 @@
     "status": "success",
     "successful_workflows": 33,
     "workflow_count": 33
+  },
+  "historical_dependency_evidence": {
+    "fields": [
+      "main_commit",
+      "main_comparison",
+      "open_pull_requests",
+      "pr_reconciliation",
+      "ci_evidence"
+    ],
+    "snapshot_date": "2026-11-04",
+    "source_commit": "a2aee7b81dc44e9ad0e566d215c38daa74dffee1"
   },
   "inventory": {
     "definitions": [
@@ -165,19 +177,19 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 40,
+        "line": 46,
         "name": "ratio",
         "path": "app/fundamentals.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 45,
+        "line": 51,
         "name": "calculate",
         "path": "app/fundamentals.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 30,
+        "line": 36,
         "name": "validate_inputs",
         "path": "app/fundamentals.py"
       },
@@ -189,19 +201,25 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 13,
+        "line": 14,
+        "name": "validate_history_snapshot",
+        "path": "app/fundamentals_history.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 28,
         "name": "store_snapshot",
         "path": "app/fundamentals_history.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 36,
+        "line": 51,
         "name": "annual_cagr",
         "path": "app/fundamentals_history.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 45,
+        "line": 60,
         "name": "history_report",
         "path": "app/fundamentals_history.py"
       },
@@ -309,91 +327,91 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 74,
+        "line": 78,
         "name": "analysis",
         "path": "app/main.py"
       },
       {
         "kind": "ClassDef",
-        "line": 86,
+        "line": 90,
         "name": "TradeRequest",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 107,
+        "line": 111,
         "name": "paper_trade",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 129,
+        "line": 133,
         "name": "paper_account",
         "path": "app/main.py"
       },
       {
         "kind": "ClassDef",
-        "line": 149,
+        "line": 153,
         "name": "MacroRequest",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 154,
+        "line": 158,
         "name": "macro_evaluate",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 163,
+        "line": 167,
         "name": "sources",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 167,
+        "line": 171,
         "name": "fundamentals_evaluate",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 177,
+        "line": 181,
         "name": "fundamentals_history_import",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 189,
+        "line": 193,
         "name": "fundamentals_history",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 201,
+        "line": 205,
         "name": "valuation_evaluate",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 212,
+        "line": 216,
         "name": "valuation_advanced",
         "path": "app/main.py"
       },
       {
         "kind": "ClassDef",
-        "line": 226,
+        "line": 230,
         "name": "PaperV2Request",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 235,
+        "line": 239,
         "name": "paper_v2_trade",
         "path": "app/main.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 94,
+        "line": 98,
         "name": "validate_paper_fill",
         "path": "app/main.py"
       },
@@ -405,7 +423,7 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 76,
+        "line": 80,
         "name": "load",
         "path": "app/main.py"
       },
@@ -525,8 +543,92 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 6,
+        "line": 30,
+        "name": "_fixture",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 41,
+        "name": "_reject_future_bars",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 49,
+        "name": "two_daily_demo",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 124,
+        "name": "_manual_provenance",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 145,
+        "name": "manual_scan",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 175,
+        "name": "combined_report",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 238,
+        "name": "two_daily_manual",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 291,
+        "name": "_utc_now",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 295,
+        "name": "_write_report",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 312,
+        "name": "_nasdaq_csv",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 353,
+        "name": "prepare_nasdaq_input",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 385,
+        "name": "prepare_twelve_data_input",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 472,
+        "name": "report_summary",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 498,
         "name": "main",
+        "path": "app/scan_cli.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 368,
+        "name": "stream",
         "path": "app/scan_cli.py"
       },
       {
@@ -573,25 +675,31 @@
       },
       {
         "kind": "ClassDef",
-        "line": 8,
+        "line": 9,
         "name": "Source",
         "path": "app/sources.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 30,
+        "line": 32,
+        "name": "_configured_source",
+        "path": "app/sources.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 41,
         "name": "list_sources",
         "path": "app/sources.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 33,
+        "line": 45,
         "name": "validate_source",
         "path": "app/sources.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 16,
+        "line": 17,
         "name": "can_automate",
         "path": "app/sources.py"
       },
@@ -639,62 +747,86 @@
       },
       {
         "kind": "ClassDef",
-        "line": 13,
+        "line": 20,
         "name": "Query",
         "path": "central_ai/app.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 20,
+        "line": 27,
         "name": "auth",
         "path": "central_ai/app.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 26,
+        "line": 33,
         "name": "health",
         "path": "central_ai/app.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 30,
+        "line": 37,
         "name": "providers",
         "path": "central_ai/app.py"
       },
       {
         "kind": "AsyncFunctionDef",
-        "line": 35,
-        "name": "call_provider",
+        "line": 42,
+        "name": "_provider_json",
         "path": "central_ai/app.py"
       },
       {
         "kind": "AsyncFunctionDef",
-        "line": 63,
+        "line": 65,
+        "name": "call_provider",
+        "path": "central_ai/app.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 141,
+        "name": "make_openai_generator",
+        "path": "central_ai/app.py"
+      },
+      {
+        "kind": "AsyncFunctionDef",
+        "line": 180,
         "name": "ask",
         "path": "central_ai/app.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 74,
+        "line": 191,
         "name": "_task_bridge",
         "path": "central_ai/app.py"
       },
       {
         "kind": "ClassDef",
-        "line": 85,
+        "line": 202,
         "name": "TaskSubmission",
         "path": "central_ai/app.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 90,
+        "line": 207,
         "name": "submit_task",
         "path": "central_ai/app.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 98,
+        "line": 215,
         "name": "task_status",
+        "path": "central_ai/app.py"
+      },
+      {
+        "kind": "AsyncFunctionDef",
+        "line": 150,
+        "name": "dispatch",
+        "path": "central_ai/app.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 164,
+        "name": "generate",
         "path": "central_ai/app.py"
       },
       {
@@ -747,13 +879,19 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 8,
+        "line": 9,
+        "name": "configured_review_handler",
+        "path": "central_ai/developer_worker_coordinator.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 14,
         "name": "__init__",
         "path": "central_ai/developer_worker_coordinator.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 17,
+        "line": 46,
         "name": "run_once",
         "path": "central_ai/developer_worker_coordinator.py"
       },
@@ -801,14 +939,134 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 17,
+        "line": 21,
+        "name": "_checked_runner_host",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 71,
+        "name": "make_isolated_docker_runner",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 115,
         "name": "_read_input",
         "path": "central_ai/isolated_functional_verifier.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 36,
+        "line": 140,
+        "name": "_json_value",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 159,
+        "name": "_strict_json",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 172,
+        "name": "_function_cases",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 195,
+        "name": "_function_results_match",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 217,
+        "name": "_function_harness",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 229,
+        "name": "_bounded_capture",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 273,
+        "name": "_validate_bounded_candidate",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 316,
+        "name": "_confirm_container_absent",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 341,
         "name": "run_functional_tests",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 25,
+        "name": "deny",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 82,
+        "name": "bound",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 90,
+        "name": "inspect",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 160,
+        "name": "pairs",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 167,
+        "name": "constant",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 274,
+        "name": "reject",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 283,
+        "name": "expression",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 298,
+        "name": "identifier",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 318,
+        "name": "probe",
+        "path": "central_ai/isolated_functional_verifier.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 205,
+        "name": "canonical",
         "path": "central_ai/isolated_functional_verifier.py"
       },
       {
@@ -857,6 +1115,12 @@
         "kind": "FunctionDef",
         "line": 137,
         "name": "task_overview",
+        "path": "central_ai/persistent_bridge.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 170,
+        "name": "submit_revision",
         "path": "central_ai/persistent_bridge.py"
       },
       {
@@ -987,19 +1251,19 @@
       },
       {
         "kind": "ClassDef",
-        "line": 9,
+        "line": 10,
         "name": "ReadOnlyAnalyzer",
         "path": "central_ai/read_only_analyzer.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 10,
+        "line": 11,
         "name": "__init__",
         "path": "central_ai/read_only_analyzer.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 15,
+        "line": 16,
         "name": "analyze",
         "path": "central_ai/read_only_analyzer.py"
       },
@@ -1023,7 +1287,7 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 10,
+        "line": 11,
         "name": "prepare_review_pipeline",
         "path": "central_ai/review_pipeline.py"
       },
@@ -1167,97 +1431,427 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 82,
+        "line": 116,
         "name": "heartbeat",
         "path": "central_ai/task_queue.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 101,
+        "line": 135,
         "name": "complete",
         "path": "central_ai/task_queue.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 111,
+        "line": 145,
         "name": "status",
         "path": "central_ai/task_queue.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 128,
+        "line": 162,
         "name": "audit",
         "path": "central_ai/task_queue.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 133,
+        "line": 167,
         "name": "acquire_next",
         "path": "central_ai/task_queue.py"
       },
       {
+        "kind": "FunctionDef",
+        "line": 22,
+        "name": "estimate_usage_cost_microusd",
+        "path": "central_ai/task_storage.py"
+      },
+      {
         "kind": "ClassDef",
-        "line": 9,
+        "line": 30,
         "name": "TaskStorage",
         "path": "central_ai/task_storage.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 10,
+        "line": 32,
+        "name": "developer_model_profile",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 37,
         "name": "__init__",
         "path": "central_ai/task_storage.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 17,
+        "line": 44,
         "name": "_connect",
         "path": "central_ai/task_storage.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 22,
+        "line": 49,
         "name": "_initialize",
         "path": "central_ai/task_storage.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 34,
+        "line": 61,
         "name": "save",
         "path": "central_ai/task_storage.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 82,
+        "line": 109,
         "name": "get",
         "path": "central_ai/task_storage.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 91,
+        "line": 118,
         "name": "list_tasks",
         "path": "central_ai/task_storage.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 11,
+        "line": 126,
+        "name": "_review_task",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 143,
+        "name": "_write_review_task",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 150,
+        "name": "_verification_intent_policy",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 162,
+        "name": "_verification_binding_policy",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 181,
+        "name": "_revision_policy",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 194,
+        "name": "_generation_policy_context",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 237,
+        "name": "check_verification_barrier",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 250,
+        "name": "begin_verification",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 281,
+        "name": "_revision_scope",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 331,
+        "name": "_revision_context",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 366,
+        "name": "_revision_prompt",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 372,
+        "name": "begin_generation",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 455,
+        "name": "_generation_budget",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 468,
+        "name": "_generation_admission",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 517,
+        "name": "_generation_history",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 549,
+        "name": "_validated_budget_amendment",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 599,
+        "name": "_check_budget_baseline",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 624,
+        "name": "_active_budget_amendment",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 692,
+        "name": "generation_budget_snapshot",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 734,
+        "name": "prepare_generation_budget_amendment",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 753,
+        "name": "prepare_generation_model_amendment",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 771,
+        "name": "record_generation_budget_amendment",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 818,
+        "name": "authorize_generation",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 883,
+        "name": "_generation_profile",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 892,
+        "name": "begin_openai_dispatch",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 949,
+        "name": "_json_digest",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 953,
+        "name": "_openai_dispatch_profile",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 966,
+        "name": "record_openai_usage",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 1005,
+        "name": "complete_generation",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 1043,
+        "name": "authorize_verification",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 1076,
+        "name": "record_verification_resources",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 1107,
+        "name": "review_status",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 1169,
+        "name": "_validated_verification_report",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 1197,
+        "name": "complete_verification",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 1226,
+        "name": "fail_verification",
+        "path": "central_ai/task_storage.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 16,
         "name": "prepare_and_verify",
         "path": "central_ai/verified_review_pipeline.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 12,
+        "line": 200,
+        "name": "make_worker_review_handler",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 279,
+        "name": "load_worker_review_config",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 247,
+        "name": "review",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 257,
+        "name": "next_task_id",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 296,
+        "name": "reject",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 297,
+        "name": "pairs",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 303,
+        "name": "constant",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 409,
+        "name": "checked_runner",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 418,
+        "name": "admit",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 445,
+        "name": "issue",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 457,
+        "name": "require_key",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 460,
+        "name": "ready",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 465,
+        "name": "generator",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 123,
+        "name": "record_resources",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 475,
+        "name": "verify",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 479,
+        "name": "verify",
+        "path": "central_ai/verified_review_pipeline.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 13,
         "name": "check_proposal_for_verifier",
         "path": "central_ai/verifier_gate.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 53,
+        "line": 54,
         "name": "make_hmac_review_authorizer",
         "path": "central_ai/verifier_gate.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 71,
+        "line": 117,
+        "name": "read_private_host_file",
+        "path": "central_ai/verifier_gate.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 140,
+        "name": "provision_reviewer_key",
+        "path": "central_ai/verifier_gate.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 72,
         "name": "authorize",
         "path": "central_ai/verifier_gate.py"
       },
@@ -1269,7 +1863,7 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 37,
+        "line": 40,
         "name": "main",
         "path": "central_ai/worker_batch.py"
       },
@@ -1287,7 +1881,7 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 36,
+        "line": 37,
         "name": "main",
         "path": "central_ai/worker_scheduler.py"
       },
@@ -1299,13 +1893,19 @@
       },
       {
         "kind": "FunctionDef",
-        "line": 44,
+        "line": 85,
         "name": "main",
         "path": "central_ai/worker_supervised.py"
       },
       {
         "kind": "FunctionDef",
-        "line": 22,
+        "line": 28,
+        "name": "review_state",
+        "path": "central_ai/worker_supervised.py"
+      },
+      {
+        "kind": "FunctionDef",
+        "line": 41,
         "name": "write_state",
         "path": "central_ai/worker_supervised.py"
       },
@@ -1707,6 +2307,11 @@
         "to": "app.sources"
       },
       {
+        "from": "app.fundamentals_history",
+        "line": 11,
+        "to": "app.data_quality"
+      },
+      {
         "from": "app.history_cli",
         "line": 5,
         "to": "app.db"
@@ -1743,47 +2348,47 @@
       },
       {
         "from": "app.main",
-        "line": 148,
+        "line": 152,
         "to": "app.macro"
       },
       {
         "from": "app.main",
-        "line": 159,
+        "line": 163,
         "to": "app.sources"
       },
       {
         "from": "app.main",
-        "line": 160,
+        "line": 164,
         "to": "app.fundamentals"
       },
       {
         "from": "app.main",
-        "line": 173,
+        "line": 177,
         "to": "app.db"
       },
       {
         "from": "app.main",
-        "line": 174,
+        "line": 178,
         "to": "app.fundamentals_history"
       },
       {
         "from": "app.main",
-        "line": 198,
+        "line": 202,
         "to": "app.valuation"
       },
       {
         "from": "app.main",
-        "line": 206,
+        "line": 210,
         "to": "app.advanced_valuation"
       },
       {
         "from": "app.main",
-        "line": 223,
+        "line": 227,
         "to": "app.db"
       },
       {
         "from": "app.main",
-        "line": 224,
+        "line": 228,
         "to": "app.paper_idempotency"
       },
       {
@@ -1828,8 +2433,23 @@
       },
       {
         "from": "app.scan_cli",
-        "line": 4,
+        "line": 22,
+        "to": "app.sources"
+      },
+      {
+        "from": "app.scan_cli",
+        "line": 23,
         "to": "app.scanner"
+      },
+      {
+        "from": "app.scan_cli",
+        "line": 24,
+        "to": "app.macro"
+      },
+      {
+        "from": "app.scan_cli",
+        "line": 25,
+        "to": "app.valuation"
       },
       {
         "from": "app.scanner",
@@ -1853,7 +2473,17 @@
       },
       {
         "from": "central_ai.app",
-        "line": 81,
+        "line": 66,
+        "to": "central_ai.task_storage"
+      },
+      {
+        "from": "central_ai.app",
+        "line": 144,
+        "to": "central_ai.task_storage"
+      },
+      {
+        "from": "central_ai.app",
+        "line": 198,
         "to": "central_ai.persistent_bridge"
       },
       {
@@ -1907,6 +2537,11 @@
         "to": "central_ai.developer_task_runner"
       },
       {
+        "from": "central_ai.developer_worker_coordinator",
+        "line": 11,
+        "to": "central_ai.verified_review_pipeline"
+      },
+      {
         "from": "central_ai.heartbeat_worker",
         "line": 3,
         "to": "central_ai.task_queue"
@@ -1958,22 +2593,22 @@
       },
       {
         "from": "central_ai.review_pipeline",
-        "line": 4,
+        "line": 5,
         "to": "central_ai.review_handoff"
       },
       {
         "from": "central_ai.review_pipeline",
-        "line": 5,
+        "line": 6,
         "to": "central_ai.proposal_adapter"
       },
       {
         "from": "central_ai.review_pipeline",
-        "line": 6,
+        "line": 7,
         "to": "central_ai.verifier_gate"
       },
       {
         "from": "central_ai.review_pipeline",
-        "line": 7,
+        "line": 8,
         "to": "central_ai.isolated_candidate"
       },
       {
@@ -1983,12 +2618,52 @@
       },
       {
         "from": "central_ai.verified_review_pipeline",
-        "line": 7,
+        "line": 9,
+        "to": "central_ai.task_storage"
+      },
+      {
+        "from": "central_ai.verified_review_pipeline",
+        "line": 10,
         "to": "central_ai.review_pipeline"
       },
       {
         "from": "central_ai.verified_review_pipeline",
-        "line": 8,
+        "line": 11,
+        "to": "central_ai.isolated_functional_verifier"
+      },
+      {
+        "from": "central_ai.verified_review_pipeline",
+        "line": 288,
+        "to": "central_ai.verifier_gate"
+      },
+      {
+        "from": "central_ai.verified_review_pipeline",
+        "line": 289,
+        "to": "central_ai.isolated_functional_verifier"
+      },
+      {
+        "from": "central_ai.verified_review_pipeline",
+        "line": 290,
+        "to": "central_ai.app"
+      },
+      {
+        "from": "central_ai.verified_review_pipeline",
+        "line": 468,
+        "to": "central_ai.task_storage"
+      },
+      {
+        "from": "central_ai.verified_review_pipeline",
+        "line": 49,
+        "to": "central_ai.isolated_functional_verifier"
+      },
+      {
+        "from": "central_ai.verified_review_pipeline",
+        "line": 313,
+        "to": "central_ai.task_storage"
+      },
+      {
+        "from": "central_ai.verified_review_pipeline",
+        "line": 74,
         "to": "central_ai.isolated_functional_verifier"
       },
       {
@@ -2010,6 +2685,11 @@
         "from": "central_ai.worker_supervised",
         "line": 8,
         "to": "central_ai.worker_scheduler"
+      },
+      {
+        "from": "central_ai.worker_supervised",
+        "line": 53,
+        "to": "central_ai.developer_worker_coordinator"
       },
       {
         "from": "developer_agent.v3.orchestrator",
@@ -2049,6 +2729,10 @@
         "app/main.py",
         "central_ai/app.py"
       ],
+      "constant": [
+        "central_ai/isolated_functional_verifier.py",
+        "central_ai/verified_review_pipeline.py"
+      ],
       "evaluate": [
         "app/macro.py",
         "app/valuation.py"
@@ -2056,6 +2740,10 @@
       "fetch_daily": [
         "app/ibkr.py",
         "app/main.py"
+      ],
+      "generate": [
+        "central_ai/app.py",
+        "developer_agent/v3/patch_generator.py"
       ],
       "get": [
         "central_ai/task_file_targets.py",
@@ -2105,11 +2793,19 @@
         "developer_agent/v3/trusted_verifier_v2/verifier.py",
         "developer_agent/v3/workflow_controller.py"
       ],
+      "pairs": [
+        "central_ai/isolated_functional_verifier.py",
+        "central_ai/verified_review_pipeline.py"
+      ],
       "register": [
         "central_ai/persistent_workflow_v04.py",
         "central_ai/persistent_workflow_v05.py",
         "central_ai/task_file_targets.py",
         "central_ai/workflow_controller_v03.py"
+      ],
+      "reject": [
+        "central_ai/isolated_functional_verifier.py",
+        "central_ai/verified_review_pipeline.py"
       ],
       "restore": [
         "central_ai/persistent_workflow_v04.py",
@@ -2121,6 +2817,7 @@
         "developer_agent/v3/workflow.py"
       ],
       "review": [
+        "central_ai/verified_review_pipeline.py",
         "developer_agent/v3/ai_code_reviewer.py",
         "developer_agent/v3/error_reviewer.py"
       ],
@@ -2138,6 +2835,7 @@
         "central_ai/task_bridge.py"
       ],
       "verify": [
+        "central_ai/verified_review_pipeline.py",
         "developer_agent/v3/trusted_verifier/verifier.py",
         "developer_agent/v3/trusted_verifier_v2/verifier.py"
       ]
@@ -3558,6 +4256,14 @@
       "url": "https://github.com/nsavchev/central-ai-market-engine/pull/2"
     }
   ],
+  "parent_ci_evidence": {
+    "candidate_ci_status": "pending",
+    "production_migration_authorized": false,
+    "source_commit": "9f90fe9199d0532b7fd1b00b762ef8b7ee2245f5",
+    "status": "success",
+    "successful_workflows": 33,
+    "workflow_count": 33
+  },
   "pr_reconciliation": {
     "limits": [
       "Ancestry and merge-tree simulations do not prove functional equivalence, safety or deployed state.",
@@ -6095,7 +6801,7 @@
       "path": "app/engine.py"
     },
     {
-      "git_blob_sha": "e873d85b1afef181e4b3d8f29617d5c645902f3a",
+      "git_blob_sha": "ba739536894ca92cdf4a58b9c5b2f5b15b28ecef",
       "path": "app/fundamentals.py"
     },
     {
@@ -6103,11 +6809,11 @@
       "path": "app/fundamentals_cli.py"
     },
     {
-      "git_blob_sha": "7dd49d679875cce3312553ba5325d11c9fe4ec1e",
+      "git_blob_sha": "6d5508a6e3071ca38e188e7c5d6d35a40361c024",
       "path": "app/fundamentals_history.py"
     },
     {
-      "git_blob_sha": "63c51fc51618ac7f472d9ce7a85458f5b30e046d",
+      "git_blob_sha": "f2c0d68f0cf7b8dfbf86ae918516f2a7d7e948c7",
       "path": "app/history_cli.py"
     },
     {
@@ -6123,7 +6829,7 @@
       "path": "app/macro_cli.py"
     },
     {
-      "git_blob_sha": "f8a7c350501a1ef856364ded83eae8234ded78e1",
+      "git_blob_sha": "0e1bc3f600adb86dd602c78e20a5c1e580c96e09",
       "path": "app/main.py"
     },
     {
@@ -6179,11 +6885,11 @@
       "path": "app/quality_cli.py"
     },
     {
-      "git_blob_sha": "315ed7cd9868d48f566061921494a9386bc8df58",
+      "git_blob_sha": "f5efde00c21cc3d7869e13203d67d0faef23d4ba",
       "path": "app/scan_cli.py"
     },
     {
-      "git_blob_sha": "673101ffd847053c0a0010a14bc9ce00605e7e02",
+      "git_blob_sha": "1b11d6364ae1da95a0adea9a67fb7935e5af7689",
       "path": "app/scanner.py"
     },
     {
@@ -6195,7 +6901,7 @@
       "path": "app/sec_financials.py"
     },
     {
-      "git_blob_sha": "391fd482e76929c96ded2514944336cd22ef543d",
+      "git_blob_sha": "e043bf00f7a45e9dbb5eb4978d769242f3441aaf",
       "path": "app/sources.py"
     },
     {
@@ -6211,7 +6917,7 @@
       "path": "central_ai/__init__.py"
     },
     {
-      "git_blob_sha": "c31d622d6ce2beb85a1ebaa84cea71b561449c2c",
+      "git_blob_sha": "65e64f2489c61d675dbacce3bb31d6fa9edc95e3",
       "path": "central_ai/app.py"
     },
     {
@@ -6219,7 +6925,7 @@
       "path": "central_ai/developer_task_runner.py"
     },
     {
-      "git_blob_sha": "526b61c6e6fd2ebde305b94b9e24734c07e28dcf",
+      "git_blob_sha": "9a0303cb94a9f35860a580bb2575ff4491dd5661",
       "path": "central_ai/developer_worker_coordinator.py"
     },
     {
@@ -6227,11 +6933,11 @@
       "path": "central_ai/heartbeat_worker.py"
     },
     {
-      "git_blob_sha": "4fc22f9e98bad1200e7890c34c182e87a27b2e01",
+      "git_blob_sha": "6f4fec3cf96837b72ec2300de62301109aaab1a4",
       "path": "central_ai/isolated_candidate.py"
     },
     {
-      "git_blob_sha": "5c6766eeedaefd4b7e007eb9d2ea07369cb8922f",
+      "git_blob_sha": "143bcfc030bd0894ff6b11b36d7736ded4a3e2e0",
       "path": "central_ai/isolated_functional_verifier.py"
     },
     {
@@ -6239,7 +6945,7 @@
       "path": "central_ai/isolated_verifier.py"
     },
     {
-      "git_blob_sha": "131a1792f205b2369c08caffb8cb217b89f93118",
+      "git_blob_sha": "16c4e927605c03988abe9b9edd3926f1644e5b44",
       "path": "central_ai/persistent_bridge.py"
     },
     {
@@ -6255,7 +6961,7 @@
       "path": "central_ai/proposal_adapter.py"
     },
     {
-      "git_blob_sha": "0b0b234ae7f4331fef705583493ac38f584dfe2b",
+      "git_blob_sha": "37323cdd98aa2ced5e86b307f5abe0d7fadf764f",
       "path": "central_ai/read_only_analyzer.py"
     },
     {
@@ -6271,7 +6977,7 @@
       "path": "central_ai/review_handoff.py"
     },
     {
-      "git_blob_sha": "d68a9dec7c707db93174f44fc572d27313194cca",
+      "git_blob_sha": "88209012a980bffa899aa2dc446a42bcbd426ea3",
       "path": "central_ai/review_pipeline.py"
     },
     {
@@ -6287,23 +6993,23 @@
       "path": "central_ai/task_file_targets.py"
     },
     {
-      "git_blob_sha": "cd711d63f24879dcec7540df5680faff235a30bd",
+      "git_blob_sha": "99c7d51b18cdadbabf1791be9120c4882a4d8841",
       "path": "central_ai/task_queue.py"
     },
     {
-      "git_blob_sha": "8e40f4f8cd045f19def41aba8af06b64c7f82895",
+      "git_blob_sha": "b2fc49872605176543147a691bedf8fe97f2b012",
       "path": "central_ai/task_storage.py"
     },
     {
-      "git_blob_sha": "a944f5ed0bacf61efc71511b1b41fe2eb61468ba",
+      "git_blob_sha": "a3aeccbb64494f3c621390b18ba26d714b534702",
       "path": "central_ai/verified_review_pipeline.py"
     },
     {
-      "git_blob_sha": "ffe22507d76fd8ce12454d01c27d7740f7d3be3e",
+      "git_blob_sha": "032727f1cece75aa013f4eeb7863210e23f5106c",
       "path": "central_ai/verifier_gate.py"
     },
     {
-      "git_blob_sha": "b5c9aafb698beeee96643f9cf1c30567e92b5622",
+      "git_blob_sha": "f4d4e47833aff35bc96a5d54fe75bb8cf4310642",
       "path": "central_ai/worker_batch.py"
     },
     {
@@ -6311,11 +7017,11 @@
       "path": "central_ai/worker_once.py"
     },
     {
-      "git_blob_sha": "72ec58b910b391b0ce870ad435b4ee08c2f73610",
+      "git_blob_sha": "d06fde0c72e12f5ee171192f4db3c44b9491e4f7",
       "path": "central_ai/worker_scheduler.py"
     },
     {
-      "git_blob_sha": "24362c921524827d7fcaee8edbf06d9d22bc0fe8",
+      "git_blob_sha": "19fe1e7a59cea5c32c7f151b917042982ecb994b",
       "path": "central_ai/worker_supervised.py"
     },
     {
@@ -6427,14 +7133,16 @@
       "path": "developer_agent/v3/workflow_controller.py"
     }
   ],
-  "repository_python_file_count": 168,
+  "repository_python_file_count": 176,
   "schema": "project-architecture-inventory-v1",
   "scope_roots": [
     "app",
     "central_ai",
     "developer_agent"
   ],
-  "snapshot_date": "2026-11-04",
-  "snapshot_scope": "Static source and 128 open PRs at P0-RECON; no runtime telemetry.",
-  "source_commit": "a2aee7b81dc44e9ad0e566d215c38daa74dffee1"
+  "snapshot_date": "2026-11-17",
+  "snapshot_scope": "Current static Python source inventory only. main/PR reconciliation fields and ci_evidence retain their historical evidence provenance below; no new stack audit or runtime telemetry.",
+  "source_commit": null,
+  "source_parent_commit": "9f90fe9199d0532b7fd1b00b762ef8b7ee2245f5",
+  "source_state": "Reviewed candidate delta; exact current module bytes are identified by python_modules git_blob_sha. No self-referential commit hash."
 }

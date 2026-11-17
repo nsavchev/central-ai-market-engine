@@ -98,6 +98,12 @@ def make_isolated_docker_runner(policy, images, *, run=subprocess.run):
             or not isinstance(info.get('SecurityOptions'), list)
             or not any(isinstance(s, str) and 'name=rootless' in s.split(',') for s in info['SecurityOptions'])):
         raise ValueError('ISOLATED_RUNNER_DAEMON_MISMATCH')
+    # Rootless Docker can ignore resource flags without cgroup v2/systemd.
+    # Confirm support before any image check or candidate admission/dispatch.
+    if (info.get('CgroupDriver') != 'systemd' or info.get('CgroupVersion') != '2'
+            or any(info.get(field) is not True for field in (
+                'MemoryLimit', 'PidsLimit', 'CpuCfsPeriod', 'CpuCfsQuota'))):
+        raise ValueError('ISOLATED_RUNNER_LIMITS_UNAVAILABLE')
     for image in sorted(set(images)):
         found = inspect(['docker', 'image', 'inspect', image])
         if (not isinstance(found, list) or len(found) != 1 or not isinstance(found[0], dict)
@@ -187,20 +193,25 @@ def _function_cases(data):
 
 
 def _function_results_match(stdout, contract):
+    """Return a comparison result, or None when no complete response is usable."""
     # No completion token or candidate-supplied "passed" flag is authoritative.
     # The harness itself is untrusted after importing general candidate Python.
     try:
         if type(stdout) is not str or len(stdout.encode('utf-8')) > 32768:
-            return False
+            return None
         values = _strict_json(stdout)
         if type(values) is not list or len(values) != len(contract['cases']):
-            return False
+            return None
         def canonical(value):
             return json.dumps(_json_value(value), sort_keys=True, separators=(',', ':'), allow_nan=False)
-        return all(canonical(value) == canonical(case['expected'])
-                   for value, case in zip(values, contract['cases']))
+        # Validate every value before comparing: an early wrong answer must not
+        # hide an invalid later value and turn a malformed response into failure
+        # evidence eligible for a bounded revision.
+        observed = [canonical(value) for value in values]
+        expected = [canonical(case['expected']) for case in contract['cases']]
+        return observed == expected
     except (ValueError, TypeError, RecursionError, UnicodeError):
-        return False
+        return None
 
 
 def _function_harness(contract):
@@ -331,7 +342,7 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
                          expected_test_sha256=None, timeout=30, run=subprocess.run,
                          record_resources=None, execution_policy=EXECUTION_POLICY,
                          runner_policy=None):
-    """Verify a pinned candidate; the legacy runtime still accepts arithmetic only.
+    """Verify a pinned candidate under its explicitly selected execution policy.
 
     json-function-v1 is an explicit, rootless-only function contract. It accepts
     one Python file and a pinned JSON oracle, not repository patches. Only case
@@ -424,10 +435,14 @@ def run_functional_tests(*, enabled, candidate, expected_sha256, test_file, imag
             lines = result.stdout.splitlines() if isinstance(getattr(result, "stdout", None), str) else []
             completed = (result.returncode == 0 and bool(lines)
                          and lines[-1] == completion_record and lines.count(completion_record) == 1)
+            status = ("passed" if completed else "completion_unconfirmed") if result.returncode == 0 else "failed"
             if json_function:
-                completed = result.returncode == 0 and _function_results_match(result.stdout, contract)
+                comparison = _function_results_match(result.stdout, contract) if result.returncode == 0 else None
+                completed = comparison is True
+                if result.returncode == 0:
+                    status = "completion_unconfirmed" if comparison is None else ("passed" if completed else "failed")
             report = {"test_sha256": expected_test_sha256,
-                      "status": ("passed" if completed else "completion_unconfirmed") if result.returncode == 0 else "failed",
+                      "status": status,
                       "passed": completed, "executed_candidate": True,
                       "completion_confirmed": completed, "execution_policy": execution_policy,
                       "returncode": result.returncode}

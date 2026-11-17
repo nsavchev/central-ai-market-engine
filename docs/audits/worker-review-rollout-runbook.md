@@ -2,6 +2,10 @@
 
 The [profile example](../../deploy/ai08/worker-review-profile.example.json) is a review artifact. No runtime entrypoint consumes it, and changing its enabled field cannot provision authority or activate a worker. Current operational evidence belongs in the protected operator record, separate from public source/CI. The [canonical register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md) owns progress.
 
+## Current source checkpoint — 2026-11-17
+
+**P1-JSON-POLICY-BINDING-01** adds an explicit JSON policy path in the existing pipeline, storage, revision bridge and runtime loader. Parent source `9f90fe9199d0532b7fd1b00b762ef8b7ee2245f5` has **33/33 successful CI workflows**, including [AI-19 run 44051949273](https://github.com/nsavchev/central-ai-market-engine/actions/runs/44051949273); candidate local tests and exact-source CI remain pending. The [runtime v4 contract](#explicit-json-runtime-contract--p1-json-policy-binding-01) below describes this source candidate. Earlier sections record their dated proposals and acceptance boundaries; they are not current deployment instructions. No installed policy is rewritten, service activated, paid request issued or retained history/key/budget changed by this source update.
+
 ## First operational profile
 
 - Keep activation disabled and jobs empty until an operator independently authorizes a specific task/source/spec/test/image tuple. Completed acceptance tasks belong under evidence_jobs; they are not new pending work.
@@ -206,3 +210,23 @@ Scope of proof is deliberately narrow. The test does **not** kill the supervised
 **Evidence required for a single authorized service:** verified installed `systemctl show` unit properties, resolved drop-ins and actual compose entrypoint, service UID/GID and environment allowlist, private daemon/socket/data-root ownership, exact deployed source and immutable image digests, bounded cycle/task/time settings, controlled SIGTERM/SIGKILL cleanup and restart results, pre-dispatch journal and on-restart no-retry/quarantine, log sanitization and backup restore proof. Record outcomes separately as GitHub/CI, operator/VPS, or unverified in Issue #90; an upstream systemd source file is not VPS attestation.
 
 **Decision:** `P1-SCHEDULED-SERVICE-BOUND-01` **OPEN**; no production service changes or permission grant. Existing CI-only real-rootless acceptance and the new supervisor SIGKILL test do not authorize unattended activation, higher AI API budgets, real trading or deployment. Prioritize exact-source CI result for the SIGKILL regression, then collect read-only host measurements in an operator-controlled session before proposing any unit modification.
+
+## Explicit JSON runtime contract — P1-JSON-POLICY-BINDING-01
+
+This section describes the source candidate on parent `9f90fe9199d0532b7fd1b00b762ef8b7ee2245f5`. Its existing DUP-01 local regression command passed 746 tests with 17 Docker-dependent skips; exact-source CI follows publication. The disabled [runtime-v4 example](../../deploy/ai08/worker-review-runtime-v4.example.json) contains no task grants or operative paths and is not an installable authorization. It provides no installation or activation instruction and does not rewrite an existing policy, receipt or ledger.
+
+| Configuration / record | Accepted relationship |
+|---|---|
+| `worker-review-runtime-v1`, `-v2`, `-v3` | Continue to bind `bounded-arithmetic-v1`; historical records and grant bytes retain their meaning |
+| `worker-review-runtime-v4` | Requires `json-function-v1`, the existing private rootless runner contract and the existing Sol/Luna model-profile policy. Each granted job is an explicitly registered root task |
+| `task-verification-v2` / `verification-request-v2` | Bind the JSON execution policy with task/nonce, exact candidate, JSON contract and image, through the existing trusted-host authorization path |
+| Generation request | Retains the existing explicit `execution_policy`; a correction additionally binds its feedback digest and requires the existing parent-candidate disclosure permission |
+| `revision-family-v2` / `revision-v2` / `revision-feedback-v2` | Bind policy and image with the existing family, predecessor, source/spec/test and candidate identities. Separate host authorization is required for the linked child |
+
+The runtime loader does not convert an arithmetic policy or historical task into JSON authority. Validation-only loading performs configuration checks without constructing a provider or granting work. Live loading still requires explicit execution authorization and all existing private-file, runtime-hash, task, budget, authority and runner checks. Reuse the same retained ledger and reviewer identity; no copy/reset, allowance increase, receipt reinterpretation or key regeneration follows from choosing v4. Model-profile availability in source does not establish account access or authorize an external callback.
+
+The existing runner guard now checks cgroup v2/systemd and reported CPU quota/period, memory and PID-limit support before admission or candidate dispatch. Failure blocks execution instead of relying solely on container command-line flags. Docker documents these rootless prerequisites in its [resource-limit guidance](https://docs.docker.com/engine/security/rootless/tips/#limiting-resources). The JSON contract's expected results remain on the trusted host; only inputs and the single-file candidate enter the sandbox. Generation and correction feedback must not disclose the contract's expected values. Passing records only the observed contract behavior and does not authorize repository writes or source promotion.
+
+A complete well-formed JSON result that disagrees with the expected result is a semantic failure even when the container exits 0. The existing bridge may then create a bounded linked correction under a separate host grant. Malformed/missing output or uncertain completion/cleanup cannot be turned into a successful result or an automatic retry. V4's configured jobs are root tasks: the scheduler does not create or authorize the linked corrections demonstrated by the separate host-driven lifecycle tests.
+
+**Required acceptance:** focused negative/compatibility tests, followed by the exact-source AI-19 real-rootless JSON lifecycle with mock provider, retained family/outcomes, cleanup and replay refusal. After CI, run only the newly changed JSON scenario in a separately reviewed disposable intended-runner environment. Record that evidence separately from source CI. Then use the existing service-bound, stop/reconcile and rollback sections to prepare a measured disabled single-service proposal. Keep service activation, any paid call, production promotion and Issue #90 closure as explicit independent decisions.

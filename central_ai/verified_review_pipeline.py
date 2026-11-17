@@ -8,14 +8,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from central_ai.task_storage import TaskStorage
 from central_ai.review_pipeline import prepare_review_pipeline
-from central_ai.isolated_functional_verifier import run_functional_tests
+from central_ai.isolated_functional_verifier import (
+    EXECUTION_POLICY, JSON_FUNCTION_POLICY, run_functional_tests,
+)
 
 
 def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
                        candidates, recommendation=None, trusted_test_file, image,
                        trusted_test_sha256=None, authorization_check=None,
                        verifier=run_functional_tests, generator=None, generator_id=None,
-                       generation_authorization_check=None, revision_candidate_file=None):
+                       generation_authorization_check=None, revision_candidate_file=None,
+                       execution_policy=EXECUTION_POLICY, runner_policy=None):
     if enabled != "YES":
         raise ValueError("PIPELINE_VERIFICATION_DISABLED")
     if not isinstance(trusted_test_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", trusted_test_sha256):
@@ -37,12 +40,32 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
         raise ValueError("GENERATION_AUTHORIZATION_REQUIRED")
     if revision_candidate_file is not None and generator is None:
         raise ValueError('REVISION_GENERATOR_REQUIRED')
+    if execution_policy not in (EXECUTION_POLICY, JSON_FUNCTION_POLICY):
+        raise ValueError('UNKNOWN_EXECUTION_POLICY')
+    json_function = execution_policy == JSON_FUNCTION_POLICY
+    verifier_options = {}
+    if json_function:
+        import hashlib
+        from central_ai.isolated_functional_verifier import (
+            _function_cases, _read_input, make_isolated_docker_runner,
+        )
+        # The host chooses this policy explicitly. Neither a task nor generated
+        # code may upgrade an arithmetic grant or select a default daemon.
+        runner_policy = dict(runner_policy) if isinstance(runner_policy, dict) else runner_policy
+        make_isolated_docker_runner(runner_policy, [image])
+        contract = _read_input(Path(trusted_test_file), suffix='.json')
+        if hashlib.sha256(contract).hexdigest() != trusted_test_sha256:
+            raise ValueError('TEST_HASH_MISMATCH')
+        _function_cases(contract)
+        verifier_options = dict(execution_policy=execution_policy, runner_policy=runner_policy)
+    elif runner_policy is not None:
+        raise ValueError('UNEXPECTED_RUNNER_POLICY')
     db = Path(database)
     if not db.is_absolute() or not db.is_file() or db.is_symlink():
         raise ValueError("INVALID_TASK_DB")
     storage = TaskStorage(db)
     nonce = secrets.token_hex(16)
-    storage.begin_verification(task_id, nonce)
+    storage.begin_verification(task_id, nonce, execution_policy=execution_policy)
     stage = "generation" if generator is not None else "preparation"
     try:
         if generator is not None:
@@ -50,7 +73,8 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
             if revision_candidate_file is not None:
                 from central_ai.isolated_functional_verifier import _read_input
                 extra['revision_candidate'] = _read_input(Path(revision_candidate_file)).decode('utf-8')
-            request = storage.begin_generation(task_id, nonce, generator_id, trusted_test_sha256, image, **extra)
+            request = storage.begin_generation(task_id, nonce, generator_id, trusted_test_sha256, image,
+                                               execution_policy=execution_policy, **extra)
             stage = "generation_authorization"
             receipt = generation_authorization_check(dict(request['binding']))
             request['admission'] = storage.authorize_generation(task_id, nonce, receipt)
@@ -76,6 +100,8 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
             "image": image,
             "scope": "verify_only",
         }
+        if json_function:
+            binding.update(schema='verification-request-v2', execution_policy=execution_policy)
         # Pass a separate dictionary so a provider cannot mutate the expected tuple.
         stage = "authorization"
         receipt = authorization_check(dict(binding))
@@ -102,7 +128,7 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
             enabled="YES", candidate=prepared["candidate_path"],
             expected_sha256=prepared["candidate_sha256"],
             test_file=trusted_test_file, expected_test_sha256=trusted_test_sha256, image=image,
-            record_resources=record_resources,
+            record_resources=record_resources, **verifier_options,
         )
         stage = "result"
         if (recorded_resources is None or not isinstance(result, dict)
@@ -111,7 +137,7 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
         status = result.get("status")
         if (status not in ("passed", "failed", "completion_unconfirmed", "timeout", "execution_error", "cleanup_unconfirmed")
                 or result["passed"] is not (status == "passed")
-                or result.get("execution_policy") != "bounded-arithmetic-v1"
+                or result.get("execution_policy") != execution_policy
                 or type(result.get("completion_confirmed")) is not bool
                 or result["completion_confirmed"] is not result["passed"]
                 or result.get("executed_candidate") is not True
@@ -120,7 +146,11 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
             raise ValueError("INVALID_VERIFIER_RESULT")
         if status in ("passed", "failed", "completion_unconfirmed"):
             code = result.get("returncode")
-            if (type(code) is not int or (code == 0) is not (status != "failed")
+            # JSON comparison is decided by the trusted host: a complete wrong
+            # answer is a failed test even if the container exits successfully.
+            if (type(code) is not int
+                    or (status != 'failed' and code != 0)
+                    or (not json_function and status == 'failed' and code == 0)
                     or result.get("test_sha256") != trusted_test_sha256):
                 raise ValueError("INVALID_VERIFIER_RESULT")
         quarantine = None
@@ -169,7 +199,8 @@ def prepare_and_verify(*, enabled, database, task_id, handoffs, proposals,
 
 def make_worker_review_handler(*, enabled, database, jobs, generator, generator_id,
                                generation_authorization_check, authorization_check,
-                               verifier=run_functional_tests, preflight=None):
+                               verifier=run_functional_tests, preflight=None,
+                               execution_policy=EXECUTION_POLICY, runner_policy=None):
     """Trusted-host opt-in wiring; no environment defaults or task auto-approval.
 
     jobs freezes an explicit task-ID allowlist and independent harness/output
@@ -180,6 +211,14 @@ def make_worker_review_handler(*, enabled, database, jobs, generator, generator_
     import json
     import sqlite3
     from uuid import UUID
+    if execution_policy not in (EXECUTION_POLICY, JSON_FUNCTION_POLICY):
+        raise ValueError('UNKNOWN_EXECUTION_POLICY')
+    if execution_policy == JSON_FUNCTION_POLICY:
+        if not isinstance(runner_policy, dict):
+            raise ValueError('ISOLATED_RUNNER_REQUIRED')
+        runner_policy = json.loads(json.dumps(runner_policy, allow_nan=False))
+    elif runner_policy is not None:
+        raise ValueError('UNEXPECTED_RUNNER_POLICY')
     fields = {'handoffs','proposals','candidates','trusted_test_file','trusted_test_sha256','image'}
     db = Path(database)
     if (enabled != 'YES' or (preflight is not None and not callable(preflight))
@@ -212,7 +251,8 @@ def make_worker_review_handler(*, enabled, database, jobs, generator, generator_
         return prepare_and_verify(enabled='YES', database=str(db), task_id=task_id,
             generator=generator, generator_id=generator_id,
             generation_authorization_check=generation_authorization_check,
-            authorization_check=authorization_check, verifier=verifier, **captured[task_id])
+            authorization_check=authorization_check, verifier=verifier,
+            execution_policy=execution_policy, runner_policy=runner_policy, **captured[task_id])
 
     def next_task_id():
         with sqlite3.connect(str(db), timeout=10) as conn:
@@ -246,7 +286,7 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
     from datetime import timedelta
     from uuid import UUID
     from central_ai.verifier_gate import read_private_host_file,make_hmac_review_authorizer
-    from central_ai.isolated_functional_verifier import _read_input,make_isolated_docker_runner
+    from central_ai.isolated_functional_verifier import _function_cases,_read_input,make_isolated_docker_runner
     from central_ai.app import make_openai_generator
     if enabled!='YES' or type(validation_only) is not bool:
         raise ValueError('WORKER_REVIEW_CONFIG_DISABLED')
@@ -265,8 +305,10 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
                       object_pairs_hook=pairs,parse_constant=constant)
     fields={'schema','scope','execution_policy','execution_authorized','approved','deployment_allowed','database','policy_id',
             'model','max_output_tokens','budget','authority','runtime_sha256','jobs'}
-    modern = isinstance(config,dict) and config.get('schema')=='worker-review-runtime-v3'
-    isolated = isinstance(config,dict) and config.get('schema') in ('worker-review-runtime-v2','worker-review-runtime-v3')
+    json_function = isinstance(config,dict) and config.get('schema')=='worker-review-runtime-v4'
+    modern = isinstance(config,dict) and config.get('schema') in ('worker-review-runtime-v3','worker-review-runtime-v4')
+    isolated = isinstance(config,dict) and config.get('schema') in (
+        'worker-review-runtime-v2','worker-review-runtime-v3','worker-review-runtime-v4')
     if modern:
         from central_ai.task_storage import DEVELOPER_MODEL_PROFILES
         fields = (fields-{'model','max_output_tokens'}) | {'model_profiles','default_profile'}
@@ -274,8 +316,8 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
             reject()
     if isolated:fields=fields|{'runner'}
     if (not isinstance(config,dict) or set(config)!=fields
-            or config['schema'] not in ('worker-review-runtime-v1','worker-review-runtime-v2','worker-review-runtime-v3') or config['scope']!='isolated_only'
-            or config['execution_policy']!='bounded-arithmetic-v1'
+            or config['schema'] not in ('worker-review-runtime-v1','worker-review-runtime-v2','worker-review-runtime-v3','worker-review-runtime-v4') or config['scope']!='isolated_only'
+            or config['execution_policy']!=(JSON_FUNCTION_POLICY if json_function else EXECUTION_POLICY)
             or type(config['execution_authorized']) is not bool
             or (not validation_only and config['execution_authorized'] is not True)
             or config['approved'] is not False or config['deployment_allowed'] is not False
@@ -304,6 +346,7 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
     core={'app.py','task_storage.py','verified_review_pipeline.py','verifier_gate.py',
           'developer_worker_coordinator.py','worker_batch.py','worker_scheduler.py','worker_supervised.py'}
     if isolated:core=core|{'isolated_functional_verifier.py','task_queue.py'}
+    if json_function:core=core|{'persistent_bridge.py'}
     hashes=config['runtime_sha256']
     if not isinstance(hashes,dict) or set(hashes)!=core:reject()
     for name,digest in hashes.items():
@@ -342,13 +385,22 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
             if row is None or target is None or target[2:]!=(0,0):reject()
             task=json.loads(row[0])
             source=Path(grant['source_file'])
+            contract=_read_input(Path(grant['trusted_test_file']), suffix='.json' if json_function else '.py')
             if (not source.is_absolute() or source.resolve()!=source
                     or source!=(Path(target[0])/target[1])
                     or hashlib.sha256(_read_input(source)).hexdigest()!=grant['source_sha256']
                     or hashlib.sha256(task['task']['task'].encode()).hexdigest()!=grant['spec_sha256']
                     or task.get('approved') is not False or task.get('deployment_allowed') is not False
                     or task['task'].get('approved') is not False or task['task'].get('deployment_allowed') is not False
-                    or hashlib.sha256(_read_input(Path(grant['trusted_test_file']))).hexdigest()!=grant['trusted_test_sha256']):
+                    or hashlib.sha256(contract).hexdigest()!=grant['trusted_test_sha256']):
+                raise ValueError('WORKER_REVIEW_GRANT_CHANGED')
+            if json_function:_function_cases(contract)
+            # v4 grants only explicitly listed root tasks. Linked correction
+            # needs its own host admission; loading a child must not imply one.
+            if json_function and 'revision' in task:
+                raise ValueError('WORKER_REVIEW_GRANT_CHANGED')
+            if ('verification' in task
+                    and TaskStorage._verification_intent_policy(task['verification']) != config['execution_policy']):
                 raise ValueError('WORKER_REVIEW_GRANT_CHANGED')
             for area in [Path(grant[field]) for field in ('handoffs','proposals','candidates')]+[source.parent]:
                 if key_path.is_relative_to(area) or Path(config_path).is_relative_to(area):
@@ -370,6 +422,7 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
         if (grant is None or binding.get('source_sha256')!=grant['source_sha256']
                 or binding.get('spec_sha256')!=grant['spec_sha256'] or binding.get('test_sha256')!=grant['trusted_test_sha256']
                 or binding.get('image')!=grant['image'] or binding.get('provider_id')!='openai-bounded-v1'
+                or binding.get('execution_policy')!=config['execution_policy']
                 or binding.get('root_task_id')!=binding.get('task_id')
                 or type(binding.get('ordinal')) is not int or binding.get('ordinal')!=1):
             raise ValueError('WORKER_REVIEW_GENERATION_DENIED')
@@ -391,7 +444,8 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
             expires_at=(now+timedelta(seconds=60)).isoformat(),approved=False,deployment_allowed=False)
     def issue(binding):
         grant=grants.get(binding.get('task_id'))
-        if grant is None or binding.get('test_sha256')!=grant['trusted_test_sha256'] or binding.get('image')!=grant['image']:
+        if (grant is None or binding.get('test_sha256')!=grant['trusted_test_sha256'] or binding.get('image')!=grant['image']
+                or TaskStorage._verification_binding_policy(binding)!=config['execution_policy']):
             raise ValueError('WORKER_REVIEW_VERIFICATION_DENIED')
         now=int(time.time())
         receipt=dict(schema='review-hmac-sha256-v1',binding=dict(binding),reviewer_id=authority['reviewer_id'],
@@ -414,7 +468,14 @@ def load_worker_review_config(*, enabled, config_path, database, validation_only
     from central_ai.task_storage import OPENAI_GENERATOR_ID
     generator.generator_id=OPENAI_GENERATOR_ID
     options={}
-    if isolated:
+    if json_function:
+        # The JSON verifier owns bounded stdout capture and private-daemon
+        # binding. Do not wrap an already-bound runner a second time.
+        options.update(execution_policy=JSON_FUNCTION_POLICY, runner_policy=config['runner'])
+        def verify(**kwargs):
+            return run_functional_tests(**kwargs)
+        options['verifier']=verify
+    elif isolated:
         def verify(**kwargs):
             return run_functional_tests(**kwargs,run=checked_runner())
         options['verifier']=verify
