@@ -1,6 +1,6 @@
 # Project focus and completion gates
 
-**Living plan; created 2026-11-02, source-task pointer updated 2026-11-17.** Current statuses, decisions and evidence live in [the architecture/progress register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). This file defines scope and ordering; historical audit snapshots do not override that register.
+**Living plan; created 2026-11-02, source-task pointer updated 2026-11-18.** Current statuses, decisions and evidence live in [the architecture/progress register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md). This file defines scope and ordering; historical audit snapshots do not override that register.
 
 ## Project objective
 
@@ -11,7 +11,7 @@ Retain the existing VPS/Docker/PostgreSQL/queue architecture. Budget target EUR 
 
 ## Current checkpoint — 2026-11-18
 
-**Accepted P1-INSTALLED-IDLE-01, operator-reported VPS evidence:** the installed same-owner supervisor completed a real one-shot credential-free idle run (3.377 s; one cycle; zero processed tasks; idle review state). The service returned inactive with guard \`NO\`, installed authority false and timer disabled; temporary overrides removed, state/key/accounting preserved, and no provider request. Do not repeat the one-time acceptance. Detailed host evidence stays private. The accepted runtime is still \`a1ffdd715e7f6fec343886eb812a89bf45485078\`. Documentation follow-up \`208ea48c01ff74b8f1964413df6c2b90f3714fcf\` independently passed 33/33 CI on that exact commit; PR #130 remains draft/unmerged.
+**Accepted P1-INSTALLED-IDLE-01, operator-reported VPS evidence:** the installed same-owner supervisor completed a real one-shot credential-free idle run (3.377 s; one cycle; zero processed tasks; idle review state). The service returned inactive with guard `NO`, installed authority false and timer disabled; temporary overrides removed, state/key/accounting preserved, and no provider request. Do not repeat the one-time acceptance. Detailed host evidence stays private. The accepted runtime is still `a1ffdd715e7f6fec343886eb812a89bf45485078`. Documentation follow-up `208ea48c01ff74b8f1964413df6c2b90f3714fcf` independently passed 33/33 CI on that exact commit; PR #130 remains draft/unmerged.
 
 **Today's delivery decision:** provide a safe, demonstrable integrated MVP and explicit GO/NO-GO per capability, not a blanket production approval. Complete the existing combined two-report synthetic CLI acceptance on isolated inputs and retain the result; do not falsely label offline/demo reports as live market analysis. [Issue #90](https://github.com/nsavchev/central-ai-market-engine/issues/90), verified acquisition rights/freshness, complete API/PostgreSQL restore/ACL reconciliation, live two-daily report scheduling, and productive worker/credential bounds are still open. Keep paper only, no live orders, no unreviewed automation.
 
