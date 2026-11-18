@@ -1,0 +1,27 @@
+{
+  "schema": "worker-rollout-review-v1",
+  "purpose": "review_only_not_a_runtime_configuration",
+  "enabled": false,
+  "activation_allowed": false,
+  "scope": "isolated_only",
+  "source_sha": null,
+  "provider": {"model": "gpt-4.1-mini", "max_output_tokens": 128, "deadline_seconds": 65},
+  "account_guard": {"currency": "USD", "enforced_monthly_limit": null, "evidence_reference": null, "auto_reload": false},
+  "ledger_policy": {
+    "receipt_schema": "generation-admission-usd-v2",
+    "budget_limit_microusd": null,
+    "reserved_microusd": null,
+    "budget_call_limit": 1,
+    "period": "UTC_calendar_month",
+    "reservation_is_provider_invoice": false,
+    "automatic_refund": false,
+    "automatic_legacy_conversion": false
+  },
+  "schedule_proposal": {"reuse_existing_timer": true, "enabled": false, "cadence_seconds": 300, "cycles_per_run": 1, "max_tasks_per_batch": 1, "timeout_seconds": 180},
+  "authority": {"generation_profile_reference": null, "reviewer_id": null, "reviewer_key_reference": null, "credentials_in_this_file": false},
+  "jobs": [],
+  "evidence_jobs": [],
+  "job_binding_fields": ["task_id", "source_sha256", "spec_sha256", "trusted_test_sha256", "image", "handoffs", "proposals", "candidates", "trusted_test_file"],
+  "recovery": {"stop_on_unresolved_intent": true, "automatic_requeue": false, "automatic_revision": false, "delete_or_reset_ledger": false, "delete_uncertain_resources": false},
+  "promotion": {"approved": false, "deployment_allowed": false, "live_trading": false}
+}

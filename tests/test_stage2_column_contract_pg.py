@@ -2,8 +2,16 @@
 Only a disposable database named test is allowed.
 """
 import os
+import pytest
 from sqlalchemy import create_engine, text
 from app.paper_legacy_column_contract import inspect_legacy_paper_columns
+
+
+# Local aggregate runs may omit PostgreSQL; CI must still supply its test URL.
+pytestmark = pytest.mark.skipif(
+    not os.getenv("TEST_POSTGRES_URL") and not os.getenv("CI"),
+    reason="Disposable PostgreSQL required for local execution",
+)
 
 def test_real_orm_paper_schema_and_detect_nullable_regression():
     url=os.environ["TEST_POSTGRES_URL"]

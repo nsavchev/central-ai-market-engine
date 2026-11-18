@@ -1,0 +1,45 @@
+# Disabled replacement TEMPLATE for the SAME central-ai-staging.service owner.
+# Render privately as central-ai-staging.service; never install this as a second
+# service or add a timer. The tracked legacy service/timer remain unchanged.
+# Replace every placeholder with a reviewed private value before validation.
+# Source and Python must be immutable/readable by the retained nonroot account.
+# Config must retain its schema, grants, ledger, key and private-daemon binding;
+# execution_authorized=false, approved=false, deployment_allowed=false.
+# Use the SAME retained scheduler lock as operator invocations. Keep one-off
+# evidence status files; choose a separate current status beside the same DB.
+# This template defines no provider credential or credential-loading mechanism.
+# The service guard remains NO; do not enable it as part of preparation.
+# See docs/audits/worker-review-rollout-runbook.md, P1-SERVICE-PROPOSAL-01.
+
+[Unit]
+Description=Central AI bounded review worker (existing AI-08 owner; disabled proposal)
+
+[Service]
+Type=oneshot
+User=@SERVICE_USER@
+WorkingDirectory=@RELEASE_DIRECTORY@
+ExecStart=@PYTHON_EXECUTABLE@ -E -s -B -m central_ai.worker_supervised
+Environment=CENTRAL_SUPERVISED_SERVICE_ENABLED=NO
+Environment=CENTRAL_WORKER_REVIEW_ENABLED=YES
+Environment="CENTRAL_WORKER_REVIEW_CONFIG=@RUNTIME_CONFIG@"
+Environment="CENTRAL_TASK_DB=@TASK_DATABASE@"
+Environment="CENTRAL_SCHEDULER_LOCK=@SCHEDULER_LOCK@"
+Environment="CENTRAL_SUPERVISOR_STATUS=@SUPERVISOR_STATUS@"
+Environment="CENTRAL_WORKER_AGENT=@WORKER_AGENT@"
+Environment=CENTRAL_SCHEDULER_CYCLES=1
+Environment=CENTRAL_SCHEDULER_INTERVAL=1
+Environment=CENTRAL_WORKER_MAX_TASKS=1
+UMask=0077
+Restart=no
+# Proposed hard operating budgets, not measured completion guarantees.
+TimeoutStartSec=300
+TimeoutStopSec=60
+TimeoutStartFailureMode=terminate
+TimeoutStopFailureMode=terminate
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+FinalKillSignal=SIGKILL
+# The separate private daemon must see the same host snapshot paths.
+PrivateTmp=no
+DynamicUser=no

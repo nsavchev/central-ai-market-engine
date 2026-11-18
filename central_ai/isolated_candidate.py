@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 
-def prepare_candidate(*, enabled, proposal_path, candidate_directory):
+def prepare_candidate(*, enabled, proposal_path, candidate_directory, expected_recommendation_sha256=None):
     if enabled != "YES":
         raise ValueError("CANDIDATE_DISABLED")
     source, dest = Path(proposal_path), Path(candidate_directory)
@@ -36,6 +36,12 @@ def prepare_candidate(*, enabled, proposal_path, candidate_directory):
     answers = data.get("ai_recommendations")
     if not isinstance(answers, list) or len(answers) != 1 or not isinstance(answers[0], str):
         raise ValueError("INVALID_RECOMMENDATION")
+    if expected_recommendation_sha256 is not None and (
+        not isinstance(expected_recommendation_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_recommendation_sha256)
+        or hashlib.sha256(answers[0].encode('utf-8')).hexdigest() != expected_recommendation_sha256
+    ):
+        raise ValueError("PROPOSAL_RECOMMENDATION_CHANGED")
     matches = re.findall(r"```python\s*\n(.*?)```", answers[0], flags=re.I | re.S)
     if len(matches) != 1:
         raise ValueError("REQUIRE_SINGLE_PYTHON_BLOCK")

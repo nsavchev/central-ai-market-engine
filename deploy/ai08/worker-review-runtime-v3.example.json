@@ -1,0 +1,55 @@
+{
+  "schema": "worker-review-runtime-v3",
+  "scope": "isolated_only",
+  "execution_policy": "bounded-arithmetic-v1",
+  "execution_authorized": false,
+  "approved": false,
+  "deployment_allowed": false,
+  "database": null,
+  "policy_id": null,
+  "budget": {
+    "currency": "USD",
+    "limit_microusd": 20000000,
+    "call_limit": 3
+  },
+  "authority": {
+    "generation_id": null,
+    "reviewer_id": null,
+    "reviewer_key_file": null
+  },
+  "runtime_sha256": {
+    "app.py": null,
+    "task_storage.py": null,
+    "verified_review_pipeline.py": null,
+    "verifier_gate.py": null,
+    "developer_worker_coordinator.py": null,
+    "worker_batch.py": null,
+    "worker_scheduler.py": null,
+    "worker_supervised.py": null,
+    "isolated_functional_verifier.py": null,
+    "task_queue.py": null
+  },
+  "jobs": {},
+  "runner": {
+    "uid": null,
+    "socket": null,
+    "config_directory": null,
+    "daemon_id": null,
+    "data_root": null
+  },
+  "default_profile": "primary",
+  "model_profiles": {
+    "primary": {
+      "model": "gpt-6.1-sol",
+      "max_output_tokens": 8192,
+      "reasoning_effort": "medium",
+      "reserved_microusd": 200000
+    },
+    "simple": {
+      "model": "gpt-6-luna",
+      "max_output_tokens": 2048,
+      "reasoning_effort": "low",
+      "reserved_microusd": 10000
+    }
+  }
+}

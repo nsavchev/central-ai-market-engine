@@ -166,3 +166,89 @@ class PersistentTaskBridge:
             "approved": False,
             "deployment_allowed": False,
         }
+
+    def submit_revision(self, parent_task_id, expected_parent_nonce):
+        """Reserve a linked candidate slot atomically; never call a model or verify.
+
+        Three candidates per explicitly submitted root, including the root.
+        A reserved child is never refunded or replaced after a crash.
+        """
+        import json
+        import re
+        from datetime import datetime, timezone
+        child_id = None
+        try:
+            with self.storage._connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                parent = self.storage._review_task(conn, parent_task_id)
+                audit = parent.get('verification', {})
+                outcome = audit.get('outcome', {})
+                try:
+                    self.storage._validated_verification_report(parent_task_id, expected_parent_nonce, outcome)
+                    policy = self.storage._verification_intent_policy(audit)
+                    if outcome['execution_policy'] != policy:
+                        raise ValueError('REVISION_POLICY_CHANGED')
+                except (ValueError, TypeError, KeyError):
+                    raise ValueError('REVISION_PARENT_NOT_ELIGIBLE') from None
+                image = outcome['verification_binding']['image']
+                if (audit.get('phase') != 'completed' or audit.get('nonce') != expected_parent_nonce
+                        or not isinstance(expected_parent_nonce, str)
+                        or not re.fullmatch(r'[0-9a-f]{32}', expected_parent_nonce)
+                        or outcome.get('test_status') != 'failed' or outcome.get('tests_passed') is not False
+                        or outcome.get('completion_confirmed') is not False
+                        or outcome.get('quarantine_required') is not False
+                        or outcome.get('approved') is not False or outcome.get('deployment_allowed') is not False
+                        or outcome.get('verification_binding') != audit.get('binding')):
+                    raise ValueError('REVISION_PARENT_NOT_ELIGIBLE')
+                # The same DB-wide unresolved verification barrier applies to reservation.
+                self.storage.check_verification_barrier(
+                    json.loads(encoded) for (encoded,) in conn.execute('SELECT payload FROM tasks'))
+                lineage = parent.get('revision')
+                root_id = lineage['root_task_id'] if isinstance(lineage, dict) else parent_task_id
+                root = self.storage._review_task(conn, root_id)
+                digest = root.get('analysis', {}).get('source_sha256')
+                test_digest = audit.get('binding', {}).get('test_sha256')
+                if (not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
+                        or parent.get('analysis', {}).get('source_sha256') != digest
+                        or not isinstance(test_digest, str) or not re.fullmatch(r'[0-9a-f]{64}', test_digest)):
+                    raise ValueError('REVISION_SOURCE_NOT_BOUND')
+                family = root.get('revision_family', {'schema':'revision-family-v1',
+                    'members':[root_id], 'source_sha256':digest, 'test_sha256':test_digest})
+                if 'revision_family' not in root and policy == 'json-function-v1':
+                    family.update(schema='revision-family-v2', execution_policy=policy, image=image)
+                members = family.get('members')
+                expected_policy = (policy, image if policy == 'json-function-v1' else None)
+                if (self.storage._revision_policy(family, family=True) != expected_policy or not isinstance(members, list)
+                        or not 1 <= len(members) <= 3 or members[0] != root_id
+                        or len(set(members)) != len(members) or members[-1] != parent_task_id
+                        or family.get('source_sha256') != digest or family.get('test_sha256') != test_digest
+                        or (lineage is not None and (self.storage._revision_policy(lineage) != expected_policy
+                            or lineage.get('ordinal') != len(members)
+                            or lineage.get('source_sha256') != digest or lineage.get('test_sha256') != test_digest))):
+                    raise ValueError('REVISION_FAMILY_CONFLICT')
+                if len(members) >= 3:
+                    raise ValueError('REVISION_BUDGET_EXHAUSTED')
+                child = self.bridge.submit(parent['task']['task'])
+                child_id = child['task_id']
+                child['revision'] = {'schema':'revision-v1', 'root_task_id':root_id,
+                    'parent_task_id':parent_task_id, 'parent_verification_nonce':expected_parent_nonce,
+                    'ordinal':len(members)+1, 'source_sha256':digest, 'test_sha256':test_digest}
+                if policy == 'json-function-v1':
+                    child['revision'].update(schema='revision-v2', execution_policy=policy, image=image)
+                self.storage.save(child, conn=conn)
+                self.workflow.insert_prepared(self.workflow.prepare_registration(child), conn)
+                self.queue.enqueue(child_id, conn=conn)
+                conn.execute('INSERT INTO task_file_targets (task_id,workspace,filename) '
+                    'SELECT ?,workspace,filename FROM task_file_targets WHERE task_id=? '
+                    'AND approved=0 AND deployment_allowed=0', (child_id, root_id))
+                if conn.execute('SELECT changes()').fetchone()[0] != 1:
+                    raise ValueError('REVISION_TARGET_MISSING')
+                root['revision_family'] = dict(family, members=members+[child_id],
+                    updated_at=datetime.now(timezone.utc).isoformat())
+                self.storage._write_review_task(conn, root_id, root)
+            return child
+
+        except BaseException:
+            if child_id is not None:
+                self.bridge.registry.pop(child_id, None)
+            raise

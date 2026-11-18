@@ -1,7 +1,15 @@
 """Alembic CLI must fail atomically when populated data would be rounded."""
 import os
 import subprocess
+import pytest
 from sqlalchemy import create_engine, text
+
+
+# Local aggregate runs may omit PostgreSQL; CI must still supply its test URL.
+pytestmark = pytest.mark.skipif(
+    not os.getenv("TEST_POSTGRES_URL") and not os.getenv("CI"),
+    reason="Disposable PostgreSQL required for local execution",
+)
 
 def test_alembic_rejects_lossy_data_and_preserves_legacy_schema():
     url=os.environ["TEST_POSTGRES_URL"]

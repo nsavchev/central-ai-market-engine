@@ -66,3 +66,39 @@ def test_orchestrator_is_task_factory_not_runtime_authority():
     assert item.task=="Inspect existing code"
     assert item.stage.value==STAGES[0]
     assert item.approved is False and item.deployment_allowed is False
+
+
+@pytest.mark.parametrize("report_name", [
+    "passing.json", "../passing.json", "/tmp/passing.json", None,
+])
+def test_legacy_report_gate_rejects_without_file_access(monkeypatch, report_name):
+    from pathlib import Path
+    from developer_agent.v3.workflow_controller import verify_report
+
+    def forbidden_read(*args, **kwargs):
+        raise AssertionError("UNTRUSTED_REPORT_WAS_READ")
+
+    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    with pytest.raises(ValueError, match="^UNVERIFIED_REPORT_BLOCKED$"):
+        verify_report(report_name)
+
+
+def test_legacy_report_cli_cannot_promote_a_passing_looking_report(tmp_path):
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    report = tmp_path / "passing.json"
+    report.write_text(json.dumps({
+        "passed": True, "approved": False, "deployment_allowed": False,
+        "suite": "workflow",
+    }))
+    script = Path(__file__).resolve().parents[1] / "developer_agent/v3/workflow_controller.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--report", str(report)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode != 0
+    assert "UNVERIFIED_REPORT_BLOCKED" in result.stderr
+    assert result.stdout == ""

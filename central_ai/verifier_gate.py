@@ -1,6 +1,7 @@
-"""AI-13: validate a draft proposal before manual verifier handoff.
+"""AI-13 proposal gate and explicitly provisioned trusted-host authority.
 
-This module never executes source, runs tests, writes to workspaces or deploys.
+Never executes candidates or deploys. Key provisioning writes only an explicit
+private host key file, separately from task/candidate workspaces.
 """
 import json
 import hmac
@@ -111,3 +112,45 @@ def make_hmac_review_authorizer(*, reviewer_keys, request_receipt, clock=time.ti
             raise ValueError("REVIEW_MAC_MISMATCH")
         return receipt
     return authorize
+
+
+def read_private_host_file(path, *, max_bytes):
+    """Read operator-owned policy/key material without links or public access."""
+    import os
+    import stat
+    p=Path(path)
+    if not p.is_absolute() or p.resolve()!=p:
+        raise ValueError('PRIVATE_AUTHORITY_PATH_INVALID')
+    parent=p.parent.stat()
+    if parent.st_uid!=os.geteuid() or parent.st_mode & 0o077:
+        raise ValueError('PRIVATE_AUTHORITY_DIRECTORY_INVALID')
+    fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(fd,'rb') as stream:
+        metadata=os.fstat(stream.fileno())
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid!=os.geteuid()
+                or metadata.st_mode & 0o077 or metadata.st_nlink!=1
+                or not 0<metadata.st_size<=max_bytes):
+            raise ValueError('PRIVATE_AUTHORITY_FILE_INVALID')
+        data=stream.read(max_bytes+1)
+    if len(data)>max_bytes:
+        raise ValueError('PRIVATE_AUTHORITY_FILE_INVALID')
+    return data
+
+
+def provision_reviewer_key(*, enabled, path):
+    """Explicit one-time host action; never overwrites or returns key bytes."""
+    import os
+    import secrets
+    p=Path(path)
+    if enabled!='YES' or not p.is_absolute() or p.resolve()!=p:
+        raise ValueError('REVIEWER_KEY_PROVISIONING_DISABLED')
+    parent=p.parent.stat()
+    if parent.st_uid!=os.geteuid() or parent.st_mode & 0o077:
+        raise ValueError('PRIVATE_AUTHORITY_DIRECTORY_INVALID')
+    fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'wb') as stream:
+        stream.write(secrets.token_bytes(32));stream.flush();os.fsync(stream.fileno())
+    fd=os.open(p.parent,os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+    return {'reviewer_key_created':True,'key_bytes_disclosed':False}

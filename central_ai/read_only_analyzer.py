@@ -1,6 +1,7 @@
 """Read-only Python source analyzer for Developer Agent."""
 
 import ast
+import hashlib
 import os
 import stat
 from pathlib import Path
@@ -62,6 +63,7 @@ class ReadOnlyAnalyzer:
                 return {
                     "filename": filename,
                     "status": "analyzed",
+                    "source_sha256": hashlib.sha256(source).hexdigest(),
                     "classes": [
                         node.name for node in ast.walk(tree)
                         if isinstance(node, ast.ClassDef)

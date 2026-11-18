@@ -50,9 +50,20 @@ try:
                        "writable":m.get("RW"),"volume_name":m.get("Name") if m.get("Type")=="volume" else None}
                       for m in mounts],
         }
-    sha=command(["git","rev-parse","HEAD"])
-    if not re.fullmatch(r"[0-9a-f]{40}",sha):
-        raise ValueError("INVALID_DEPLOYED_SHA")
+    git_metadata={"sha":None,"branch":None,"dirty":None}
+    git_status="unavailable"
+    try:
+        sha=command(["git","rev-parse","HEAD"])
+        if not re.fullmatch(r"[0-9a-f]{40}",sha):
+            raise ValueError("INVALID_DEPLOYED_SHA")
+        branch=command(["git","branch","--show-current"])
+        dirty=bool(command(["git","status","--porcelain","--untracked-files=normal"]))
+        git_metadata={"sha":sha,"branch":branch,"dirty":dirty}
+        git_status="available"
+    except (subprocess.CalledProcessError,FileNotFoundError):
+        # Git may be absent/inaccessible in an archive-based deployment.
+        # Do not infer a clean tree, a source SHA or image provenance.
+        pass
     configs={}
     for name in ("docker-compose.central.yml","docker-compose.central.release.yml"):
         configs[name]=hashlib.sha256(Path(name).read_bytes()).hexdigest()
@@ -61,8 +72,10 @@ try:
         "timestamp_utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "host_fingerprint":hashlib.sha256(platform.node().encode()).hexdigest()[:16],
         "repository_path":str(Path.cwd()),
-        "git":{"sha":sha,"branch":command(["git","branch","--show-current"]),
-               "dirty":bool(command(["git","status","--porcelain","--untracked-files=normal"]))},
+        "git":git_metadata,
+        "git_metadata_status":git_status,
+        "collection_status":"collected" if git_status=="available" else "partial",
+        "evidence_gaps":[] if git_status=="available" else ["deployment_git_metadata"],
         "collector_sha256":hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest(),
         "compose_file_sha256":configs,
         "services":services,
@@ -81,4 +94,4 @@ except (OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError):
                       "audit_complete":False,"deployment_authorized":False}))
     raise SystemExit(1)
 PY
-echo "AI24_READ_ONLY_VPS_PREFLIGHT_PASSED"
+echo "AI24_READ_ONLY_VPS_PREFLIGHT_FINISHED"

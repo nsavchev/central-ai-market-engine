@@ -34,3 +34,20 @@ def test_disabled_fails_without_side_effects(tmp_path):
     with pytest.raises(ValueError,match="PIPELINE_DISABLED"):
         prepare_review_pipeline(enabled="",database="",task_id="",handoffs="",
                                 proposals="",candidates="",recommendation="")
+
+
+def test_candidate_rejects_proposal_text_changed_after_gate(monkeypatch,tmp_path):
+    import central_ai.review_pipeline as pipeline
+    original=pipeline.check_proposal_for_verifier
+    def corrupt_after_check(**kwargs):
+        result=original(**kwargs)
+        from pathlib import Path
+        path=Path(kwargs['proposal_path']);data=json.loads(path.read_text())
+        data['ai_recommendations']=['```python\ndef substituted(): return 999\n```']
+        path.write_text(json.dumps(data))
+        return result
+    monkeypatch.setattr(pipeline,'check_proposal_for_verifier',corrupt_after_check)
+    with pytest.raises(ValueError,match='PROPOSAL_RECOMMENDATION_CHANGED'):
+        test_single_path_after_analyzed_task(tmp_path)
+    assert list((tmp_path/"candidates").iterdir()) == []
+    assert (tmp_path/"src"/"module.py").read_text() == "def original():\n    return 3\n"

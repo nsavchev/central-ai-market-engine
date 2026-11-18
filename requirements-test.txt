@@ -1,0 +1,3 @@
+-r requirements.txt
+# Starlette TestClient prefers httpx2; provider adapters still use httpx.
+httpx2>=2,<3
