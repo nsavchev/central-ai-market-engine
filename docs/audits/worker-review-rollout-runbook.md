@@ -2,7 +2,13 @@
 
 The [profile example](../../deploy/ai08/worker-review-profile.example.json) is a review artifact. No runtime entrypoint consumes it, and changing its enabled field cannot provision authority or activate a worker. Current operational evidence belongs in the protected operator record, separate from public source/CI. The [canonical register](PROJECT_ARCHITECTURE_OWNERSHIP_PROGRESS_2026-10-26.md) owns progress.
 
-## Current source checkpoint — 2026-11-17
+## Installed credential-free idle acceptance — 2026-11-18
+
+The operator reported successful completion of the single installed invocation described under [P1-INSTALLED-IDLE-01](#single-installed-credential-free-idle-invocation--p1-installed-idle-01). A one-shot service start exited successfully in **3.377 s** and produced a fresh completed idle status: one cycle, zero processed tasks, \`review_state=idle\`. The original persistent service guard \`NO\`, disabled execution authority and inactive service/timer were confirmed after removal of temporary overrides. The database, reviewer key, admissions/accounting and journals remained unchanged; no provider credential or request. The original private evidence and one-time attempt marker remain on the VPS. **Do not rerun this one-shot acceptance.**
+
+This accepts the installed idle path, **not** productive model generation, API/DB production readiness, autonomous repair, live-market acquisition or scheduled market reports. Current source work stays in open/draft PR #130; the installed runtime is separately pinned. Next: final isolated Market Engine combined-report demonstration plus issue #90 reconciliation and a scoped release GO/NO-GO. No additional service/timer activation, credential provisioning, DB migration or trading is authorized by this result.
+
+## Prior source checkpoint — 2026-11-17 (historical)
 
 **P1-INSTALLED-IDLE-01** prepares [one credential-free idle invocation](#single-installed-credential-free-idle-invocation--p1-installed-idle-01) through the same installed AI-08 service. Accepted source `a1ffdd715e7f6fec343886eb812a89bf45485078` has **33/33 successful CI workflows**, including [AI-19 run 44078874638](https://github.com/nsavchev/central-ai-market-engine/actions/runs/44078874638) and [DUP-01 run 44078874641](https://github.com/nsavchev/central-ai-market-engine/actions/runs/44078874641). Separately, the operator reports accepted installation in the disabled state, with retained state/accounting and no worker activation or new provider request. Exact host receipts remain private. The [same-owner proposal](#disabled-same-owner-unit-proposal--p1-service-proposal-01) records the preceding preparation contract; the new installed-idle section defines the next operational boundary. It is prepared, not executed. Earlier profiles and sections retain their dated proposals; they are not current deployment instructions. This documentation change performs no host action.
 
