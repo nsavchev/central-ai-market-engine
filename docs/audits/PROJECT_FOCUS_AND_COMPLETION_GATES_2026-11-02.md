@@ -9,7 +9,13 @@
 
 Retain the existing VPS/Docker/PostgreSQL/queue architecture. Budget target EUR 50–150 monthly. Provider adapters in source do not prove connected accounts or successful external calls; detailed runtime/provider configuration is outside this public checkpoint.
 
-## Current checkpoint — 2026-11-18
+## Current release decision — 2026-11-18
+
+**GO: controlled synthetic/offline MVP demonstration. NO-GO: productive Central AI autonomy, verified fresh market feeds, actual twice-daily scheduling, database migration and real trades.** The operator-reported Market Engine run accepted 2 standalone combined CLI runs and 1 combined two-daily run for two synthetic reports; macro/DCF calculated, unauthorized rights rejected, catalysts unavailable, market snapshot reused. Source bars date 2025-07-29 and report dates 2025-08-01; no automated acquisition, provider request, timer activation or trading. Together with accepted installed idle this completes the bounded demonstration, **not** the full project objective. See [MVP release decision](MVP_RELEASE_DECISION_2026-11-18.md).
+
+**Provenance:** installed runtime `a1ffdd715e7f6fec343886eb812a89bf45485078` and previous docs commit `3eee7b633ba473595e931d2d86452e19d9854a5f` each had **33/33 CI**. This documentation change has its own future CI status. PR #130 remains draft/unmerged, [Issue #90](https://github.com/nsavchev/central-ai-market-engine/issues/90) OPEN. VPS evidence is operator-reported, stored privately.
+
+## Prior checkpoint — 2026-11-18 (installed idle; superseded by release decision)
 
 **Accepted P1-INSTALLED-IDLE-01, operator-reported VPS evidence:** the installed same-owner supervisor completed a real one-shot credential-free idle run (3.377 s; one cycle; zero processed tasks; idle review state). The service returned inactive with guard `NO`, installed authority false and timer disabled; temporary overrides removed, state/key/accounting preserved, and no provider request. Do not repeat the one-time acceptance. Detailed host evidence stays private. The accepted runtime is still `a1ffdd715e7f6fec343886eb812a89bf45485078`. Documentation follow-up `208ea48c01ff74b8f1964413df6c2b90f3714fcf` independently passed 33/33 CI on that exact commit; PR #130 remains draft/unmerged.
 
@@ -61,7 +67,7 @@ P0/P1 precede new P2 features. DB inventory/restore work is prerequisite evidenc
 
 ## Next active task and handoff rule
 
-**Active delivery task: P0-OPS-RECON-01 / Market combined-demo acceptance.** Do not rerun the accepted installed idle cycle. Reuse the existing combined-market report CLI and synthetic, isolated fixtures, pin the exact current source and capture two independently bounded offline report outputs with unavailable inputs marked explicitly. Assemble the private release receipt and distinguish what the VPS confirmed from source-only CI, the synthetic demonstration and missing operational permissions. Keep the service/timer disabled. Productive CAI task dispatch and any recurring market schedule require new controlled gates.
+**Next active task: P0-OPS-RECON-01 / Issue #90.** The synthetic combined Market Engine acceptance is complete; do not rerun it. Gather fresh read-only effective runtime and PostgreSQL schema/roles/ACL/writers/migration/restore evidence, then separately establish market data rights/freshness and scheduled service acceptance. Protect the same owners, current ledgers and original service/timer disablement. See the [Nov 18 GO/NO-GO decision](MVP_RELEASE_DECISION_2026-11-18.md).
 
 **P1-SCHEDULED-SERVICE-BOUND-01 remains OPEN.** Accepted private disabled-install, actual SIGTERM/systemd and one-shot idle evidence are now recorded; productive workload assessment is still pending. The single-job JSON command-timeout sum is **205 seconds before overhead**; the 300/60-second limits remain interruption budgets, not proof that all work completes within them. An idle success proves no new generated work or external-provider path. Productive work requires a separate concrete bounded task, grant and credential scope; recurring operation is a separate decision. **P0-OPS-RECON-01 / Issue #90 remains OPEN** for deployment provenance, database/permissions, restore and remaining stack reconciliation. An interrupted controller may leave the runtime override present until reconciled; do not claim disabled restoration without its final receipt. Reconciliation preserves the actual database, reviewer key, accounting and unresolved journals rather than restoring an earlier ledger. Preserve paper-only operation and false promotion flags.
 
